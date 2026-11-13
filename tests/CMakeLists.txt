@@ -1,0 +1,8 @@
+function(zodiac_add_test name)
+cmake_parse_arguments(ZT "" "" "SOURCES;LIBRARIES" ${ARGN})
+add_executable(${name} ${ZT_SOURCES})
+target_link_libraries(${name} PRIVATE doctest::doctest_with_main ${ZT_LIBRARIES})
+target_compile_options(${name} PRIVATE -Wall -Wextra)
+add_test(NAME ${name} COMMAND ${name})
+endfunction()
+zodiac_add_test(test_angelscript_smoke SOURCES test_angelscript_smoke.cpp LIBRARIES angelscript)
