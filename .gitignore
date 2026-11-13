@@ -1,0 +1,6 @@
+.tools/
+build/
+Blood bath source/
+*.log
+.superpowers/
+__pycache__/
