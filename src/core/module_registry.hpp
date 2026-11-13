@@ -1,9 +1,8 @@
 // zodiac::ModuleRegistry finds, loads, orders and registers Zodiac modules (shared libraries exporting zodiac_module_get_info).
 //
-// Lifetime: the registry owns the loaded libraries. Destroy the script engine (and every script call into module functions) before
-// the registry, and keep the Host alive until shutdown_all, because modules may log through the host while shutting down. Declare the
-// registry before the engine/Host owner so the natural reverse-order destruction does the right thing. The destructor calls shutdown_all.
-// Threads: every call runs on the main thread.
+// Teardown order (the registry owns the libraries, and the engine may point into module code):
+// 1. call shutdown_all() while the Host and script engine are still alive, 2. destroy the engine and Host, 3. destroy the registry.
+// The destructor only closes libraries; it never calls shutdown_module. Threads: every call runs on the main thread.
 #pragma once
 #include <zodiac/plugin.h>
 #include <core/dynamic_library.hpp>
@@ -26,15 +25,15 @@ public:
 ModuleRegistry()=default;
 ModuleRegistry(const ModuleRegistry&)=delete;
 ModuleRegistry& operator=(const ModuleRegistry&)=delete;
-~ModuleRegistry(){shutdown_all();}
+~ModuleRegistry()=default;
 // Loads the named modules and their dependencies transitively, ordered so dependencies come first. Names already loaded are skipped.
 // On failure nothing from this call stays loaded and the error is one plain-text line.
 std::expected<void,std::string> load(std::span<const std::string> names,const ModuleSearchPaths& search);
 // Registers every loaded, not yet registered module in order with host.current_module() set to the module name.
-// A module fails if register_module returns non-OK or an error is logged through the host meanwhile. Stops at the first failure.
+// A module fails if register_module returns non-OK or the host rejected one of its registrations (Host::registration_failures). A module's own log(ERROR) is forwarded but does not fail it. Stops at the first failure.
 // Messages logged during registration are still forwarded to the host's existing log handler.
 std::expected<void,std::string> register_all(Host& host);
-// Calls shutdown_module on the successfully registered modules in reverse registration order, then unloads every library.
+// Calls shutdown_module on the successfully registered modules in reverse registration order (once each). Libraries stay loaded until the registry is destroyed. Call it before destroying the engine and Host.
 void shutdown_all() noexcept;
 std::span<const zodiac_module_info* const> ordered() const noexcept{return infos_;}
 private:

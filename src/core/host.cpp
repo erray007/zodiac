@@ -551,6 +551,7 @@ catch(...){
 
 int Host::fail(int code,std::string_view declaration,std::string_view reason) const noexcept
 {
+++registration_failures_;
 if(!log_handler_)return code;
 try{
 std::string message="module ";

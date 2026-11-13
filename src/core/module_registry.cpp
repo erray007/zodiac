@@ -120,16 +120,18 @@ std::expected<void,std::string> ModuleRegistry::register_all(Host& host)
 {
 HostScope scope(host);
 std::string first_error;
-host.set_log_handler([&scope,&first_error](zodiac_log_level level,std::string_view message){
-if(level==ZODIAC_LOG_ERROR&&first_error.empty())first_error.assign(message);
+std::size_t baseline=0;
+host.set_log_handler([&scope,&first_error,&baseline,&host](zodiac_log_level level,std::string_view message){
+if(level==ZODIAC_LOG_ERROR&&first_error.empty()&&host.registration_failures()>baseline)first_error.assign(message);
 if(scope.handler)scope.handler(level,message);
 });
 for(Entry& entry:entries_){
 if(entry.registered)continue;
 first_error.clear();
+baseline=host.registration_failures();
 host.set_current_module(entry.name);
 const int code=entry.info->register_module?entry.info->register_module(host.abi()):ZODIAC_OK;
-if(code!=ZODIAC_OK||!first_error.empty()){
+if(code!=ZODIAC_OK||host.registration_failures()>baseline){
 return failure("module "+in_quotes(entry.name)+" failed to register: "+(first_error.empty()?"error code "+std::to_string(code):first_error));
 }
 entry.registered=true;
@@ -142,7 +144,6 @@ void ModuleRegistry::shutdown_all() noexcept
 for(auto it=entries_.rbegin();it!=entries_.rend();++it){
 if(it->registered&&it->info->shutdown_module)it->info->shutdown_module();
 }
-while(!entries_.empty())entries_.pop_back();
-infos_.clear();
+for(Entry& entry:entries_)entry.registered=false;
 }
 }

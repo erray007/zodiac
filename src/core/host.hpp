@@ -4,6 +4,7 @@
 // Threads: registration and the setters run on the main thread before scripts execute. The call-time accessors in the table only read the call and immutable registration data, so different script contexts may use them concurrently.
 #pragma once
 #include <zodiac/plugin.h>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -30,6 +31,8 @@ void set_current_module(std::string_view name){current_module_.assign(name);}
 // The default handler discards. Called for registration errors and plugin log() calls, possibly from script threads.
 void set_log_handler(LogHandler handler){log_handler_=std::move(handler);}
 const LogHandler& log_handler() const noexcept{return log_handler_;}
+// Number of registrations the host itself rejected (each also logged as an error). A plugin's own log() calls never count.
+std::size_t registration_failures() const noexcept{return registration_failures_;}
 void log(zodiac_log_level level,std::string_view message) const noexcept;
 private:
 friend struct HostAbi;
@@ -69,6 +72,7 @@ Table table_;
 asIScriptEngine* engine_;
 std::string current_module_;
 LogHandler log_handler_;
+mutable std::size_t registration_failures_=0;
 std::deque<Binding> bindings_;
 };
 }

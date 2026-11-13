@@ -24,12 +24,19 @@ constexpr uint32_t g_dependency_count=1;
 const char* const* const g_dependency_list=nullptr;
 constexpr uint32_t g_dependency_count=0;
 #endif
+[[maybe_unused]] void unused_function(zodiac_call*)
+{
+}
 int register_module(zodiac_host* host)
 {
 g_host=host;
 host->log(host,ZODIAC_LOG_INFO,ZODIAC_FIXTURE_NAME " register");
 #ifdef ZODIAC_FIXTURE_LOG_ERROR
 host->log(host,ZODIAC_LOG_ERROR,ZODIAC_FIXTURE_LOG_ERROR);
+#endif
+#ifdef ZODIAC_FIXTURE_BAD_DECL
+// The host rejects this declaration; the module ignores the code and returns OK, so only the host's failure count reveals it.
+host->register_function(host,"this is not a declaration",&unused_function,nullptr);
 #endif
 return ZODIAC_FIXTURE_RESULT;
 }

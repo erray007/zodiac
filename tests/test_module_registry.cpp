@@ -145,19 +145,61 @@ REQUIRE(registry.register_all(fixture.host).has_value());
 CHECK(log_messages(fixture)==std::vector<std::string>{"dep_child register","dep_grandchild register"});
 registry.shutdown_all();
 CHECK(log_messages(fixture)==std::vector<std::string>{"dep_child register","dep_grandchild register","dep_grandchild shutdown","dep_child shutdown"});
-CHECK(registry.ordered().empty());
+CHECK(registry.ordered().size()==3);
 }
 
-TEST_CASE("an error logged during registration fails the module and is still forwarded")
+TEST_CASE("a module's own logged error is forwarded but does not fail it")
 {
 zodiac::ModuleRegistry registry;
 ScriptFixture fixture;
 REQUIRE(registry.load(std::vector<std::string>{"logs_error"},search()).has_value());
 const auto result=registry.register_all(fixture.host);
-REQUIRE_FALSE(result.has_value());
-CHECK(result.error()=="module \"logs_error\" failed to register: fixture refuses to register");
+INFO(reason(result));
+REQUIRE(result.has_value());
 CHECK(contains(log_messages(fixture),"fixture refuses to register"));
 CHECK(fixture.host.current_module()=="test");
+registry.shutdown_all();
+}
+
+TEST_CASE("a registration the host rejected fails the module with the host's message")
+{
+zodiac::ModuleRegistry registry;
+ScriptFixture fixture;
+REQUIRE(registry.load(std::vector<std::string>{"bad_decl"},search()).has_value());
+const auto result=registry.register_all(fixture.host);
+REQUIRE_FALSE(result.has_value());
+const std::string prefix="module \"bad_decl\" failed to register: module bad_decl: cannot register \"this is not a declaration\"";
+CHECK(result.error().compare(0,prefix.size(),prefix)==0);
+CHECK(contains(log_messages(fixture),result.error().substr(std::string("module \"bad_decl\" failed to register: ").size())));
+CHECK(fixture.host.current_module()=="test");
+registry.shutdown_all();
+}
+
+TEST_CASE("teardown: shutdown_all while the host is alive, then engine and host, then the registry")
+{
+std::vector<std::string> seen;
+{
+zodiac::ModuleRegistry registry;
+{
+ScriptFixture fixture;
+REQUIRE(registry.load(std::vector<std::string>{"dep_child"},search()).has_value());
+REQUIRE(registry.register_all(fixture.host).has_value());
+registry.shutdown_all();
+seen=log_messages(fixture);
+}
+}
+CHECK(contains(seen,"dep_child shutdown"));
+}
+
+TEST_CASE("destroying the registry without shutdown_all never calls shutdown_module")
+{
+ScriptFixture fixture;
+{
+zodiac::ModuleRegistry registry;
+REQUIRE(registry.load(std::vector<std::string>{"dep_child"},search()).has_value());
+REQUIRE(registry.register_all(fixture.host).has_value());
+}
+CHECK_FALSE(contains(log_messages(fixture),"dep_child shutdown"));
 }
 
 TEST_CASE("a failing return code names the module and the code, and the module is not shut down")
