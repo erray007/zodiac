@@ -29,7 +29,7 @@ const std::string& current_module() const noexcept{return current_module_;}
 void set_current_module(std::string_view name){current_module_.assign(name);}
 // The default handler discards. Called for registration errors and plugin log() calls, possibly from script threads.
 void set_log_handler(LogHandler handler){log_handler_=std::move(handler);}
-void log(zodiac_log_level level,std::string_view message) const;
+void log(zodiac_log_level level,std::string_view message) const noexcept;
 private:
 friend struct HostAbi;
 // What a script-visible value is, resolved once at registration so calls never inspect AngelScript type metadata.
@@ -55,8 +55,9 @@ struct Table{
 zodiac_host abi;
 Host* owner;
 };
-int fail(int code,std::string_view declaration,std::string_view reason) const;
-int fail_engine(int engine_code,std::string_view declaration) const;
+// Both never throw: a failed message allocation or a throwing log handler only drops the message.
+int fail(int code,std::string_view declaration,std::string_view reason) const noexcept;
+int fail_engine(int engine_code,std::string_view declaration) const noexcept;
 enum class Target:std::uint8_t{function,method,factory};
 int register_generic(Target target,const char* type_name,const char* declaration,zodiac_generic_fn fn,void* user_data);
 int register_native(const char* declaration,void (*fn)(void));

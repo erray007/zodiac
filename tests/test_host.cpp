@@ -1,5 +1,6 @@
 #include "script_fixture.hpp"
 #include <atomic>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -315,6 +316,26 @@ g_abi->log(fixture.abi(),ZODIAC_LOG_WARNING,"careful");
 REQUIRE(fixture.logs.size()==1);
 CHECK(fixture.logs.front().level==ZODIAC_LOG_WARNING);
 CHECK(fixture.logs.front().message=="careful");
+}
+
+TEST_CASE("a throwing log handler never escapes through the ABI")
+{
+ScriptFixture fixture;
+g_abi=fixture.abi();
+int calls=0;
+fixture.host.set_log_handler([&calls](zodiac_log_level,std::string_view){++calls;throw std::runtime_error("handler failed");});
+REQUIRE(g_abi->register_function(fixture.abi(),"int dup()",noop,nullptr)==ZODIAC_OK);
+CHECK(g_abi->register_function(fixture.abi(),"int dup()",noop,nullptr)==ZODIAC_E_ALREADY_REGISTERED);
+auto fn=reinterpret_cast<void(*)(void)>(&native_add);
+CHECK(g_abi->register_native_function(fixture.abi(),"void f(string)",fn)==ZODIAC_E_NOT_PRIMITIVE);
+g_abi->log(fixture.abi(),ZODIAC_LOG_INFO,"still alive");
+CHECK(calls==3);
+// Call-time error paths that log (unknown ret_array element type, mismatched ret_*) also return normally.
+REQUIRE(g_abi->register_function(fixture.abi(),"array<float>@ bad()",bad_element_type,nullptr)==ZODIAC_OK);
+REQUIRE(g_abi->register_function(fixture.abi(),"string wrong()",read_user_data,&g_user_value)==ZODIAC_OK);
+REQUIRE(fixture.run("bool main(){return bad() is null&&wrong()==\"\";}","bool main()")==asEXECUTION_FINISHED);
+CHECK(fixture.context->GetReturnByte()==1);
+CHECK(calls==5);
 }
 
 TEST_CASE("invalid arguments are rejected")

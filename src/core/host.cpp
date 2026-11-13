@@ -2,6 +2,7 @@
 #include <angelscript.h>
 #include <scriptarray/scriptarray.h>
 #include <bit>
+#include <charconv>
 #include <cstddef>
 #include <cstring>
 #include <new>
@@ -132,10 +133,15 @@ bool is_string_array(const CScriptArray* array) noexcept
 return is_std_string(array->GetArrayObjectType()->GetSubType());
 }
 // Geometric growth so repeated pushes stay amortized O(1); CScriptArray itself grows to the exact size.
-void grow_to(CScriptArray* array,asUINT size) noexcept
+void grow_to(CScriptArray* array,asUINT size)
 {
 array->Reserve(size<=(asUINT(1)<<31)?std::bit_ceil(size):size);
 array->Resize(size);
+}
+// Only accepts noexcept functions, so every table entry is checked at compile time to never throw into plugin code.
+template<class R,class... A> constexpr auto nothrow_entry(R (*fn)(A...) noexcept) noexcept
+{
+return fn;
 }
 template<class T> T load(const void* address) noexcept
 {
@@ -175,11 +181,36 @@ const Binding& bound=binding(gen);
 if(bound.string_result)::new(gen->GetAddressOfReturnLocation()) std::string();
 bound.fn(reinterpret_cast<zodiac_call*>(gen));
 }
-static void misuse(asIScriptGeneric* gen,const Binding& bound,std::string_view accessor)
+// Raises a script exception for an allocation failure inside a call-time accessor; never throws itself.
+static void out_of_memory() noexcept
 {
+try{
+if(asIScriptContext* context=asGetActiveContext())context->SetException("out of memory");
+}
+catch(...){
+}
+}
+// Error path only. A failed message allocation or a throwing log handler drops the message.
+static void misuse(asIScriptGeneric* gen,const Binding& bound,std::string_view accessor) noexcept
+{
+try{
 std::string message(accessor);
 message.append(" does not match \"").append(gen->GetFunction()->GetDeclaration(true,true,false)).append("\"");
 bound.host->log(ZODIAC_LOG_ERROR,message);
+}
+catch(...){
+}
+}
+// Registration entry points return an error code instead of letting an exception unwind into register_module.
+template<class F> static int guarded(Host* self,const char* declaration,F&& registration) noexcept
+{
+if(!self)return ZODIAC_E_INVALID_ARGUMENT;
+try{
+return registration();
+}
+catch(...){
+return self->fail(ZODIAC_E_INVALID_ARGUMENT,declaration?declaration:"","out of memory");
+}
 }
 template<class T> static T read_number(zodiac_call* call,uint32_t index) noexcept
 {
@@ -204,7 +235,7 @@ case Kind::float64:return static_cast<T>(load<double>(address));
 default:return T();
 }
 }
-template<class T> static void write_number(zodiac_call* call,T value,std::string_view accessor)
+template<class T> static void write_number(zodiac_call* call,T value,std::string_view accessor) noexcept
 {
 asIScriptGeneric* gen=generic(call);
 const Binding& bound=binding(gen);
@@ -237,30 +268,30 @@ void** slot=static_cast<void**>(gen->GetAddressOfReturnLocation());
 if(*slot)gen->GetEngine()->ReleaseScriptObject(*slot,result.type);
 *slot=object;
 }
-static int register_function(zodiac_host* host,const char* declaration,zodiac_generic_fn fn,void* user_data)
+static int register_function(zodiac_host* host,const char* declaration,zodiac_generic_fn fn,void* user_data) noexcept
 {
 Host* self=owner(host);
-return self?self->register_generic(Host::Target::function,nullptr,declaration,fn,user_data):ZODIAC_E_INVALID_ARGUMENT;
+return guarded(self,declaration,[&]{return self->register_generic(Host::Target::function,nullptr,declaration,fn,user_data);});
 }
-static int register_native_function(zodiac_host* host,const char* declaration,void (*fn)(void))
+static int register_native_function(zodiac_host* host,const char* declaration,void (*fn)(void)) noexcept
 {
 Host* self=owner(host);
-return self?self->register_native(declaration,fn):ZODIAC_E_INVALID_ARGUMENT;
+return guarded(self,declaration,[&]{return self->register_native(declaration,fn);});
 }
-static int register_ref_type(zodiac_host* host,const char* name,void (*add_ref)(void*),void (*release)(void*))
+static int register_ref_type(zodiac_host* host,const char* name,void (*add_ref)(void*),void (*release)(void*)) noexcept
 {
 Host* self=owner(host);
-return self?self->register_ref_type(name,add_ref,release):ZODIAC_E_INVALID_ARGUMENT;
+return guarded(self,name,[&]{return self->register_ref_type(name,add_ref,release);});
 }
-static int register_method(zodiac_host* host,const char* type_name,const char* declaration,zodiac_generic_fn fn,void* user_data)
+static int register_method(zodiac_host* host,const char* type_name,const char* declaration,zodiac_generic_fn fn,void* user_data) noexcept
 {
 Host* self=owner(host);
-return self?self->register_generic(Host::Target::method,type_name,declaration,fn,user_data):ZODIAC_E_INVALID_ARGUMENT;
+return guarded(self,declaration,[&]{return self->register_generic(Host::Target::method,type_name,declaration,fn,user_data);});
 }
-static int register_factory(zodiac_host* host,const char* type_name,const char* declaration,zodiac_generic_fn fn,void* user_data)
+static int register_factory(zodiac_host* host,const char* type_name,const char* declaration,zodiac_generic_fn fn,void* user_data) noexcept
 {
 Host* self=owner(host);
-return self?self->register_generic(Host::Target::factory,type_name,declaration,fn,user_data):ZODIAC_E_INVALID_ARGUMENT;
+return guarded(self,declaration,[&]{return self->register_generic(Host::Target::factory,type_name,declaration,fn,user_data);});
 }
 static void* call_user_data(zodiac_call* call) noexcept
 {
@@ -310,27 +341,27 @@ asIScriptGeneric* gen=generic(call);
 const Value* value=param(gen,index);
 return value&&value->kind==Kind::array?reinterpret_cast<zodiac_array*>(gen->GetArgObject(index)):nullptr;
 }
-static void ret_int32(zodiac_call* call,int32_t value)
+static void ret_int32(zodiac_call* call,int32_t value) noexcept
 {
 write_number(call,value,"ret_int32");
 }
-static void ret_int64(zodiac_call* call,int64_t value)
+static void ret_int64(zodiac_call* call,int64_t value) noexcept
 {
 write_number(call,value,"ret_int64");
 }
-static void ret_float(zodiac_call* call,float value)
+static void ret_float(zodiac_call* call,float value) noexcept
 {
 write_number(call,value,"ret_float");
 }
-static void ret_double(zodiac_call* call,double value)
+static void ret_double(zodiac_call* call,double value) noexcept
 {
 write_number(call,value,"ret_double");
 }
-static void ret_bool(zodiac_call* call,int value)
+static void ret_bool(zodiac_call* call,int value) noexcept
 {
 write_number(call,value!=0,"ret_bool");
 }
-static void ret_string(zodiac_call* call,const char* data,size_t length)
+static void ret_string(zodiac_call* call,const char* data,size_t length) noexcept
 {
 asIScriptGeneric* gen=generic(call);
 const Binding& bound=binding(gen);
@@ -339,10 +370,15 @@ misuse(gen,bound,"ret_string");
 return;
 }
 std::string& result=*static_cast<std::string*>(gen->GetAddressOfReturnLocation());
+try{
 if(data)result.assign(data,length);
 else result.clear();
 }
-static void ret_object(zodiac_call* call,void* object)
+catch(...){
+out_of_memory();
+}
+}
+static void ret_object(zodiac_call* call,void* object) noexcept
 {
 asIScriptGeneric* gen=generic(call);
 const Binding& bound=binding(gen);
@@ -353,16 +389,20 @@ return;
 }
 return_handle(gen,bound.result,object);
 }
-static zodiac_array* ret_array(zodiac_call* call,const char* element_type,uint32_t reserve)
+static zodiac_array* ret_array(zodiac_call* call,const char* element_type,uint32_t reserve) noexcept
 {
 asIScriptGeneric* gen=generic(call);
 const Binding& bound=binding(gen);
 const std::string_view element=element_type?element_type:"";
 const Kind kind=element=="string"?Kind::string:element=="int"?Kind::int32:element=="double"?Kind::float64:Kind::other;
 if(kind==Kind::other){
+try{
 std::string message="ret_array: unknown element type \"";
 message.append(element).append("\" (expected \"string\", \"int\" or \"double\")");
 bound.host->log(ZODIAC_LOG_ERROR,message);
+}
+catch(...){
+}
 return nullptr;
 }
 const Value& result=bound.result;
@@ -370,9 +410,17 @@ if(result.kind!=Kind::array||!result.handle||result.element!=kind){
 misuse(gen,bound,"ret_array");
 return nullptr;
 }
-CScriptArray* array=CScriptArray::Create(result.type);
+CScriptArray* array=nullptr;
+try{
+array=CScriptArray::Create(result.type);
+if(array&&reserve)array->Reserve(reserve<=(uint32_t(1)<<31)?std::bit_ceil(reserve):reserve);
+}
+catch(...){
+if(array)array->Release();
+out_of_memory();
+return nullptr;
+}
 if(!array)return nullptr;
-if(reserve)array->Reserve(reserve<=(uint32_t(1)<<31)?std::bit_ceil(reserve):reserve);
 return_handle(gen,result,array);
 return reinterpret_cast<zodiac_array*>(array);
 }
@@ -397,35 +445,54 @@ static double array_get_double(zodiac_array* array,uint32_t index) noexcept
 CScriptArray* items=to_array(array);
 return items&&index<items->GetSize()&&items->GetElementTypeId()==asTYPEID_DOUBLE?load<double>(items->At(index)):0.0;
 }
-static void array_push_string(zodiac_array* array,const char* data,size_t length)
+static void array_push_string(zodiac_array* array,const char* data,size_t length) noexcept
 {
 CScriptArray* items=to_array(array);
 if(!items||!is_string_array(items))return;
+try{
 const asUINT size=items->GetSize();
 grow_to(items,size+1);
 if(std::string* text=static_cast<std::string*>(items->At(size));text&&data)text->assign(data,length);
+}
+catch(...){
+out_of_memory();
+}
 }
 static void array_push_int32(zodiac_array* array,int32_t value) noexcept
 {
 CScriptArray* items=to_array(array);
 if(!items||items->GetElementTypeId()!=asTYPEID_INT32)return;
+try{
 const asUINT size=items->GetSize();
 grow_to(items,size+1);
 if(void* slot=items->At(size))store(slot,value);
+}
+catch(...){
+out_of_memory();
+}
 }
 static void array_push_double(zodiac_array* array,double value) noexcept
 {
 CScriptArray* items=to_array(array);
 if(!items||items->GetElementTypeId()!=asTYPEID_DOUBLE)return;
+try{
 const asUINT size=items->GetSize();
 grow_to(items,size+1);
 if(void* slot=items->At(size))store(slot,value);
 }
+catch(...){
+out_of_memory();
+}
+}
 static void set_exception(zodiac_call*,const char* message) noexcept
 {
+try{
 if(asIScriptContext* context=asGetActiveContext())context->SetException(message?message:"");
 }
-static void log(zodiac_host* host,zodiac_log_level level,const char* message)
+catch(...){
+}
+}
+static void log(zodiac_host* host,zodiac_log_level level,const char* message) noexcept
 {
 if(const Host* self=owner(host))self->log(level,message?message:"");
 }
@@ -436,57 +503,66 @@ Host::Host(asIScriptEngine* engine):table_{},engine_(engine)
 zodiac_host& abi=table_.abi;
 abi.abi_version=ZODIAC_ABI_VERSION;
 abi.struct_size=sizeof(zodiac_host);
-abi.register_function=&HostAbi::register_function;
-abi.register_native_function=&HostAbi::register_native_function;
-abi.register_ref_type=&HostAbi::register_ref_type;
-abi.register_method=&HostAbi::register_method;
-abi.register_factory=&HostAbi::register_factory;
-abi.call_user_data=&HostAbi::call_user_data;
-abi.call_object=&HostAbi::call_object;
-abi.arg_int32=&HostAbi::arg_int32;
-abi.arg_int64=&HostAbi::arg_int64;
-abi.arg_float=&HostAbi::arg_float;
-abi.arg_double=&HostAbi::arg_double;
-abi.arg_bool=&HostAbi::arg_bool;
-abi.arg_string=&HostAbi::arg_string;
-abi.arg_object=&HostAbi::arg_object;
-abi.arg_array=&HostAbi::arg_array;
-abi.ret_int32=&HostAbi::ret_int32;
-abi.ret_int64=&HostAbi::ret_int64;
-abi.ret_float=&HostAbi::ret_float;
-abi.ret_double=&HostAbi::ret_double;
-abi.ret_bool=&HostAbi::ret_bool;
-abi.ret_string=&HostAbi::ret_string;
-abi.ret_object=&HostAbi::ret_object;
-abi.ret_array=&HostAbi::ret_array;
-abi.array_length=&HostAbi::array_length;
-abi.array_get_string=&HostAbi::array_get_string;
-abi.array_get_int32=&HostAbi::array_get_int32;
-abi.array_get_double=&HostAbi::array_get_double;
-abi.array_push_string=&HostAbi::array_push_string;
-abi.array_push_int32=&HostAbi::array_push_int32;
-abi.array_push_double=&HostAbi::array_push_double;
-abi.set_exception=&HostAbi::set_exception;
-abi.log=&HostAbi::log;
+abi.register_function=nothrow_entry(&HostAbi::register_function);
+abi.register_native_function=nothrow_entry(&HostAbi::register_native_function);
+abi.register_ref_type=nothrow_entry(&HostAbi::register_ref_type);
+abi.register_method=nothrow_entry(&HostAbi::register_method);
+abi.register_factory=nothrow_entry(&HostAbi::register_factory);
+abi.call_user_data=nothrow_entry(&HostAbi::call_user_data);
+abi.call_object=nothrow_entry(&HostAbi::call_object);
+abi.arg_int32=nothrow_entry(&HostAbi::arg_int32);
+abi.arg_int64=nothrow_entry(&HostAbi::arg_int64);
+abi.arg_float=nothrow_entry(&HostAbi::arg_float);
+abi.arg_double=nothrow_entry(&HostAbi::arg_double);
+abi.arg_bool=nothrow_entry(&HostAbi::arg_bool);
+abi.arg_string=nothrow_entry(&HostAbi::arg_string);
+abi.arg_object=nothrow_entry(&HostAbi::arg_object);
+abi.arg_array=nothrow_entry(&HostAbi::arg_array);
+abi.ret_int32=nothrow_entry(&HostAbi::ret_int32);
+abi.ret_int64=nothrow_entry(&HostAbi::ret_int64);
+abi.ret_float=nothrow_entry(&HostAbi::ret_float);
+abi.ret_double=nothrow_entry(&HostAbi::ret_double);
+abi.ret_bool=nothrow_entry(&HostAbi::ret_bool);
+abi.ret_string=nothrow_entry(&HostAbi::ret_string);
+abi.ret_object=nothrow_entry(&HostAbi::ret_object);
+abi.ret_array=nothrow_entry(&HostAbi::ret_array);
+abi.array_length=nothrow_entry(&HostAbi::array_length);
+abi.array_get_string=nothrow_entry(&HostAbi::array_get_string);
+abi.array_get_int32=nothrow_entry(&HostAbi::array_get_int32);
+abi.array_get_double=nothrow_entry(&HostAbi::array_get_double);
+abi.array_push_string=nothrow_entry(&HostAbi::array_push_string);
+abi.array_push_int32=nothrow_entry(&HostAbi::array_push_int32);
+abi.array_push_double=nothrow_entry(&HostAbi::array_push_double);
+abi.set_exception=nothrow_entry(&HostAbi::set_exception);
+abi.log=nothrow_entry(&HostAbi::log);
 table_.owner=this;
 }
 
-void Host::log(zodiac_log_level level,std::string_view message) const
+// A throwing handler must never unwind into plugin code, so its exceptions are swallowed and the message is dropped.
+void Host::log(zodiac_log_level level,std::string_view message) const noexcept
 {
-if(log_handler_)log_handler_(level,message);
+if(!log_handler_)return;
+try{
+log_handler_(level,message);
+}
+catch(...){
+}
 }
 
-int Host::fail(int code,std::string_view declaration,std::string_view reason) const
+int Host::fail(int code,std::string_view declaration,std::string_view reason) const noexcept
 {
-if(log_handler_){
+if(!log_handler_)return code;
+try{
 std::string message="module ";
 message.append(current_module_).append(": cannot register \"").append(declaration).append("\": ").append(reason);
 log_handler_(ZODIAC_LOG_ERROR,message);
 }
+catch(...){
+}
 return code;
 }
 
-int Host::fail_engine(int engine_code,std::string_view declaration) const
+int Host::fail_engine(int engine_code,std::string_view declaration) const noexcept
 {
 switch(engine_code){
 case asALREADY_REGISTERED:
@@ -503,8 +579,12 @@ return fail(ZODIAC_E_UNKNOWN_TYPE,declaration,"unknown type");
 case asNOT_SUPPORTED:
 case asWRONG_CALLING_CONV:
 return fail(ZODIAC_E_INVALID_ARGUMENT,declaration,"calling convention not supported on this platform");
-default:
-return fail(ZODIAC_E_INVALID_ARGUMENT,declaration,"angelscript error "+std::to_string(engine_code));
+default:{
+char reason[40]="angelscript error ";
+const std::size_t prefix=std::strlen(reason);
+const std::to_chars_result written=std::to_chars(reason+prefix,reason+sizeof(reason),engine_code);
+return fail(ZODIAC_E_INVALID_ARGUMENT,declaration,std::string_view(reason,written.ptr-reason));
+}
 }
 }
 
