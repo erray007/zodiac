@@ -4,6 +4,7 @@
 #endif
 #include <core/project_file.hpp>
 #include <core/path_utf8.hpp>
+#include <core/text.hpp>
 #include <toml++/toml.hpp>
 #include <algorithm>
 #include <fstream>
@@ -36,9 +37,9 @@ bool valid_module_name(std::string_view name) noexcept
 {
 return !name.empty()&&std::ranges::all_of(name,[](char c){return (c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_';});
 }
-void add_unique(std::vector<std::string>& list,const std::string& value)
+void add_unique(std::vector<std::string>& list,std::string value)
 {
-if(std::ranges::find(list,value)==list.end())list.push_back(value);
+if(std::ranges::find(list,value)==list.end())list.push_back(std::move(value));
 }
 // Resolves a project-relative path from the file. Returns nullopt when it is absolute, rooted, empty or leaves root.
 std::optional<fs::path> inside_root(const fs::path& root,const std::string& text)
@@ -113,13 +114,13 @@ std::expected<std::string,std::string> read_file(const fs::path& path,const fs::
 {
 std::error_code ec;
 const bool exists=fs::is_regular_file(path,ec);
-if(ec||!exists)return fail("zodiac.toml: error: no zodiac.toml in \""+path_to_utf8(dir)+"\"");
+if(ec||!exists)return fail("zodiac.toml: error: no zodiac.toml in \""+one_line(path_to_utf8(dir))+"\"");
 const std::uintmax_t size=fs::file_size(path,ec);
 std::ifstream in(path,std::ios::binary);
-if(ec||!in)return fail("zodiac.toml: error: cannot read \""+path_to_utf8(path)+"\"");
+if(ec||!in)return fail("zodiac.toml: error: cannot read \""+one_line(path_to_utf8(path))+"\"");
 std::string content(static_cast<std::size_t>(size),'\0');
 in.read(content.data(),static_cast<std::streamsize>(size));
-if(in.gcount()!=static_cast<std::streamsize>(size))return fail("zodiac.toml: error: cannot read \""+path_to_utf8(path)+"\"");
+if(in.gcount()!=static_cast<std::streamsize>(size))return fail("zodiac.toml: error: cannot read \""+one_line(path_to_utf8(path))+"\"");
 return content;
 }
 }
@@ -129,10 +130,10 @@ std::expected<Project,std::string> load_project(const fs::path& dir)
 std::error_code ec;
 Project project;
 project.root=fs::absolute(dir,ec).lexically_normal();
-if(ec)return fail("zodiac.toml: error: invalid project directory \""+path_to_utf8(dir)+"\"");
+if(ec)return fail("zodiac.toml: error: invalid project directory \""+one_line(path_to_utf8(dir))+"\"");
 if(!project.root.has_filename()&&project.root.has_relative_path())project.root=project.root.parent_path();
-const auto content=read_file(project.root/"zodiac.toml",project.root);
-if(!content)return fail(content.error());
+auto content=read_file(project.root/"zodiac.toml",project.root);
+if(!content)return fail(std::move(content.error()));
 toml::parse_result parsed=toml::parse(*content,std::string_view("zodiac.toml"));
 if(!parsed)
 {
@@ -142,15 +143,15 @@ return fail("zodiac.toml:"+std::to_string(position.line)+":"+std::to_string(posi
 }
 const toml::table& root=parsed.table();
 const auto game=section(root,"game");
-if(!game)return fail(game.error());
+if(!game)return fail(std::move(game.error()));
 const toml::node* main_node=*game?(*game)->get("main"):nullptr;
 if(!main_node)return fail_line("[game] main is required");
 const toml::value<std::string>* main_value=main_node->as_string();
 if(!main_value)return fail_line("[game] main must be a string");
 const auto modules=section(root,"modules");
-if(!modules)return fail(modules.error());
-if(const auto result=string_array(*modules,"modules","static",project.static_modules);!result)return fail(result.error());
-if(const auto result=string_array(*modules,"modules","dynamic",project.dynamic_modules);!result)return fail(result.error());
+if(!modules)return fail(std::move(modules.error()));
+if(auto result=string_array(*modules,"modules","static",project.static_modules);!result)return fail(std::move(result.error()));
+if(auto result=string_array(*modules,"modules","dynamic",project.dynamic_modules);!result)return fail(std::move(result.error()));
 for(std::vector<std::string>* list:{&project.static_modules,&project.dynamic_modules})
 {
 std::vector<std::string> cleaned;
@@ -158,28 +159,28 @@ cleaned.reserve(list->size());
 for(std::string& name:*list)
 {
 if(name=="core")continue;
-if(!valid_module_name(name))return fail("zodiac.toml: error: module name \""+name+"\" is invalid");
-add_unique(cleaned,name);
+if(!valid_module_name(name))return fail("zodiac.toml: error: module name \""+one_line(name)+"\" is invalid");
+add_unique(cleaned,std::move(name));
 }
 *list=std::move(cleaned);
 }
 for(const std::string& name:project.static_modules)
 {
-if(std::ranges::find(project.dynamic_modules,name)!=project.dynamic_modules.end())return fail("zodiac.toml: error: module \""+name+"\" is listed as both static and dynamic");
+if(std::ranges::find(project.dynamic_modules,name)!=project.dynamic_modules.end())return fail("zodiac.toml: error: module \""+one_line(name)+"\" is listed as both static and dynamic");
 }
 const auto core=section(root,"core");
-if(!core)return fail(core.error());
+if(!core)return fail(std::move(core.error()));
 std::vector<std::string> excluded;
-if(const auto result=string_array(*core,"core","exclude",excluded);!result)return fail(result.error());
-for(const std::string& name:excluded)
+if(auto result=string_array(*core,"core","exclude",excluded);!result)return fail(std::move(result.error()));
+for(std::string& name:excluded)
 {
-if(name!="window"&&name!="keyboard")return fail("zodiac.toml: error: unknown [core] exclude entry \""+name+"\"; valid: window, keyboard");
-add_unique(project.core_exclude,name);
+if(name!="window"&&name!="keyboard")return fail("zodiac.toml: error: unknown [core] exclude entry \""+one_line(name)+"\"; valid: window, keyboard");
+add_unique(project.core_exclude,std::move(name));
 }
 const auto diagnostics=section(root,"diagnostics");
-if(!diagnostics)return fail(diagnostics.error());
-if(const auto result=output_mode(*diagnostics,"console",project.diagnostics.console);!result)return fail(result.error());
-if(const auto result=output_mode(*diagnostics,"dialog",project.diagnostics.dialog);!result)return fail(result.error());
+if(!diagnostics)return fail(std::move(diagnostics.error()));
+if(auto result=output_mode(*diagnostics,"console",project.diagnostics.console);!result)return fail(std::move(result.error()));
+if(auto result=output_mode(*diagnostics,"dialog",project.diagnostics.dialog);!result)return fail(std::move(result.error()));
 if(*diagnostics)
 {
 if(const toml::node* file_node=(*diagnostics)->get("file"))
@@ -187,14 +188,14 @@ if(const toml::node* file_node=(*diagnostics)->get("file"))
 const toml::value<std::string>* file_value=file_node->as_string();
 if(!file_value)return fail_line("[diagnostics] file must be a string");
 auto file=inside_root(project.root,file_value->get());
-if(!file)return fail("zodiac.toml: error: [diagnostics] file \""+file_value->get()+"\" must be inside the project");
+if(!file)return fail("zodiac.toml: error: [diagnostics] file \""+one_line(file_value->get())+"\" must be inside the project");
 project.diagnostics.file=std::move(*file);
 }
 }
 auto main_script=inside_root(project.root,main_value->get());
-if(!main_script)return fail("zodiac.toml: error: main script \""+main_value->get()+"\" must be inside the project");
+if(!main_script)return fail("zodiac.toml: error: main script \""+one_line(main_value->get())+"\" must be inside the project");
 const bool is_file=fs::is_regular_file(*main_script,ec);
-if(ec||!is_file)return fail("zodiac.toml: error: main script \""+main_value->get()+"\" does not exist");
+if(ec||!is_file)return fail("zodiac.toml: error: main script \""+one_line(main_value->get())+"\" does not exist");
 project.main_script=std::move(*main_script);
 return project;
 }

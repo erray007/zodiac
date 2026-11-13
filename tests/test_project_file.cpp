@@ -1,5 +1,6 @@
 #include <core/path_utf8.hpp>
 #include <core/project_file.hpp>
+#include <core/text.hpp>
 #include <doctest/doctest.h>
 #include <atomic>
 #include <cstdint>
@@ -223,11 +224,18 @@ TempProject project;
 project.main_script();
 const std::u8string outside_u8=(project.dir().parent_path()/"x.zs").generic_u8string();
 const std::string outside(reinterpret_cast<const char*>(outside_u8.data()),outside_u8.size());
-for(const std::string& path:{std::string("../x.zs"),std::string("sub/../../x.zs"),std::string("/x.zs"),std::string("C:/x.zs"),std::string("."),outside})
+for(const std::string& path:{std::string("../x.zs"),std::string("sub/../../x.zs"),std::string("/x.zs"),std::string("."),outside})
 {
 project.toml("[game]\nmain = \""+path+"\"\n");
 CHECK(error_of(project)=="zodiac.toml: error: main script \""+path+"\" must be inside the project");
 }
+#ifdef _WIN32
+for(const std::string& path:{std::string("C:/x.zs"),std::string("C:x.zs")})
+{
+project.toml("[game]\nmain = \""+path+"\"\n");
+CHECK(error_of(project)=="zodiac.toml: error: main script \""+path+"\" must be inside the project");
+}
+#endif
 }
 
 TEST_CASE("diagnostics file must stay inside the project")
@@ -239,3 +247,18 @@ CHECK(error_of(project)=="zodiac.toml: error: [diagnostics] file \"../zodiac.log
 project.toml("[game]\nmain = \"main.zs\"\n[diagnostics]\nfile = \"/zodiac.log\"\n");
 CHECK(error_of(project)=="zodiac.toml: error: [diagnostics] file \"/zodiac.log\" must be inside the project");
 }
+
+TEST_CASE("echoed user text stays on one line")
+{
+TempProject project;
+project.main_script();
+project.toml("[game]\nmain = \"main.zs\"\n[modules]\nstatic = [\"a\\nb\"]\n");
+CHECK(error_of(project)=="zodiac.toml: error: module name \"a\\nb\" is invalid");
+project.toml("[game]\nmain = \"x\\ty\\u0001.zs\"\n");
+CHECK(error_of(project)=="zodiac.toml: error: main script \"x\\ty\\x01.zs\" does not exist");
+project.toml("[game]\nmain = \"main.zs\"\n[core]\nexclude = [\"p\\rq\"]\n");
+CHECK(error_of(project)=="zodiac.toml: error: unknown [core] exclude entry \"p\\rq\"; valid: window, keyboard");
+project.toml("[game]\nmain = \"main.zs\"\n[diagnostics]\nfile = \"../a\\nb\"\n");
+CHECK(error_of(project)=="zodiac.toml: error: [diagnostics] file \"../a\\nb\" must be inside the project");
+}
+
