@@ -29,6 +29,7 @@ const std::string& current_module() const noexcept{return current_module_;}
 void set_current_module(std::string_view name){current_module_.assign(name);}
 // The default handler discards. Called for registration errors and plugin log() calls, possibly from script threads.
 void set_log_handler(LogHandler handler){log_handler_=std::move(handler);}
+const LogHandler& log_handler() const noexcept{return log_handler_;}
 void log(zodiac_log_level level,std::string_view message) const noexcept;
 private:
 friend struct HostAbi;
