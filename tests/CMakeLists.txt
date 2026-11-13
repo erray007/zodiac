@@ -48,6 +48,7 @@ zodiac_fixture_module(bad_decl BAD_DECL)
 zodiac_fixture_module(fails_code RESULT -2)
 zodiac_add_module(no_entry SOURCES fixtures/modules/no_entry.cpp NO_STATIC OUTPUT_DIRECTORY "${ZODIAC_TEST_MODULE_DIR}")
 configure_file(fixtures/modules/corrupt_module.txt "${ZODIAC_TEST_MODULE_DIR}/zodiac_mod_corrupt${CMAKE_SHARED_LIBRARY_SUFFIX}" COPYONLY)
+zodiac_add_test(test_project_file SOURCES test_project_file.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_module_registry SOURCES test_module_registry.cpp script_fixture.hpp LIBRARIES zodiac_core)
 target_compile_definitions(test_module_registry PRIVATE
 "ZODIAC_TEST_MODULE_DIR=\"${CMAKE_BINARY_DIR}/modules\""
