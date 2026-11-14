@@ -23,8 +23,8 @@ jobs:
       - name: Cache dependency downloads
         uses: actions/cache@v4
         with:
-          path: build/windows-debug/_deps
-          key: deps-windows-${{ hashFiles('cmake/Dependencies.cmake') }}
+          path: .deps
+          key: deps-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake') }}
       - name: Bootstrap
         run: python bootstrap.py
       - name: Build and test
@@ -54,8 +54,16 @@ jobs:
       - name: Cache dependency downloads
         uses: actions/cache@v4
         with:
-          path: build/linux-debug/_deps
-          key: deps-linux-${{ hashFiles('cmake/Dependencies.cmake') }}
+          path: .deps
+          key: deps-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake') }}
+      - name: Install and select clang 18
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18
+          echo "CC=clang-18" >> "$GITHUB_ENV"
+          echo "CXX=clang++-18" >> "$GITHUB_ENV"
+      - name: Show compiler version
+        run: clang-18 --version
       - name: Bootstrap
         run: python bootstrap.py
       - name: Build and test

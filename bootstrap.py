@@ -203,7 +203,7 @@ def detect_host() -> str:
 
 
 def clang_major_version():
-    clang = shutil.which("clang")
+    clang = shutil.which(os.environ.get("CC") or "clang")
     if not clang:
         return None
     try:

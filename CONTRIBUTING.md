@@ -11,7 +11,7 @@ Requirements: Python 3.9 or newer. On Linux you also need clang 17 or newer from
 2. Build and run every test (use `linux` instead of `windows` on Linux):
    `.tools/cmake/bin/cmake --workflow --preset windows`
 
-The build output goes to build/windows-debug.
+The build output goes to build/windows-debug. On Linux the build uses `clang` and `clang++` from your PATH, or the compilers named by the CC and CXX environment variables if you set them.
 
 ## Build one target
 
