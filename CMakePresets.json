@@ -23,7 +23,10 @@
 "cacheVariables": {
 "CMAKE_C_COMPILER": "clang",
 "CMAKE_CXX_COMPILER": "clang++",
-"CMAKE_MAKE_PROGRAM": "${sourceDir}/.tools/ninja/ninja"
+"CMAKE_MAKE_PROGRAM": "${sourceDir}/.tools/ninja/ninja",
+"CMAKE_EXE_LINKER_FLAGS": "-static-libstdc++ -static-libgcc",
+"CMAKE_SHARED_LINKER_FLAGS": "-static-libstdc++ -static-libgcc",
+"CMAKE_MODULE_LINKER_FLAGS": "-static-libstdc++ -static-libgcc"
 },
 "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
 },

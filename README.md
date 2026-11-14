@@ -10,6 +10,14 @@ Requirements: Python 3.9 or newer.
    `python bootstrap.py`
 2. Build and test on Windows (use the preset name shown by the bootstrap script on other systems):
    `.tools/cmake/bin/cmake --workflow --preset windows`
+3. Create a new game project:
+   `build/windows-debug/bin/zodiac new mygame`
+4. Run it:
+   `build/windows-debug/bin/zodiac run mygame`
+
+On Linux, replace `windows` with `linux` in the preset and in the build folder name.
+
+To contribute, read CONTRIBUTING.md.
 
 ## Notes
 

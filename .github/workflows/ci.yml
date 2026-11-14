@@ -1,0 +1,71 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache toolchain
+        uses: actions/cache@v4
+        with:
+          path: .tools
+          key: tools-windows-${{ hashFiles('tools/toolchain.json') }}
+      - name: Cache dependency downloads
+        uses: actions/cache@v4
+        with:
+          path: build/windows-debug/_deps
+          key: deps-windows-${{ hashFiles('cmake/Dependencies.cmake') }}
+      - name: Bootstrap
+        run: python bootstrap.py
+      - name: Build and test
+        run: .tools/cmake/bin/cmake --workflow --preset windows
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-windows
+          path: |
+            build/**/Testing/**/*.log
+            build/**/Testing/**/*.xml
+          if-no-files-found: ignore
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache toolchain
+        uses: actions/cache@v4
+        with:
+          path: .tools
+          key: tools-linux-${{ hashFiles('tools/toolchain.json') }}
+      - name: Cache dependency downloads
+        uses: actions/cache@v4
+        with:
+          path: build/linux-debug/_deps
+          key: deps-linux-${{ hashFiles('cmake/Dependencies.cmake') }}
+      - name: Bootstrap
+        run: python bootstrap.py
+      - name: Build and test
+        run: .tools/cmake/bin/cmake --workflow --preset linux
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-linux
+          path: |
+            build/**/Testing/**/*.log
+            build/**/Testing/**/*.xml
+          if-no-files-found: ignore
