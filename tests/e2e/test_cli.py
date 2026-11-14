@@ -73,6 +73,24 @@ class CliTest(unittest.TestCase):
         self.assertEqual(len(err.splitlines()), 1)
         self.assertIn('module "no_such_module" not found', err)
 
+    def test_main_return_value_is_exit_code(self):
+        project = self.root / "game"
+        self.make_project(project, [], "int main()\n{\nreturn 7;\n}\n")
+        code, out, err = zodiac("run", str(project), "--module-dir", MODULE_DIR)
+        self.assertEqual((code, out, err), (7, "", ""))
+
+    def test_main_return_value_out_of_range_warns_and_exits_1(self):
+        project = self.root / "game"
+        self.make_project(project, [], "int main()\n{\nreturn 256;\n}\n")
+        code, out, err = zodiac("run", str(project), "--module-dir", MODULE_DIR)
+        self.assertEqual(code, 1)
+        self.assertEqual(err.splitlines(), ["warning: main() returned 256; exit codes must be 0-255, using 1"])
+        project = self.root / "game2"
+        self.make_project(project, [], "int main()\n{\nreturn -1;\n}\n")
+        code, out, err = zodiac("run", str(project), "--module-dir", MODULE_DIR)
+        self.assertEqual(code, 1)
+        self.assertEqual(err.splitlines(), ["warning: main() returned -1; exit codes must be 0-255, using 1"])
+
     def test_compile_error_exit_1(self):
         project = self.root / "game"
         self.make_project(project, [], "void main()\n{\nint(zz);\n}\n")

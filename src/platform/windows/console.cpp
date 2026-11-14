@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <io.h>
 #include <climits>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -32,6 +33,8 @@ size-=written;
 void disable_error_dialogs() noexcept
 {
 SetErrorMode(GetErrorMode()|SEM_FAILCRITICALERRORS|SEM_NOOPENFILEERRORBOX);
+// abort() (also reached through std::terminate) must neither print a message box nor start Windows error reporting.
+_set_abort_behavior(0,_WRITE_ABORT_MSG|_CALL_REPORTFAULT);
 }
 void setup_utf8_console() noexcept
 {

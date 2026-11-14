@@ -12,6 +12,7 @@
 #include <platform/process.hpp>
 #include <zodiac/plugin.h>
 #include <algorithm>
+#include <exception>
 #include <fstream>
 #include <memory>
 #include <span>
@@ -110,7 +111,7 @@ platform::write_stdout_line("zodiac modules: list the modules found in the modul
 platform::write_stdout_line("zodiac help: show this list");
 platform::write_stdout_line("zodiac --version: show the version");
 platform::write_stdout_line("options for run and modules: --module-dir <dir> adds a module directory (repeatable), --log-file <path> also writes messages to a file");
-platform::write_stdout_line("exit codes: 0 success, 1 script error, 2 usage, project or module error");
+platform::write_stdout_line("exit codes: 0 success, 1 script error, 2 usage/project/module error, otherwise the value returned by int main() (0-255)");
 return exit_ok;
 }
 
@@ -137,7 +138,13 @@ return exit_usage_error;
 if(options.log_file.empty()&&!project->diagnostics.file.empty()&&!diagnostics.add_file_sink(project->diagnostics.file))return exit_usage_error;
 ScriptRuntime runtime(diagnostics,ModuleSearchPaths{search_dirs(options)});
 if(const int code=runtime.build(*project);code!=0)return code;
-return runtime.run();
+const int result=runtime.run();
+// A process status is 0-255 on every platform (POSIX masks it to 8 bits), so anything else would be silently changed.
+if(result<0||result>255){
+diagnostics.report(ZODIAC_LOG_WARNING,"warning: main() returned "+std::to_string(result)+"; exit codes must be 0-255, using 1");
+return 1;
+}
+return result;
 }
 
 struct ModuleLine{
@@ -293,10 +300,13 @@ int run(std::span<const std::string> args)
 {
 platform::disable_error_dialogs();
 platform::setup_utf8_console();
+Diagnostics diagnostics;
+bool console_ready=false;
+try{
 const Options options=parse_arguments(args);
 // The console sink goes first: a log file that cannot be opened is reported to the sinks added before it.
-Diagnostics diagnostics;
 diagnostics.add_sink(std::make_unique<ConsoleSink>());
+console_ready=true;
 if(!options.error.empty()){
 fail(diagnostics,options.error);
 return exit_usage_error;
@@ -312,5 +322,27 @@ if(options.command=="modules")return list_modules(options,diagnostics);
 if(options.command=="new")return create_project(options,diagnostics);
 fail(diagnostics,"error: unknown command "+in_quotes(options.command)+"; run zodiac help");
 return exit_usage_error;
+}
+catch(...){
+// Nothing may reach std::terminate: on Windows that could show an abort dialog.
+std::string message="error: internal error: ";
+try{
+try{
+throw;
+}
+catch(const std::exception& exception){
+message.append(exception.what());
+}
+catch(...){
+message.append("unknown exception");
+}
+}
+catch(...){
+message="error: internal error";
+}
+if(console_ready)diagnostics.report(ZODIAC_LOG_ERROR,message);
+else platform::write_stderr_line(message);
+return 1;
+}
 }
 }
