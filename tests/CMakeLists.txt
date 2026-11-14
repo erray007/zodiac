@@ -63,3 +63,10 @@ target_compile_definitions(test_script_runtime PRIVATE
 "ZODIAC_TEST_MODULE_DIR=\"${CMAKE_BINARY_DIR}/modules\""
 )
 add_dependencies(test_script_runtime zodiac_mod_example)
+find_program(ZODIAC_PYTHON NAMES python3 python)
+if(ZODIAC_PYTHON)
+add_test(NAME cli_e2e COMMAND ${ZODIAC_PYTHON} -I -m unittest discover -v -s ${CMAKE_CURRENT_SOURCE_DIR}/e2e -p "test_*.py")
+set_tests_properties(cli_e2e PROPERTIES ENVIRONMENT "ZODIAC_EXE=$<TARGET_FILE:zodiac>;ZODIAC_MODULE_DIR=${CMAKE_BINARY_DIR}/modules;ZODIAC_VERSION=${PROJECT_VERSION};PYTHONIOENCODING=utf-8")
+else()
+message(WARNING "Python was not found: the CLI end-to-end tests are not registered")
+endif()

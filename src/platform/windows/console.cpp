@@ -10,12 +10,12 @@
 
 namespace zodiac::platform {
 namespace {
-// The handle behind C runtime descriptor 2, so redirections made through the runtime (dup2, freopen) are honoured.
-HANDLE stderr_handle() noexcept
+// The handle behind C runtime descriptor fd, so redirections made through the runtime (dup2, freopen) are honoured.
+HANDLE stream_handle(int fd,DWORD standard) noexcept
 {
-const std::intptr_t handle=_get_osfhandle(2);
+const std::intptr_t handle=_get_osfhandle(fd);
 if(handle!=-1&&handle!=-2)return reinterpret_cast<HANDLE>(handle);
-return GetStdHandle(STD_ERROR_HANDLE);
+return GetStdHandle(standard);
 }
 template<typename Char,typename Write>
 void write_all(const Char* data,std::size_t size,Write write) noexcept
@@ -38,9 +38,9 @@ void setup_utf8_console() noexcept
 SetConsoleOutputCP(CP_UTF8);
 SetConsoleCP(CP_UTF8);
 }
-void write_stderr_line(std::string_view line) noexcept
+namespace {
+void write_line(HANDLE handle,std::string_view line) noexcept
 {
-const HANDLE handle=stderr_handle();
 if(handle==nullptr||handle==INVALID_HANDLE_VALUE)return;
 // MultiByteToWideChar counts in int; longer lines are cut, which no diagnostic ever reaches.
 if(line.size()>static_cast<std::size_t>(INT_MAX)-1)line=line.substr(0,static_cast<std::size_t>(INT_MAX)-1);
@@ -69,5 +69,14 @@ write_all(bytes.data(),bytes.size(),[handle](const char* data,DWORD size,DWORD* 
 }
 catch(...){
 }
+}
+}
+void write_stderr_line(std::string_view line) noexcept
+{
+write_line(stream_handle(2,STD_ERROR_HANDLE),line);
+}
+void write_stdout_line(std::string_view line) noexcept
+{
+write_line(stream_handle(1,STD_OUTPUT_HANDLE),line);
 }
 }
