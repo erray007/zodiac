@@ -1,0 +1,4 @@
+[game]
+main = "main.zs"
+[modules]
+static = ["ref_object"]

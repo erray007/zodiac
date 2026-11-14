@@ -1,11 +1,13 @@
 // zodiac::ModuleRegistry finds, loads, orders and registers Zodiac modules (shared libraries exporting zodiac_module_get_info).
 //
 // Teardown order (the registry owns the libraries, and the engine may point into module code):
-// 1. call shutdown_all() while the Host and script engine are still alive, 2. destroy the engine and Host, 3. destroy the registry.
+// 1. release every script object (discard the script modules, run a full garbage collection), then call shutdown_all() while the Host and script engine are still alive, 2. destroy the engine and Host, 3. destroy the registry.
 // The destructor only closes libraries; it never calls shutdown_module. Threads: every call runs on the main thread.
 #pragma once
 #include <zodiac/plugin.h>
 #include <core/dynamic_library.hpp>
+#include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <span>
@@ -15,6 +17,11 @@
 
 namespace zodiac {
 class Host;
+// Size of zodiac_module_info in ABI v1. It never changes when members are appended: a module whose struct_size is smaller is refused,
+// and a member appended later is read only when the module's struct_size covers it (see module_info_provides).
+inline constexpr uint32_t module_info_v1_size=sizeof(zodiac_module_info);
+// True when info, as built by its module, contains the bytes up to field_end (offsetof plus sizeof of an appended member).
+constexpr bool module_info_provides(const zodiac_module_info& info,std::size_t field_end) noexcept{return info.struct_size>=field_end;}
 struct ModuleSearchPaths{
 std::vector<std::filesystem::path> dirs;
 // <exe_dir>/../modules, then <project_dir>/plugins.

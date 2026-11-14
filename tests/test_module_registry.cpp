@@ -86,6 +86,12 @@ const std::string prefix="module \"corrupt\" could not be loaded: ";
 REQUIRE(error.size()>prefix.size());
 CHECK(error.compare(0,prefix.size(),prefix)==0);
 CHECK(error.find('\n')==std::string::npos);
+// Windows reports error 193 with a "%1" placeholder for the file name; it must never reach the user.
+CHECK(error.find("%1")==std::string::npos);
+#if defined(_WIN32)
+CHECK(error.find("zodiac_mod_corrupt" ZODIAC_TEST_MODULE_SUFFIX)!=std::string::npos);
+CHECK(error.find("(error 193)")!=std::string::npos);
+#endif
 }
 
 TEST_CASE("library without the entry symbol")
@@ -96,6 +102,26 @@ CHECK(load_error({"no_entry"})=="module \"no_entry\" has no zodiac_module_get_in
 TEST_CASE("module needing a newer ABI is refused")
 {
 CHECK(load_error({"needs_abi_99"})=="module \"needs_abi_99\" needs ABI 99 but this Zodiac provides 1");
+}
+
+TEST_CASE("module reporting ABI version 0 is refused")
+{
+CHECK(load_error({"abi_zero"})=="module \"abi_zero\" reports ABI version 0");
+}
+
+TEST_CASE("module info smaller than the v1 structure is refused")
+{
+CHECK(load_error({"small_info"})=="module \"small_info\" has an invalid info structure");
+}
+
+TEST_CASE("module info size checks")
+{
+zodiac_module_info info{};
+info.struct_size=zodiac::module_info_v1_size;
+CHECK(zodiac::module_info_provides(info,zodiac::module_info_v1_size));
+CHECK_FALSE(zodiac::module_info_provides(info,zodiac::module_info_v1_size+1));
+info.struct_size=zodiac::module_info_v1_size+8;
+CHECK(zodiac::module_info_provides(info,zodiac::module_info_v1_size+8));
 }
 
 TEST_CASE("module reporting another name is refused")

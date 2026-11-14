@@ -29,7 +29,7 @@ fs::path from_utf8(std::string_view text)
 return fs::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()),text.size()));
 }
 fs::path fixture(std::string_view name){return from_utf8(ZODIAC_TEST_SCRIPT_DIR)/from_utf8(name);}
-zodiac::ModuleSearchPaths search(){return zodiac::ModuleSearchPaths{{from_utf8(ZODIAC_TEST_MODULE_DIR)}};}
+zodiac::ModuleSearchPaths search(){return zodiac::ModuleSearchPaths{{from_utf8(ZODIAC_TEST_MODULE_DIR),from_utf8(ZODIAC_TEST_FIXTURE_DIR)}};}
 zodiac::Project project_of(std::string_view name)
 {
 auto project=zodiac::load_project(fixture(name));
@@ -281,6 +281,23 @@ const Outcome outcome=execute("uses_module");
 INFO(join(outcome.lines));
 CHECK(outcome.build==0);
 CHECK(outcome.run==7);
+}
+
+TEST_CASE("script-held plugin objects are released before the module shuts down")
+{
+std::vector<Line> lines;
+{
+const zodiac::Project project=project_of("holds_plugin_object");
+zodiac::Diagnostics diagnostics;
+diagnostics.add_sink(std::make_unique<MemorySink>(lines));
+zodiac::ScriptRuntime runtime(diagnostics,search());
+REQUIRE(runtime.build(project)==0);
+CHECK(runtime.run()==0);
+// The global handle still holds the object, so nothing has been released yet.
+CHECK(lines.empty());
+}
+INFO(join(lines));
+CHECK(texts(lines)==std::vector<std::string>{"ref_object release","ref_object shutdown"});
 }
 
 TEST_CASE("missing module fails the build with code 2")

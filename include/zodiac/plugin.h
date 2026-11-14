@@ -2,9 +2,15 @@
 Zodiac plugin ABI v1. This header is the permanent public C contract between the engine and every module.
 
 ABI rules:
-- Append-only forever. Existing members never move, change type, or get removed. New members are added at the end of a struct only, and every struct that can grow carries struct_size so the other side can tell what is present.
+- Append-only forever. Existing members never move, change type, or get removed. New members are added at the end of a struct only.
+- Both structs that cross the boundary (zodiac_host and zodiac_module_info) carry struct_size, the sizeof the struct had when the other side was built, as their second member. A reader uses an appended member only when struct_size shows it is present.
 - Only C types cross the boundary. No AngelScript types, no C++ classes, no std:: types, no exceptions. Errors are reported through return codes or set_exception.
-- A module declares in abi_version the minimum host ABI it needs. The host refuses any module whose abi_version is newer than the host's ZODIAC_ABI_VERSION.
+- A module declares in abi_version the minimum host ABI it needs (1 or greater). The host refuses any module whose abi_version is 0 or newer than the host's ZODIAC_ABI_VERSION.
+- A module sets zodiac_module_info.struct_size to sizeof(zodiac_module_info). The host refuses a module whose struct_size is smaller than the ABI v1 size, and reads members appended after v1 only when struct_size covers them.
+
+Lifetime rules:
+- register_module is called once, after every dependency has registered.
+- shutdown_module is called once at teardown, in reverse registration order, and only if register_module succeeded. By then every script object has been released (the host discards the script modules and runs a full garbage collection first) and no registered function, method, factory or behaviour will be called again. The host is still alive, so host->log may be used inside shutdown_module.
 
 Thread rules:
 - Registration happens only on the main thread, and only inside register_module.
@@ -33,14 +39,15 @@ typedef struct zodiac_array zodiac_array;
 typedef void (*zodiac_generic_fn)(zodiac_call* call);
 typedef enum zodiac_log_level{ZODIAC_LOG_INFO=0,ZODIAC_LOG_WARNING=1,ZODIAC_LOG_ERROR=2}zodiac_log_level;
 typedef struct zodiac_module_info{
-uint32_t abi_version;          /* minimum host ABI this module needs */
-const char* name;              /* "example"; [a-z0-9_]+ */
+uint32_t abi_version;          /* minimum host ABI this module needs; 1 or greater */
+uint32_t struct_size;          /* sizeof(zodiac_module_info) of the module */
+const char* name;             /* "example"; [a-z0-9_]+ */
 const char* version;           /* semver */
 const char* license;           /* SPDX id, e.g. "Zlib" */
 const char* const* dependencies;
 uint32_t dependency_count;
 int (*register_module)(zodiac_host* host);   /* ZODIAC_OK or negative code */
-void (*shutdown_module)(void);               /* may be NULL */
+void (*shutdown_module)(void);               /* may be NULL; see the lifetime rules above */
 }zodiac_module_info;
 struct zodiac_host{
 uint32_t abi_version;

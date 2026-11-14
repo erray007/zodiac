@@ -42,7 +42,8 @@ std::string section_name(const std::filesystem::path& file) const;
 void report_exception();
 Diagnostics& diagnostics_;
 ModuleSearchPaths search_paths_;
-// Teardown contract: the destructor calls registry_.shutdown_all(), releases the context, shuts the engine down, then host_ and registry_ (last, unloading module code) are destroyed in reverse declaration order.
+// Teardown contract: the destructor releases the context, discards the script module and runs a full garbage collection (so no script
+// object outlives its module), calls registry_.shutdown_all(), shuts the engine down, then host_ and registry_ (last, unloading module code) are destroyed in reverse declaration order.
 ModuleRegistry registry_;
 asIScriptEngine* engine_;
 Host host_;

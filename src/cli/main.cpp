@@ -177,6 +177,10 @@ if(!info){
 fail(diagnostics,"error: cannot read module "+in_quotes(shown)+": it returned no module info");
 return false;
 }
+if(!module_info_provides(*info,module_info_v1_size)){
+fail(diagnostics,"error: cannot read module "+in_quotes(shown)+": it has an invalid info structure");
+return false;
+}
 // The strings live in the library, so they are copied before it is unloaded.
 ModuleLine line;
 line.name=or_empty(info->name);

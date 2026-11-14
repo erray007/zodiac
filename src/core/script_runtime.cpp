@@ -112,8 +112,14 @@ host_.set_log_handler([this](zodiac_log_level level,std::string_view message){di
 
 ScriptRuntime::~ScriptRuntime()
 {
-registry_.shutdown_all();
+// Release every script-held object before shutdown_module runs (plugin.h lifetime rules): the context, then the script module
+// with its global variables, then a full garbage collection for objects kept alive only by reference cycles.
 if(context_)context_->Release();
+context_=nullptr;
+main_=nullptr;
+if(asIScriptModule* module=engine_->GetModule(kModuleName,asGM_ONLY_IF_EXISTS))module->Discard();
+engine_->GarbageCollect(asGC_FULL_CYCLE);
+registry_.shutdown_all();
 engine_->ShutDownAndRelease();
 asUnprepareMultithread();
 }
