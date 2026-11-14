@@ -97,6 +97,36 @@ class BootstrapTests(unittest.TestCase):
             self.assertFalse(bootstrap.ensure_tool("tool", spec, root))
             self.assertEqual(patched.call_count, 1)
 
+    def test_next_step_uses_the_host_path_separator(self):
+        self.assertEqual(bootstrap.next_step("windows-x86_64"), r"Setup complete. Next: .tools\cmake\bin\cmake --workflow --preset windows")
+        self.assertEqual(bootstrap.next_step("linux-x86_64"), "Setup complete. Next: .tools/cmake/bin/cmake --workflow --preset linux")
+
+    def test_compiler_program_takes_the_first_word(self):
+        self.assertEqual(bootstrap.compiler_program("clang++-18"), "clang++-18")
+        self.assertEqual(bootstrap.compiler_program("'/opt/llvm 18/bin/clang++' -v"), "/opt/llvm 18/bin/clang++")
+        self.assertIsNone(bootstrap.compiler_program(""))
+        self.assertIsNone(bootstrap.compiler_program("'unterminated"))
+
+    def test_check_linux_clang_checks_cxx_and_cc(self):
+        versions = {"clang++-18": 18, "clang-17": 17}
+        with mock.patch.dict(bootstrap.os.environ, {"CXX": "clang++-18 -v", "CC": "clang-17"}), \
+                mock.patch.object(bootstrap, "clang_major_version", side_effect=lambda command: versions.get(bootstrap.compiler_program(command))) as patched, \
+                mock.patch.object(bootstrap, "say") as said:
+            self.assertFalse(bootstrap.check_linux_clang())
+        self.assertEqual([call.args[0] for call in patched.call_args_list], ["clang++-18 -v", "clang-17"])
+        lines = [call.args[0] for call in said.call_args_list]
+        self.assertEqual(len(lines), 2)
+        self.assertIn("clang-17 (CC) is version 17", lines[0])
+        self.assertIn("libc++-18-dev libc++abi-18-dev", lines[1])
+
+    def test_check_linux_clang_defaults_to_clang_and_accepts_18(self):
+        with mock.patch.dict(bootstrap.os.environ, {"CXX": "", "CC": ""}), \
+                mock.patch.object(bootstrap, "clang_major_version", return_value=18) as patched, \
+                mock.patch.object(bootstrap, "say") as said:
+            self.assertTrue(bootstrap.check_linux_clang())
+        self.assertEqual([call.args[0] for call in patched.call_args_list], ["clang++", "clang"])
+        said.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

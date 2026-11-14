@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -16,7 +17,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 MANIFEST_RELATIVE = Path("tools") / "toolchain.json"
-MIN_CLANG_MAJOR = 17
+MIN_CLANG_MAJOR = 18
 CHUNK_SIZE = 1024 * 256
 
 
@@ -202,12 +203,23 @@ def detect_host() -> str:
     return f"{system}-{machine}"
 
 
-def clang_major_version():
-    clang = shutil.which(os.environ.get("CC") or "clang")
-    if not clang:
+def compiler_program(command: str):
+    """The program (first word, shell quoting honoured) of a compiler command such as the value of CC or CXX, or None."""
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return None
+    return parts[0] if parts else None
+
+
+def clang_major_version(command: str):
+    """The major version of the clang named by command, or None when it is missing or not clang."""
+    program = compiler_program(command)
+    path = shutil.which(program) if program else None
+    if not path:
         return None
     try:
-        output = subprocess.run([clang, "--version"], capture_output=True, text=True, timeout=30).stdout
+        output = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=30).stdout
     except (OSError, subprocess.SubprocessError):
         return None
     match = re.search(r"clang version (\d+)", output)
@@ -215,13 +227,26 @@ def clang_major_version():
 
 
 def check_linux_clang() -> bool:
-    major = clang_major_version()
-    if major is not None and major >= MIN_CLANG_MAJOR:
-        return True
-    found = "not found" if major is None else f"version {major} is too old"
-    say(f"clang {MIN_CLANG_MAJOR} or newer is required ({found}).")
-    say("Install it with: sudo apt install clang-17 (Debian or Ubuntu), sudo dnf install clang (Fedora), or sudo pacman -S clang (Arch).")
-    return False
+    """Check the C++ compiler (CXX, or clang++) and the C compiler (CC, or clang), the same ones the Linux toolchain file uses."""
+    ok = True
+    for variable, default in (("CXX", "clang++"), ("CC", "clang")):
+        command = os.environ.get(variable) or default
+        major = clang_major_version(command)
+        if major is not None and major >= MIN_CLANG_MAJOR:
+            continue
+        found = "was not found or is not clang" if major is None else f"is version {major}, which is too old"
+        say(f"clang {MIN_CLANG_MAJOR} or newer with libc++ is required, but {command} ({variable}) {found}.")
+        ok = False
+    if not ok:
+        say(f"Install it with: sudo apt install clang-{MIN_CLANG_MAJOR} libc++-{MIN_CLANG_MAJOR}-dev libc++abi-{MIN_CLANG_MAJOR}-dev (Debian or Ubuntu), then set CC=clang-{MIN_CLANG_MAJOR} and CXX=clang++-{MIN_CLANG_MAJOR} if clang and clang++ are older; on other distributions install clang and the static libc++ and libc++abi libraries.")
+    return ok
+
+
+def next_step(host: str) -> str:
+    """The command to run after a successful bootstrap, with the path separator the host's shell accepts (cmd.exe rejects forward slashes)."""
+    if host.startswith("windows"):
+        return r"Setup complete. Next: .tools\cmake\bin\cmake --workflow --preset windows"
+    return "Setup complete. Next: .tools/cmake/bin/cmake --workflow --preset linux"
 
 
 def main() -> int:
@@ -244,8 +269,7 @@ def main() -> int:
         return 1
     if host.startswith("linux") and not check_linux_clang():
         return 1
-    preset = "windows" if host.startswith("windows") else "linux"
-    say(f"Setup complete. Next: .tools/cmake/bin/cmake --workflow --preset {preset}")
+    say(next_step(host))
     return 0
 
 

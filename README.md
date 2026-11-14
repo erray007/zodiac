@@ -8,14 +8,17 @@ Requirements: Python 3.9 or newer.
 
 1. Download the pinned toolchain (CMake, Ninja and, on Windows, llvm-mingw) into the .tools folder:
    `python bootstrap.py`
-2. Build and test on Windows (use the preset name shown by the bootstrap script on other systems):
-   `.tools/cmake/bin/cmake --workflow --preset windows`
+2. Build and test:
+   - Windows (Command Prompt or PowerShell): `.tools\cmake\bin\cmake --workflow --preset windows`
+   - Linux: `.tools/cmake/bin/cmake --workflow --preset linux`
 3. Create a new game project:
-   `build/windows-debug/bin/zodiac new mygame`
+   - Windows: `build\windows-debug\bin\zodiac new mygame`
+   - Linux: `build/linux-debug/bin/zodiac new mygame`
 4. Run it:
-   `build/windows-debug/bin/zodiac run mygame`
+   - Windows: `build\windows-debug\bin\zodiac run mygame`
+   - Linux: `build/linux-debug/bin/zodiac run mygame`
 
-On Linux, replace `windows` with `linux` in the preset and in the build folder name.
+Windows commands use backslashes, because Command Prompt does not accept forward slashes in a program path.
 
 To contribute, read CONTRIBUTING.md.
 
@@ -23,7 +26,7 @@ To contribute, read CONTRIBUTING.md.
 
 - The bootstrap script verifies every download against a pinned SHA-256 checksum.
 - Running the bootstrap script again does nothing if the tools are already installed.
-- On Linux, clang 17 or newer must be installed through your package manager.
+- On Linux, clang 18 or newer with libc++ must be installed through your package manager, for example: sudo apt install clang-18 libc++-18-dev libc++abi-18-dev
 
 ## License
 

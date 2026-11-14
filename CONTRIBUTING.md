@@ -4,24 +4,31 @@ Zodiac is community owned and every change arrives as a pull request on GitHub. 
 
 ## Set up
 
-Requirements: Python 3.9 or newer. On Linux you also need clang 17 or newer from your package manager.
+Requirements: Python 3.9 or newer. On Linux you also need clang 18 or newer with libc++ from your package manager, for example: sudo apt install clang-18 libc++-18-dev libc++abi-18-dev
 
 1. Install the pinned toolchain into the .tools folder:
    `python bootstrap.py`
-2. Build and run every test (use `linux` instead of `windows` on Linux):
-   `.tools/cmake/bin/cmake --workflow --preset windows`
+2. Build and run every test:
+   - Windows (Command Prompt or PowerShell): `.tools\cmake\bin\cmake --workflow --preset windows`
+   - Linux: `.tools/cmake/bin/cmake --workflow --preset linux`
+3. If you change bootstrap.py, run its unit tests too (CI runs them on both systems):
+   `python -I -m unittest discover -v -s tools -p "test_bootstrap.py"`
 
-The build output goes to build/windows-debug. On Linux the build uses `clang` and `clang++` from your PATH, or the compilers named by the CC and CXX environment variables if you set them.
+Windows commands use backslashes, because Command Prompt does not accept forward slashes in a program path. The build output goes to build\windows-debug on Windows and build/linux-debug on Linux. On Linux the build uses `clang` and `clang++` from your PATH, or the compilers named by the CC and CXX environment variables if you set them, and links libc++ statically.
 
 ## Build one target
 
 Build a single target, for example the example module:
-`.tools/cmake/bin/cmake --build --preset windows-debug --target zodiac_mod_example`
+
+- Windows: `.tools\cmake\bin\cmake --build --preset windows-debug --target zodiac_mod_example`
+- Linux: `.tools/cmake/bin/cmake --build --preset linux-debug --target zodiac_mod_example`
 
 ## Run one test
 
 Run only the tests whose names match a pattern, for example the host tests:
-`.tools/cmake/bin/ctest --preset windows-debug -R test_host`
+
+- Windows: `.tools\cmake\bin\ctest --preset windows-debug -R test_host`
+- Linux: `.tools/cmake/bin/ctest --preset linux-debug -R test_host`
 
 ## Try the command line tool
 
@@ -73,7 +80,7 @@ return zodiac::plugin::function<&echo>(host,"string example_echo(const string &i
 }
 }
 
-extern "C" const zodiac_module_info zodiac_module_info_example={ZODIAC_ABI_VERSION,"example","0.1.0","Zlib",nullptr,0,&register_module,nullptr};
+extern "C" const zodiac_module_info zodiac_module_info_example={ZODIAC_ABI_VERSION,sizeof(zodiac_module_info),"example","0.1.0","Zlib",nullptr,0,&register_module,nullptr};
 ZODIAC_DEFINE_MODULE(zodiac_module_info_example)
 ```
 
