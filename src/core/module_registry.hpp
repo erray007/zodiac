@@ -19,7 +19,9 @@ namespace zodiac {
 class Host;
 // Size of zodiac_module_info in ABI v1. It never changes when members are appended: a module whose struct_size is smaller is refused,
 // and a member appended later is read only when the module's struct_size covers it (see module_info_provides).
-inline constexpr uint32_t module_info_v1_size=sizeof(zodiac_module_info);
+// It is frozen at the end of the last v1 member (shutdown_module) instead of sizeof(zodiac_module_info), which would grow with the struct and make a newer host refuse every v1 module.
+inline constexpr uint32_t module_info_v1_size=offsetof(zodiac_module_info,shutdown_module)+sizeof(void(*)(void));
+static_assert(module_info_v1_size==64,"zodiac_module_info v1 size is frozen (64-bit targets)");
 // True when info, as built by its module, contains the bytes up to field_end (offsetof plus sizeof of an appended member).
 constexpr bool module_info_provides(const zodiac_module_info& info,std::size_t field_end) noexcept{return info.struct_size>=field_end;}
 struct ModuleSearchPaths{

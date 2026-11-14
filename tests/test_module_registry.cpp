@@ -114,6 +114,16 @@ TEST_CASE("module info smaller than the v1 structure is refused")
 CHECK(load_error({"small_info"})=="module \"small_info\" has an invalid info structure");
 }
 
+TEST_CASE("module info larger than v1 (a newer header) still loads")
+{
+zodiac::ModuleRegistry registry;
+REQUIRE(registry.load(std::vector<std::string>{"larger_info"},search()).has_value());
+REQUIRE(registry.ordered().size()==1);
+CHECK(registry.ordered()[0]->struct_size==72);
+CHECK(registry.ordered()[0]->struct_size>zodiac::module_info_v1_size);
+CHECK(std::string_view(registry.ordered()[0]->name)=="larger_info");
+}
+
 TEST_CASE("module info size checks")
 {
 zodiac_module_info info{};
