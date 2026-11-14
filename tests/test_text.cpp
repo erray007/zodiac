@@ -3,6 +3,24 @@
 #include <string>
 #include <string_view>
 
+TEST_CASE("is_one_line tells whether one_line would change the text")
+{
+CHECK(zodiac::is_one_line(""));
+CHECK(zodiac::is_one_line("plain \xC5\x9F text\\"));
+CHECK_FALSE(zodiac::is_one_line("a\nb"));
+CHECK_FALSE(zodiac::is_one_line(std::string_view("a\0b",3)));
+CHECK_FALSE(zodiac::is_one_line("x\x7F"));
+}
+
+TEST_CASE("error_text has no trailing line break or full stop")
+{
+const std::string text=zodiac::error_text(std::make_error_code(std::errc::no_such_file_or_directory));
+CHECK_FALSE(text.empty());
+CHECK(zodiac::is_one_line(text));
+CHECK_FALSE(text.ends_with('.'));
+CHECK_FALSE(text.ends_with(' '));
+}
+
 TEST_CASE("one_line escapes control characters")
 {
 CHECK(zodiac::one_line("a\nb")=="a\\nb");

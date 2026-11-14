@@ -57,3 +57,9 @@ target_compile_definitions(test_module_registry PRIVATE
 "ZODIAC_TEST_MODULE_SUFFIX=\"${CMAKE_SHARED_LIBRARY_SUFFIX}\""
 )
 add_dependencies(test_module_registry zodiac_mod_example zodiac_mod_needs_abi_99 zodiac_mod_wrong_name zodiac_mod_dep_child zodiac_mod_dep_grandchild zodiac_mod_cycle_a zodiac_mod_cycle_b zodiac_mod_logs_error zodiac_mod_bad_decl zodiac_mod_fails_code zodiac_mod_no_entry)
+zodiac_add_test(test_script_runtime SOURCES test_script_runtime.cpp LIBRARIES zodiac_core)
+target_compile_definitions(test_script_runtime PRIVATE
+"ZODIAC_TEST_SCRIPT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/scripts\""
+"ZODIAC_TEST_MODULE_DIR=\"${CMAKE_BINARY_DIR}/modules\""
+)
+add_dependencies(test_script_runtime zodiac_mod_example)
