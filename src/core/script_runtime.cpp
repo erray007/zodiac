@@ -120,17 +120,12 @@ asUnprepareMultithread();
 
 void ScriptRuntime::on_message(const asSMessageInfo& info) noexcept
 {
+// Compiler information messages ("Compiling void main()") are noise for screen-reader users, so only errors and warnings are reported.
+if(info.type==asMSGTYPE_INFORMATION)return;
 try{
-zodiac_log_level level=ZODIAC_LOG_INFO;
-std::string_view kind="info";
-if(info.type==asMSGTYPE_ERROR){
-level=ZODIAC_LOG_ERROR;
-kind="error";
-}
-else if(info.type==asMSGTYPE_WARNING){
-level=ZODIAC_LOG_WARNING;
-kind="warning";
-}
+const bool error=info.type==asMSGTYPE_ERROR;
+const zodiac_log_level level=error?ZODIAC_LOG_ERROR:ZODIAC_LOG_WARNING;
+const std::string_view kind=error?"error":"warning";
 const std::string_view section=info.section?info.section:"";
 const std::string_view message=info.message?info.message:"";
 std::string line;

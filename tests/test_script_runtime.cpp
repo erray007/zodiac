@@ -195,7 +195,8 @@ CHECK(build==1);
 CHECK(console.find("main.zs:3:5: error:")!=std::string::npos);
 CHECK(has_line_starting(lines,"main.zs:3:5: error: "));
 CHECK(split_lines(console)==texts(lines));
-CHECK(texts(lines)==std::vector<std::string>{"main.zs:1:1: info: Compiling void main()","main.zs:3:5: error: No matching symbol 'zz'"});
+CHECK(texts(lines)==std::vector<std::string>{"main.zs:3:5: error: No matching symbol 'zz'"});
+CHECK(console=="main.zs:3:5: error: No matching symbol 'zz'\n");
 for(const Line& line:lines)CHECK(line.text.find('\n')==std::string::npos);
 const auto error=std::ranges::find_if(lines,[](const Line& line){return line.text.starts_with("main.zs:3:5: error: ");});
 REQUIRE(error!=lines.end());
@@ -321,6 +322,8 @@ const std::string file=read_file(log);
 INFO(console);
 CHECK_FALSE(file.empty());
 CHECK(file==console);
+// Exactly one line: the error, with no compiler information line before it.
+CHECK(split_lines(file)==std::vector<std::string>{"main.zs:3:5: error: No matching symbol 'zz'"});
 CHECK(valid_utf8(file));
 CHECK_FALSE(file.starts_with("\xEF\xBB\xBF"));
 CHECK(file.ends_with('\n'));

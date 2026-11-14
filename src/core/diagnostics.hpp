@@ -1,7 +1,7 @@
 // zodiac::Diagnostics sends every user-facing message (module errors, compile errors, runtime errors, plugin logs) to all its sinks.
 //
 // Each report() becomes exactly one plain-text line per sink: control bytes are escaped with one_line, and the sinks add the line terminator.
-// Line formats used by the runtime: compile "<rel_path>:<line>:<col>: error|warning|info: <message>", runtime "<rel_path>:<line>: runtime error: <message>"
+// Line formats used by the runtime: compile "<rel_path>:<line>:<col>: error|warning: <message>" (compiler information messages are not reported), runtime "<rel_path>:<line>: runtime error: <message>"
 // followed by one "  at <function> (<rel_path>:<line>)" line per frame, and "<message>" for module and plugin messages.
 // Threads: report() may be called from any thread; sinks are written under one lock, so a sink never sees concurrent writes.
 // Core never touches stdout/stderr itself: ConsoleSink hands each line to the platform layer, so other platforms can route it elsewhere.
