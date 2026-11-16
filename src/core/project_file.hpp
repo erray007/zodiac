@@ -3,6 +3,7 @@
 #pragma once
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,9 @@ BuildConfig build;
 std::vector<std::filesystem::path> workers;
 };
 std::expected<Project,std::string> load_project(const std::filesystem::path& dir);
+// The project a script file belongs to: the nearest folder holding a regular file zodiac.toml, starting at the file's own folder and walking up to
+// the filesystem root. The result is absolute and normalized (no trailing separator); nullopt when no folder qualifies. Only checks for the file, never reads it.
+std::optional<std::filesystem::path> find_project_root(const std::filesystem::path& script_file);
 // Every regular file under project.root matching any of project.build.assets, as absolute paths, sorted and without duplicates.
 // zodiac.toml in the root and everything under <root>/release are never returned. A pattern matching nothing is not an error; a missing or unreadable directory is: the error is one line, `zodiac.toml: error: cannot read directory "<path>": <reason>`.
 std::expected<std::vector<std::filesystem::path>,std::string> expand_assets(const Project& project);

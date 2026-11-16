@@ -1,5 +1,6 @@
-// The zodiac command line: new, run, modules, help and --version. A thin front end over zodiac_core; the platform layer owns the entry point.
-// Normal output (help, listings, --version) goes to standard output through platform::write_stdout_line; every error goes through Diagnostics.
+// The zodiac command line: new, run, build, modules, help and --version. A thin front end over zodiac_core; the platform layer owns the entry point.
+// Normal output (help, listings, --version, the build summary) goes to standard output through platform::write_stdout_line; every error goes through Diagnostics.
+#include <cli/build_command.hpp>
 #include <cli/templates.hpp>
 #include <core/diagnostics.hpp>
 #include <core/dynamic_library.hpp>
@@ -41,6 +42,10 @@ std::string command;
 std::vector<std::string> positional;
 std::vector<fs::path> module_dirs;
 fs::path log_file;
+// build only: --output and --no-window.
+fs::path output;
+bool output_given=false;
+bool no_window=false;
 // Set when the command line is malformed; reported through Diagnostics once it exists.
 std::string error;
 };
@@ -65,14 +70,22 @@ Options parse_arguments(std::span<const std::string> args)
 Options options;
 for(std::size_t i=0;i<args.size();++i){
 const std::string& arg=args[i];
-if(arg=="--module-dir"||arg=="--log-file"){
+if(arg=="--module-dir"||arg=="--log-file"||arg=="--output"){
 if(i+1>=args.size()){
 options.error="error: "+arg+" needs a value";
 return options;
 }
 const std::string& value=args[++i];
 if(arg=="--module-dir")options.module_dirs.push_back(path_from_utf8(value));
-else options.log_file=path_from_utf8(value);
+else if(arg=="--log-file")options.log_file=path_from_utf8(value);
+else{
+options.output=path_from_utf8(value);
+options.output_given=true;
+}
+continue;
+}
+if(arg=="--no-window"){
+options.no_window=true;
 continue;
 }
 if(options.command.empty()&&(arg=="--version"||arg=="--help"||arg=="-h")){
@@ -114,10 +127,12 @@ int print_help()
 {
 platform::write_stdout_line("zodiac new <dir>: create a new game project in an empty directory");
 platform::write_stdout_line("zodiac run [project_dir]: build and run the game in project_dir (default: the current directory)");
+platform::write_stdout_line("zodiac build [project_dir|file.zs]: build a release of the game (default output: <project>/release)");
 platform::write_stdout_line("zodiac modules: list the modules found in the module directories");
 platform::write_stdout_line("zodiac help: show this list");
 platform::write_stdout_line("zodiac --version: show the version");
-platform::write_stdout_line("options for run and modules: --module-dir <dir> adds a module directory (repeatable), --log-file <path> also writes messages to a file");
+platform::write_stdout_line("options for run, build and modules: --module-dir <dir> adds a module directory (repeatable), --log-file <path> also writes messages to a file");
+platform::write_stdout_line("options for build: --output <dir> writes the release there, --no-window reports the result on the console only");
 platform::write_stdout_line("exit codes: 0 success, 1 script error, 2 usage/project/module error, otherwise the value returned by int main() (0-255)");
 return exit_ok;
 }
@@ -149,6 +164,21 @@ ScriptRuntime runtime(diagnostics,ModuleSearchPaths{search_dirs(options)});
 if(const int code=enter_root(project->root,diagnostics);code!=0)return code;
 if(const int code=runtime.build(*project);code!=0)return code;
 return exit_code_of(runtime.run(),diagnostics);
+}
+
+int build_release(const Options& options,Diagnostics& diagnostics)
+{
+if(options.positional.size()>1){
+fail(diagnostics,"error: build takes at most one project directory or script; run zodiac help");
+return exit_usage_error;
+}
+if(!add_log_file(diagnostics,options.log_file))return exit_usage_error;
+BuildOptions build;
+build.target=options.positional.empty()?fs::path("."):path_from_utf8(options.positional.front());
+build.output=options.output;
+build.module_dirs=search_dirs(options);
+build.no_window=options.no_window;
+return build_project(build,diagnostics);
 }
 
 struct ModuleLine{
@@ -323,9 +353,14 @@ if(options.command.empty()){
 fail(diagnostics,"error: no command given; run zodiac help");
 return exit_usage_error;
 }
+if((options.output_given||options.no_window)&&options.command!="build"){
+fail(diagnostics,"error: --output and --no-window apply to build only; run zodiac help");
+return exit_usage_error;
+}
 if(options.command=="help")return print_help();
 if(options.command=="version")return print_version();
 if(options.command=="run")return run_project(options,diagnostics);
+if(options.command=="build")return build_release(options,diagnostics);
 if(options.command=="modules")return list_modules(options,diagnostics);
 if(options.command=="new")return create_project(options,diagnostics);
 fail(diagnostics,"error: unknown command "+in_quotes(options.command)+"; run zodiac help");

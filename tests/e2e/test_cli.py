@@ -220,8 +220,18 @@ class CliTest(unittest.TestCase):
     def test_help_lists_commands(self):
         code, out, err = zodiac("help")
         self.assertEqual((code, err), (0, ""))
-        for command in ("new", "run", "modules", "help"):
+        for command in ("new", "run", "build", "modules", "help"):
             self.assertTrue(any(command in line for line in out.splitlines()), command)
+        self.assertIn("zodiac build [project_dir|file.zs]: build a release of the game (default output: <project>/release)", out.splitlines())
+
+    @unittest.skipIf(os.name == "nt", "Windows builds releases; see test_build.py")
+    def test_build_not_supported_on_this_host(self):
+        project = self.root / "game"
+        self.make_project(project, [], "void main()\n{\n}\n")
+        code, out, err = zodiac("build", str(project), "--no-window")
+        self.assertEqual(code, 2)
+        self.assertEqual(err.splitlines(), ["error: release builds are not supported on this host yet"])
+        self.assertFalse((project / "release").exists())
 
 
 if __name__ == "__main__":

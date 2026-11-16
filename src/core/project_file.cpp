@@ -244,6 +244,23 @@ project.main_script=std::move(*main_script);
 return project;
 }
 
+std::optional<fs::path> find_project_root(const fs::path& script_file)
+{
+std::error_code ec;
+fs::path dir=fs::absolute(script_file,ec).lexically_normal();
+if(ec)return std::nullopt;
+dir=dir.parent_path();
+for(;;)
+{
+const bool found=fs::is_regular_file(dir/"zodiac.toml",ec);
+if(found&&!ec)return dir;
+// The filesystem root is its own parent.
+fs::path parent=dir.parent_path();
+if(parent.empty()||parent==dir)return std::nullopt;
+dir=std::move(parent);
+}
+}
+
 std::expected<std::vector<fs::path>,std::string> expand_assets(const Project& project)
 {
 std::vector<fs::path> files;

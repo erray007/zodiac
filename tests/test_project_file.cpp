@@ -398,3 +398,56 @@ project.toml("[game]\nmain = \"main.zs\"\n[diagnostics]\nfile = \"../a\\nb\"\n")
 CHECK(error_of(project)=="zodiac.toml: error: [diagnostics] file \"../a\\nb\" must be inside the project");
 }
 
+TEST_CASE("find_project_root returns the folder of the script when it holds zodiac.toml")
+{
+TempProject project(fs::path(u8"Kanka şövalye"));
+project.main_script();
+project.toml(minimal);
+const auto root=zodiac::find_project_root(project.dir()/"main.zs");
+REQUIRE(root.has_value());
+CHECK(*root==fs::absolute(project.dir()).lexically_normal());
+}
+
+TEST_CASE("find_project_root walks up to the nearest zodiac.toml")
+{
+TempProject project;
+project.toml(minimal);
+project.write("levels/deep/er/level.zs","");
+const auto root=zodiac::find_project_root(project.dir()/"levels"/"deep"/"er"/"level.zs");
+REQUIRE(root.has_value());
+CHECK(*root==fs::absolute(project.dir()).lexically_normal());
+// A nested project is nearer than the outer one.
+project.write("levels/deep/zodiac.toml",minimal);
+const auto nested=zodiac::find_project_root(project.dir()/"levels"/"deep"/"er"/"level.zs");
+REQUIRE(nested.has_value());
+CHECK(*nested==fs::absolute(project.dir()/"levels"/"deep").lexically_normal());
+}
+
+TEST_CASE("find_project_root resolves a relative script path and ignores a folder named zodiac.toml")
+{
+TempProject project;
+project.toml(minimal);
+project.write("sub/zodiac.toml/keep.txt","");
+project.write("sub/game.zs","");
+const fs::path previous=fs::current_path();
+fs::current_path(project.dir());
+const auto root=zodiac::find_project_root(fs::path("sub")/"game.zs");
+fs::current_path(previous);
+REQUIRE(root.has_value());
+CHECK(root->is_absolute());
+CHECK(*root==fs::absolute(project.dir()).lexically_normal());
+}
+
+TEST_CASE("find_project_root finds nothing when no folder up to the filesystem root holds zodiac.toml")
+{
+TempProject project;
+project.write("alone/game.zs","");
+const fs::path base=fs::absolute(project.dir()).lexically_normal().parent_path();
+const auto root=zodiac::find_project_root(project.dir()/"alone"/"game.zs");
+// Nothing inside the temporary tree qualifies; a zodiac.toml above the system temp folder is outside this test's control.
+if(root){
+const fs::path inner=root->lexically_relative(base);
+CHECK((inner.empty()||*inner.begin()==fs::path("..")));
+}
+}
+

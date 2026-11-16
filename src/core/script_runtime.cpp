@@ -268,9 +268,9 @@ included_.clear();
 return 0;
 }
 
-int ScriptRuntime::build(const Project& project)
+int ScriptRuntime::build(const Project& project,const ModuleCheck& check)
 {
-if(const int prepared=prepare(project,{},{}))return prepared;
+if(const int prepared=prepare(project,{},check))return prepared;
 CScriptBuilder builder;
 builder.SetIncludeCallback(&RuntimeCallbacks::include,this);
 if(builder.StartNewModule(engine_,kModuleName)<0){

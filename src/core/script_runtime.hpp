@@ -44,9 +44,10 @@ ScriptRuntime(Diagnostics& diagnostics,ModuleSearchPaths search_paths);
 ScriptRuntime(const ScriptRuntime&)=delete;
 ScriptRuntime& operator=(const ScriptRuntime&)=delete;
 Host& host() noexcept{return host_;}
-int build(const Project& project);
-std::expected<std::string,std::string> save_bytecode(bool strip_debug_info) const;
 using ModuleCheck=std::function<int(std::span<const zodiac_module_info* const> loaded)>;
+// check, when given, runs as in load_bytecode: after the modules are loaded and before any of them registers (zodiac build's static link checks).
+int build(const Project& project,const ModuleCheck& check={});
+std::expected<std::string,std::string> save_bytecode(bool strip_debug_info) const;
 int load_bytecode(const Project& project,std::string_view bytecode,std::span<const zodiac_module_info* const> linked,const ModuleCheck& check={});
 // The loaded module names in registration order; invalidated by the next build or load_bytecode.
 std::span<const std::string> module_order() const noexcept{return registry_.ordered_names();}
