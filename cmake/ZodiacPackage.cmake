@@ -3,11 +3,12 @@
 # Windows only. Creates the targets that package the kit:
 # - zodiac_zip, the portable kit:
 #   - dist/Zodiac is emptied and filled by "cmake --install" (the layout of spec 8.1) plus README.txt, copied from packaging/README-zip.txt,
+#   - tools/sign_kit.py signs bin/*.exe, bin/*.dll and modules/*.dll there when ZODIAC_SIGN_TOOL holds a sign command (it does nothing otherwise),
 #   - dist/zodiac-<version>-windows-x86_64.zip holds that folder, with Zodiac/ as its only top-level entry, made by cmake -E tar --format=zip.
 #   It builds what the install copies (both tools, the staged toolchain files and the shipped modules) first, but not the tests.
 # - zodiac_installer, the setup wizard: after zodiac_zip, tools/build_installer.py runs .tools/innosetup/ISCC.exe (installed by bootstrap.py) on
-#   packaging/zodiac.iss with /DZodiacVersion=<version> /DKitDir=<dist/Zodiac>, giving dist/zodiac-setup-<version>.exe. The setup is signed only when
-#   the environment variable ZODIAC_SIGN_TOOL holds a sign command (see tools/build_installer.py).
+#   packaging/zodiac.iss with /DZodiacVersion=<version> /DKitDir=<dist/Zodiac>, giving dist/zodiac-setup-<version>.exe. The setup and its uninstaller
+#   are signed only when the environment variable ZODIAC_SIGN_TOOL holds a sign command (see tools/build_installer.py).
 # Both refuse a Debug build (CMAKE_BUILD_TYPE Debug): the kit ships optimized binaries, so package from the windows-release preset.
 # Call it after zodiac_kit_stage and every zodiac_add_module call.
 include_guard(GLOBAL)
@@ -30,6 +31,7 @@ COMMAND "${CMAKE_COMMAND}" -E make_directory "${dist}"
 COMMAND "${CMAKE_COMMAND}" -E rm -rf "${kit}" "${zip}"
 COMMAND "${CMAKE_COMMAND}" --install "${CMAKE_BINARY_DIR}" --prefix "${kit}"
 COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/packaging/README-zip.txt" "${kit}/README.txt"
+COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_SOURCE_DIR}/tools/sign_kit.py" --kit "${kit}"
 COMMAND "${CMAKE_COMMAND}" -E chdir "${dist}" "${CMAKE_COMMAND}" -E tar cf "${zip}" --format=zip -- Zodiac
 COMMENT "Packaging ${zip}"
 VERBATIM)
