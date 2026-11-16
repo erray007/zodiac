@@ -114,3 +114,20 @@
 - [ ] **Step 3: Implement**, removing the dead code.
 - [ ] **Step 4: Run tests to verify they pass**, full suite once; push; CI green.
 - [ ] **Step 5: Commit** `git commit -m "Load only the core when there is no project file"`
+
+### Task 6: Create-project-file action in the run window
+
+**Files:**
+- Modify: `src/cli/main.cpp`, `src/cli/build_report.hpp` / `.cpp` if the create action helper lives there, `docs/superpowers/specs/2026-11-16-zodiac-kit-usability-design.md` (item 3: one sentence)
+- Test: `tests/test_build_report.cpp`, `tests/e2e/test_cli.py`
+
+**Interfaces:**
+- Owner decision: the run error window offers the same `Create project file` action as the build window, but ONLY when the lone-mode note was emitted (no project file and the scripts failed to compile, i.e. module functions are not declared). For every other run failure (missing `main()`, runtime exception, project-file run) the window has no action.
+- The action is the same one the build window uses (`create_project_file` writing `project_file_text(<stem>, <script>, {}, {})` next to the script, refusing an existing file); share it, do not duplicate it.
+- With no interactive desktop (`ZODIAC_FORCE_NO_DESKTOP=1`) nothing changes: the summary is printed, no file is created.
+
+- [ ] **Step 1: Write the failing tests** — unit: the decision helper returns "offer the action" only for (lone && compile failed). e2e: unchanged console output for both cases under `ZODIAC_FORCE_NO_DESKTOP=1`; no `zodiac.toml` is created by `run` in either case.
+- [ ] **Step 2: Run to verify they fail.**
+- [ ] **Step 3: Implement**; manual Win32 check: a lone script calling `example_print` opens the run window with the button, pressing it creates `zodiac.toml` and appends `Created <path>` with focus in the output; a lone script without `main()` opens the run window without the button.
+- [ ] **Step 4: Run tests to verify they pass**, full suite once; push; CI green.
+- [ ] **Step 5: Commit** `git commit -m "Offer to create the project file in the run window when modules are missing"`
