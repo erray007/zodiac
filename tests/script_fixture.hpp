@@ -3,10 +3,9 @@
 #include <doctest/doctest.h>
 #include <angelscript.h>
 #include <scriptarray/scriptarray.h>
-#include <scriptdictionary/scriptdictionary.h>
-#include <scripthelper/scripthelper.h>
-#include <scriptstdstring/scriptstdstring.h>
 #include <core/host.hpp>
+#include <core/types/string.hpp>
+#include <core/types/string_binding.hpp>
 #include <string>
 #include <utility>
 #include <vector>
@@ -26,11 +25,10 @@ inline asIScriptEngine* create_engine(std::string& messages)
 asIScriptEngine* engine=asCreateScriptEngine();
 REQUIRE(engine!=nullptr);
 engine->SetMessageCallback(asFUNCTION(collect_engine_message),&messages,asCALL_CDECL);
-RegisterStdString(engine);
+// The same registrations as ScriptRuntime: the array add-on first, since split and join use array<string>.
 RegisterScriptArray(engine,true);
-RegisterStdStringUtils(engine);
-RegisterScriptDictionary(engine);
-RegisterExceptionRoutines(engine);
+zodiac::register_string(engine);
+zodiac::register_exception_helpers(engine);
 return engine;
 }
 // The engine is shut down before the Host is destroyed, because registered functions point into the Host.
@@ -70,7 +68,7 @@ return context->Execute();
 }
 std::string returned_string()
 {
-return *static_cast<std::string*>(context->GetAddressOfReturnValue());
+return std::string(static_cast<const zodiac::String*>(context->GetAddressOfReturnValue())->bytes());
 }
 std::string exception_string()
 {

@@ -1,0 +1,298 @@
+// Tests the script `string` (zodiac::String registered by register_string) and the exception helpers at script level:
+// every method group of spec 8.1, the exact range and conversion error texts, concatenation with numbers and bools both
+// ways, format(), string constants shared across threads, the plugin ABI string paths with NUL bytes and Turkish text
+// (Review Focus 3), Turkish case mapping (Review Focus 5), and throw()/exception_info()/getExceptionInfo() (spec 8.8).
+#include "script_fixture.hpp"
+#include <core/types/string.hpp>
+#include <core/types/string_binding.hpp>
+#include <atomic>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <vector>
+
+using zodiac_test::ScriptFixture;
+
+namespace {
+// Runs "bool main(){return <expression>;}".
+bool holds(ScriptFixture& fixture,std::string_view expression)
+{
+const std::string source="bool main(){return "+std::string(expression)+";}";
+INFO(source);
+REQUIRE(fixture.run(source.c_str(),"bool main()")==asEXECUTION_FINISHED);
+return fixture.context->GetReturnByte()!=0;
+}
+// Runs "string main(){return <expression>;}" and returns the bytes of the result.
+std::string value_of(ScriptFixture& fixture,std::string_view expression)
+{
+const std::string source="string main(){return "+std::string(expression)+";}";
+INFO(source);
+REQUIRE(fixture.run(source.c_str(),"string main()")==asEXECUTION_FINISHED);
+return fixture.returned_string();
+}
+// Runs "void main(){<statements>}", which must raise a script exception, and returns its text.
+std::string error_of(ScriptFixture& fixture,std::string_view statements)
+{
+const std::string source="void main(){"+std::string(statements)+"}";
+INFO(source);
+REQUIRE(fixture.run(source.c_str(),"void main()")==asEXECUTION_EXCEPTION);
+return fixture.exception_string();
+}
+const zodiac_host* g_abi=nullptr;
+std::string g_seen;
+bool g_terminated=false;
+constexpr std::string_view g_plugin_bytes{"a\0\xC5\x9F" "b",5};
+void bytes_out(zodiac_call* call)
+{
+g_abi->ret_string(call,g_plugin_bytes.data(),g_plugin_bytes.size());
+}
+void bytes_echo(zodiac_call* call)
+{
+size_t length=0;
+const char* data=g_abi->arg_string(call,0,&length);
+g_terminated=data!=nullptr&&data[length]=='\0';
+g_seen.assign(data,length);
+g_abi->ret_string(call,data,length);
+}
+void bytes_list(zodiac_call* call)
+{
+zodiac_array* items=g_abi->ret_array(call,"string",0);
+g_abi->array_push_string(items,"\0\xC4\xB0",3);
+g_abi->array_push_string(items,g_plugin_bytes.data(),g_plugin_bytes.size());
+}
+void bytes_join(zodiac_call* call)
+{
+zodiac_array* items=g_abi->arg_array(call,0);
+std::string joined;
+for(uint32_t index=0;index<g_abi->array_length(items);++index){
+size_t size=0;
+const char* data=g_abi->array_get_string(items,index,&size);
+joined.append(data,size);
+}
+g_abi->ret_string(call,joined.data(),joined.size());
+}
+}
+
+TEST_CASE("string is a value type matching zodiac::String")
+{
+ScriptFixture fixture;
+CHECK(asGetTypeTraits<zodiac::String>()==asOBJ_APP_CLASS_CDAK);
+const asITypeInfo* type=fixture.engine->GetTypeInfoByName("string");
+REQUIRE(type!=nullptr);
+CHECK(type->GetSize()==sizeof(zodiac::String));
+CHECK((type->GetFlags()&(asOBJ_VALUE|asOBJ_APP_CLASS_CDAK))==(asOBJ_VALUE|asOBJ_APP_CLASS_CDAK));
+CHECK(fixture.engine->GetStringFactory()==type->GetTypeId());
+}
+
+TEST_CASE("size and access count characters")
+{
+ScriptFixture fixture;
+CHECK(holds(fixture,"\"\xC5\x9F" "ehir\".length()==5"));
+CHECK(holds(fixture,"\"\xC5\x9F" "ehir\".byte_length()==6"));
+CHECK(holds(fixture,"\"\xC5\x9F" "ehir\"[1]==\"e\""));
+CHECK(holds(fixture,"\"\xC5\x9F" "ehir\"[0]==\"\xC5\x9F\""));
+CHECK(holds(fixture,"\"\xC5\x9F" "ehir\".code_at(0)==0x15F"));
+CHECK(holds(fixture,"\"\xC5\x9F" "ehir\".byte_at(1)==0x9F"));
+CHECK(holds(fixture,"\"\".empty()&&!\"a\".empty()"));
+CHECK(holds(fixture,"\"a\\x00b\".byte_length()==3&&\"a\\x00b\".length()==3"));
+CHECK(error_of(fixture,"string s=\"abc\"[3];")=="index out of range");
+CHECK(error_of(fixture,"string s=\"abc\"[-1];")=="index out of range");
+CHECK(error_of(fixture,"uint c=\"abc\".code_at(3);")=="index out of range");
+CHECK(error_of(fixture,"uint8 b=\"\xC5\x9F\".byte_at(2);")=="index out of range");
+}
+
+TEST_CASE("search returns character indices")
+{
+ScriptFixture fixture;
+CHECK(holds(fixture,"\"\xC5\x9F" "ehir\".find(\"ir\")==3"));
+CHECK(holds(fixture,"\"banana\".find(\"an\",2)==3"));
+CHECK(holds(fixture,"\"banana\".find(\"x\")==-1"));
+CHECK(holds(fixture,"\"banana\".rfind(\"an\")==3"));
+CHECK(holds(fixture,"\"banana\".rfind(\"an\",2)==1"));
+CHECK(holds(fixture,"\"banana\".contains(\"nan\")&&!\"banana\".contains(\"x\")"));
+CHECK(holds(fixture,"\"banana\".starts_with(\"ba\")&&\"banana\".ends_with(\"na\")"));
+CHECK(holds(fixture,"\"banana\".count(\"a\")==3"));
+CHECK(error_of(fixture,"int i=\"abc\".find(\"a\",4);")=="index out of range");
+}
+
+TEST_CASE("parts clamp counts and reject bad starts")
+{
+ScriptFixture fixture;
+CHECK(value_of(fixture,"\"\xC5\x9F" "ehir\".substr(1,2)")=="eh");
+CHECK(value_of(fixture,"\"\xC5\x9F" "ehir\".substr(3,100)")=="ir");
+CHECK(value_of(fixture,"\"\xC5\x9F" "ehir\".substr(2)")=="hir");
+CHECK(value_of(fixture,"\"\xC5\x9F" "ehir\".left(100)")=="\xC5\x9F" "ehir");
+CHECK(value_of(fixture,"\"\xC5\x9F" "ehir\".left(1)")=="\xC5\x9F");
+CHECK(value_of(fixture,"\"\xC5\x9F" "ehir\".right(2)")=="ir");
+CHECK(error_of(fixture,"string s=\"abc\".substr(4);")=="index out of range");
+CHECK(error_of(fixture,"string s=\"abc\".substr(-1);")=="index out of range");
+CHECK(error_of(fixture,"string s=\"abc\".substr(0,-2);")=="negative count");
+CHECK(error_of(fixture,"string s=\"abc\".left(-1);")=="negative count");
+CHECK(holds(fixture,"\"a,b,,c\".split(\",\").length()==4"));
+CHECK(holds(fixture,"\"a,b,,c\".split(\",\",false).length()==3"));
+CHECK(value_of(fixture,"join(\"a,b,,c\".split(\",\"),\"-\")")=="a-b--c");
+CHECK(value_of(fixture,"join(\"\xC5\x9F" "ey\".split(\"\"),\"|\")")=="\xC5\x9F|e|y");
+CHECK(value_of(fixture,"join(array<string>(),\"-\")")=="");
+}
+
+TEST_CASE("changes return new strings")
+{
+ScriptFixture fixture;
+CHECK(value_of(fixture,"\"a-b-c\".replace(\"-\",\"+\")")=="a+b+c");
+CHECK(value_of(fixture,"\"a-b-c\".replace(\"-\",\"+\",false)")=="a+b-c");
+CHECK(value_of(fixture,"\"  a b \\t\".trim()")=="a b");
+CHECK(value_of(fixture,"\"  a \".trim_left()")=="a ");
+CHECK(value_of(fixture,"\"  a \".trim_right()")=="  a");
+CHECK(value_of(fixture,"\"\xC5\x9E" "EH\xC4\xB0R\".lower()")=="\xC5\x9F" "ehir");
+CHECK(value_of(fixture,"\"\xC5\x9F" "ehir\".upper()")=="\xC5\x9E" "EHIR");
+CHECK(value_of(fixture,"\"ab\".repeat(3)")=="ababab");
+CHECK(error_of(fixture,"string s=\"ab\".repeat(-1);")=="negative count");
+CHECK(value_of(fixture,"\"\xC5\x9F" "ey\".reverse()")=="ye\xC5\x9F");
+CHECK(value_of(fixture,"\"\xC5\x9F" "ey\".insert(1,\"x\")")=="\xC5\x9F" "xey");
+CHECK(value_of(fixture,"\"\xC5\x9F" "ehir\".erase(1,2)")=="\xC5\x9F" "ir");
+CHECK(value_of(fixture,"\"\xC5\x9F" "ehir\".erase(2)")=="\xC5\x9F" "e");
+CHECK(error_of(fixture,"string s=\"abc\".insert(4,\"x\");")=="index out of range");
+CHECK(value_of(fixture,"\"s\xCC\xA7\".normalize()")=="\xC5\x9F");
+}
+
+TEST_CASE("Turkish case mapping at script level")
+{
+ScriptFixture fixture;
+CHECK(value_of(fixture,"\"\xC4\xB0" "stanbul'da I\xC5\x9E" "IK\".lower(\"tr\")")=="istanbul'da \xC4\xB1\xC5\x9F\xC4\xB1" "k");
+CHECK(value_of(fixture,"\"istanbul \xC4\xB1\xC5\x9F\xC4\xB1" "k\".upper(\"tr\")")=="\xC4\xB0" "STANBUL I\xC5\x9E" "IK");
+CHECK(value_of(fixture,"\"I\".lower()")=="i");
+CHECK(value_of(fixture,"\"\xC4\xB0" "STANBUL\".lower(\"tr\")")=="istanbul");
+}
+
+TEST_CASE("numbers convert both ways")
+{
+ScriptFixture fixture;
+CHECK(holds(fixture,"\"3.5\".to_number()==3.5"));
+CHECK(holds(fixture,"\"-42\".to_int()==-42"));
+CHECK(holds(fixture,"\"12\".is_number()&&!\"1x\".is_number()"));
+CHECK(holds(fixture,"\"0123\".is_digits()&&!\"-1\".is_digits()"));
+CHECK(error_of(fixture,"double d=\"abc\".to_number();")=="\"abc\" is not a number");
+CHECK(error_of(fixture,"int64 i=\"1.2.3\".to_int();")=="\"1.2.3\" is not a number");
+CHECK(error_of(fixture,"double d=\"a\\nb\".to_number();")=="\"a\\nb\" is not a number");
+CHECK(error_of(fixture,"double d=\"x\".repeat(70).to_number();")=="\""+std::string(64,'x')+"...\" is not a number");
+CHECK(error_of(fixture,"double d=\"x\".repeat(64).to_number();")=="\""+std::string(64,'x')+"\" is not a number");
+CHECK(value_of(fixture,"string(5)")=="5");
+CHECK(value_of(fixture,"string(int8(-3))+string(int16(-300))+string(int64(5000000000))")=="-3-3005000000000");
+CHECK(value_of(fixture,"string(uint8(255))+string(uint16(65535))+string(uint(4000000000))+string(uint64(18446744073709551615))")=="255655354000000000" "18446744073709551615");
+CHECK(value_of(fixture,"string(1.5)+\" \"+string(0.1)+\" \"+string(100.0)")=="1.5 0.1 100");
+CHECK(value_of(fixture,"string(0.1f)")=="0.1");
+CHECK(value_of(fixture,"string(true)+string(false)")=="truefalse");
+CHECK(holds(fixture,"\"abc\".hash()==\"abc\".hash()&&\"abc\".hash()!=\"abd\".hash()"));
+REQUIRE(fixture.run("uint64 main(){return \"abc\".hash();}","uint64 main()")==asEXECUTION_FINISHED);
+CHECK(fixture.context->GetReturnQWord()==zodiac::String("abc").hash());
+}
+
+TEST_CASE("concatenation with numbers and bools both ways")
+{
+ScriptFixture fixture;
+CHECK(value_of(fixture,"\"a\"+5+\"b\"")=="a5b");
+CHECK(value_of(fixture,"5+\"a\"")=="5a");
+CHECK(value_of(fixture,"\"x\"+1.5+\"|\"+0.1f+\"|\"+true")=="x1.5|0.1|true");
+CHECK(value_of(fixture,"false+\"x\"+uint8(7)+int64(-8)+uint64(9)")=="falsex7-89");
+CHECK(value_of(fixture,"2.5+\"x\"+0.25f")=="2.5x0.25");
+CHECK(value_of(fixture,"\"n\"+uint(3)+int16(-2)")=="n3-2");
+REQUIRE(fixture.run("enum Color{red=2} string main(){return \"c\"+red;}","string main()")==asEXECUTION_FINISHED);
+CHECK(fixture.returned_string()=="c2");
+CHECK(value_of(fixture,"\"\"+\"\xC5\x9F\"+\"e\"")=="\xC5\x9F" "e");
+REQUIRE(fixture.run("string main(){string s=\"a\";s+=5;s+=\" \";s+=0.5f;s+=true;s+=s;return s;}","string main()")==asEXECUTION_FINISHED);
+CHECK(fixture.returned_string()=="a5 0.5truea5 0.5true");
+REQUIRE(fixture.run("string main(){string s;s=7;string t;t=2.5;string u;u=false;return s+t+u;}","string main()")==asEXECUTION_FINISHED);
+CHECK(fixture.returned_string()=="72.5false");
+}
+
+TEST_CASE("comparison is byte order and works with the array add-on")
+{
+ScriptFixture fixture;
+CHECK(holds(fixture,"\"a\"==\"a\"&&\"a\"!=\"b\""));
+CHECK(holds(fixture,"\"a\"<\"b\"&&\"b\">\"a\"&&\"a\"<=\"a\"&&\"a\">=\"a\""));
+CHECK(holds(fixture,"\"z\"<\"\xC4\xB1\""));
+CHECK(holds(fixture,"\"ab\"<\"abc\""));
+REQUIRE(fixture.run("string main(){array<string> a={\"c\",\"a\",\"b\"};a.sortAsc();a.insertLast(\"\xC5\x9F\");return join(a,\",\")+a.find(\"b\");}","string main()")==asEXECUTION_FINISHED);
+CHECK(fixture.returned_string()=="a,b,c,\xC5\x9F" "1");
+}
+
+TEST_CASE("assignment and copies keep values independent")
+{
+ScriptFixture fixture;
+REQUIRE(fixture.run("string main(){string a=\"a string long enough to live on the heap\";string b=a;b+=\"!\";string c;c=b;c[0];return a+\"|\"+b+\"|\"+c;}","string main()")==asEXECUTION_FINISHED);
+CHECK(fixture.returned_string()=="a string long enough to live on the heap|a string long enough to live on the heap!|a string long enough to live on the heap!");
+CHECK(holds(fixture,"string(\"abc\")==\"abc\""));
+}
+
+TEST_CASE("format fills {} placeholders")
+{
+ScriptFixture fixture;
+CHECK(holds(fixture,"format(\"{} ve {}\",1,\"iki\")==\"1 ve iki\""));
+CHECK(value_of(fixture,"format(\"{{}} {}\",5)")=="{} 5");
+CHECK(value_of(fixture,"format(\"{} {}\",1)")=="1 {}");
+CHECK(value_of(fixture,"format(\"{}\")")=="{}");
+CHECK(value_of(fixture,"format(\"{ } }} {{\")")=="{ } } {");
+CHECK(value_of(fixture,"format(\"{}|{}|{}|{}|{}\",0.1f,2.5,true,int8(-1),uint64(18446744073709551615))")=="0.1|2.5|true|-1|18446744073709551615");
+REQUIRE(fixture.run("enum Color{green=3} string main(){string s=\"\xC5\x9F\";return format(\"{}{}\",green,s);}","string main()")==asEXECUTION_FINISHED);
+CHECK(fixture.returned_string()=="3\xC5\x9F");
+CHECK(value_of(fixture,"format(\"{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}{}\",1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6)")=="1234567890123456");
+}
+
+TEST_CASE("C++ failures become script exceptions")
+{
+ScriptFixture fixture;
+CHECK(error_of(fixture,"string s=\"ab\".repeat(1500000000);")=="out of memory");
+REQUIRE(fixture.run("string main(){try{string s=\"ab\".repeat(1500000000);}catch{return exception_info();}return \"no\";}","string main()")==asEXECUTION_FINISHED);
+CHECK(fixture.returned_string()=="out of memory");
+}
+
+TEST_CASE("throw, exception_info and getExceptionInfo")
+{
+ScriptFixture fixture;
+CHECK(error_of(fixture,"throw(\"boom\");")=="boom");
+REQUIRE(fixture.run("string main(){try{throw(\"g\xC3\xBC\xC3\xA7\");}catch{return exception_info()+\"|\"+getExceptionInfo();}return \"no\";}","string main()")==asEXECUTION_FINISHED);
+CHECK(fixture.returned_string()=="g\xC3\xBC\xC3\xA7|g\xC3\xBC\xC3\xA7");
+REQUIRE(fixture.run("string main(){try{string s=\"a\"[5];}catch{return getExceptionInfo();}return \"no\";}","string main()")==asEXECUTION_FINISHED);
+CHECK(fixture.returned_string()=="index out of range");
+}
+
+TEST_CASE("string constants are shared by concurrent contexts")
+{
+ScriptFixture fixture;
+REQUIRE(fixture.run("bool main(){for(int i=0;i<200;++i){string s=\"\xC5\x9F" "ehir merkezi \"+i;if(\"\xC5\x9F" "ehir\".length()!=5||\"\xC5\x9F" "ehir\"[1]!=\"e\"||s.length()<14||\"bir uzun sabit metin, k\xC3\xBC\xC3\xA7\xC3\xBCk de\xC4\x9Fil\".hash()==0)return false;}return true;}","bool main()")==asEXECUTION_FINISHED);
+asIScriptFunction* entry=fixture.engine->GetModule("test")->GetFunctionByDecl("bool main()");
+std::atomic<int> successes=0;
+std::vector<std::thread> threads;
+for(int worker=0;worker<4;++worker){
+threads.emplace_back([&]{
+asIScriptContext* context=fixture.engine->CreateContext();
+bool ok=context!=nullptr;
+for(int round=0;ok&&round<25;++round)ok=context->Prepare(entry)>=0&&context->Execute()==asEXECUTION_FINISHED&&context->GetReturnByte()==1;
+if(context)context->Release();
+asThreadCleanup();
+if(ok)++successes;
+});
+}
+for(std::thread& thread:threads)thread.join();
+CHECK(successes==4);
+}
+
+TEST_CASE("plugin strings with NUL bytes and Turkish text round-trip exactly")
+{
+ScriptFixture fixture;
+g_abi=fixture.abi();
+REQUIRE(g_abi->register_function(fixture.abi(),"string bytes_out()",bytes_out,nullptr)==ZODIAC_OK);
+REQUIRE(g_abi->register_function(fixture.abi(),"string bytes_echo(const string &in)",bytes_echo,nullptr)==ZODIAC_OK);
+REQUIRE(g_abi->register_function(fixture.abi(),"array<string>@ bytes_list()",bytes_list,nullptr)==ZODIAC_OK);
+REQUIRE(g_abi->register_function(fixture.abi(),"string bytes_join(array<string>@)",bytes_join,nullptr)==ZODIAC_OK);
+g_seen.clear();
+g_terminated=false;
+CHECK(holds(fixture,"bytes_out().byte_length()==5&&bytes_out().length()==4&&bytes_out().byte_at(1)==0&&bytes_out()[2]==\"\xC5\x9F\"&&bytes_out()==\"a\\x00\xC5\x9F" "b\""));
+CHECK(holds(fixture,"bytes_echo(bytes_out()+\"\xC4\xB0\")==bytes_out()+\"\xC4\xB0\""));
+CHECK(g_seen==std::string(g_plugin_bytes)+"\xC4\xB0");
+CHECK(g_terminated);
+CHECK(holds(fixture,"bytes_list().length()==2&&bytes_list()[0]==\"\\x00\xC4\xB0\"&&bytes_list()[1]==bytes_out()"));
+CHECK(value_of(fixture,"bytes_join(bytes_list())")==std::string("\0\xC4\xB0",3)+std::string(g_plugin_bytes));
+CHECK(fixture.logs.empty());
+}

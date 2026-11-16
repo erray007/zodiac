@@ -1,4 +1,5 @@
 #include "core/host.hpp"
+#include "core/types/string.hpp"
 #include <angelscript.h>
 #include <scriptarray/scriptarray.h>
 #include <bit>
@@ -120,9 +121,10 @@ bool is_named(const asITypeInfo* type,const char* name) noexcept
 const char* name_space=type->GetNamespace();
 return std::strcmp(type->GetName(),name)==0&&(!name_space||!*name_space);
 }
-bool is_std_string(const asITypeInfo* type) noexcept
+// The script string registered by register_string (zodiac::String).
+bool is_script_string(const asITypeInfo* type) noexcept
 {
-return type&&is_named(type,"string")&&(type->GetFlags()&asOBJ_VALUE)&&type->GetSize()==sizeof(std::string);
+return type&&is_named(type,"string")&&(type->GetFlags()&asOBJ_VALUE)&&type->GetSize()==sizeof(String);
 }
 CScriptArray* to_array(zodiac_array* array) noexcept
 {
@@ -130,7 +132,7 @@ return reinterpret_cast<CScriptArray*>(array);
 }
 bool is_string_array(const CScriptArray* array) noexcept
 {
-return is_std_string(array->GetArrayObjectType()->GetSubType());
+return is_script_string(array->GetArrayObjectType()->GetSubType());
 }
 // Geometric growth so repeated pushes stay amortized O(1); CScriptArray itself grows to the exact size.
 void grow_to(CScriptArray* array,asUINT size)
@@ -178,7 +180,7 @@ return *static_cast<const Binding*>(gen->GetAuxiliary());
 static void thunk(asIScriptGeneric* gen)
 {
 const Binding& bound=binding(gen);
-if(bound.string_result)::new(gen->GetAddressOfReturnLocation()) std::string();
+if(bound.string_result)::new(gen->GetAddressOfReturnLocation()) String();
 bound.fn(reinterpret_cast<zodiac_call*>(gen));
 }
 // Raises a script exception for an allocation failure inside a call-time accessor; never throws itself.
@@ -325,8 +327,8 @@ static const char* arg_string(zodiac_call* call,uint32_t index,size_t* length) n
 {
 asIScriptGeneric* gen=generic(call);
 const Value* value=param(gen,index);
-const std::string* text=value&&value->kind==Kind::string?static_cast<const std::string*>(gen->GetArgObject(index)):nullptr;
-if(length)*length=text?text->size():0;
+const String* text=value&&value->kind==Kind::string?static_cast<const String*>(gen->GetArgObject(index)):nullptr;
+if(length)*length=text?static_cast<size_t>(text->byte_length()):0;
 return text?text->data():nullptr;
 }
 static void* arg_object(zodiac_call* call,uint32_t index) noexcept
@@ -369,9 +371,9 @@ if(!bound.string_result){
 misuse(gen,bound,"ret_string");
 return;
 }
-std::string& result=*static_cast<std::string*>(gen->GetAddressOfReturnLocation());
+String& result=*static_cast<String*>(gen->GetAddressOfReturnLocation());
 try{
-if(data)result.assign(data,length);
+if(data)result=std::string_view(data,length);
 else result.clear();
 }
 catch(...){
@@ -431,8 +433,8 @@ return array?to_array(array)->GetSize():0;
 static const char* array_get_string(zodiac_array* array,uint32_t index,size_t* length) noexcept
 {
 CScriptArray* items=to_array(array);
-const std::string* text=items&&index<items->GetSize()&&is_string_array(items)?static_cast<const std::string*>(items->At(index)):nullptr;
-if(length)*length=text?text->size():0;
+const String* text=items&&index<items->GetSize()&&is_string_array(items)?static_cast<const String*>(items->At(index)):nullptr;
+if(length)*length=text?static_cast<size_t>(text->byte_length()):0;
 return text?text->data():nullptr;
 }
 static int32_t array_get_int32(zodiac_array* array,uint32_t index) noexcept
@@ -452,7 +454,7 @@ if(!items||!is_string_array(items))return;
 try{
 const asUINT size=items->GetSize();
 grow_to(items,size+1);
-if(std::string* text=static_cast<std::string*>(items->At(size));text&&data)text->assign(data,length);
+if(String* text=static_cast<String*>(items->At(size));text&&data)*text=std::string_view(data,length);
 }
 catch(...){
 out_of_memory();
@@ -624,7 +626,7 @@ return value;
 asITypeInfo* type=engine_->GetTypeInfoById(type_id);
 value.type=type;
 if(!type||(type->GetFlags()&asOBJ_FUNCDEF))return value;
-if(is_std_string(type)){
+if(is_script_string(type)){
 if(!value.handle)value.kind=Kind::string;
 return value;
 }
@@ -633,7 +635,7 @@ value.kind=Kind::array;
 const int element_id=type->GetSubTypeId(0);
 if(element_id==asTYPEID_INT32)value.element=Kind::int32;
 else if(element_id==asTYPEID_DOUBLE)value.element=Kind::float64;
-else if(is_std_string(type->GetSubType(0)))value.element=Kind::string;
+else if(is_script_string(type->GetSubType(0)))value.element=Kind::string;
 return value;
 }
 value.kind=Kind::object;

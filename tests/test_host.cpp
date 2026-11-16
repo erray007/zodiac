@@ -22,8 +22,8 @@ void inspect_string(zodiac_call* call)
 {
 size_t length=0;
 const char* data=g_abi->arg_string(call,0,&length);
-const std::string* original=static_cast<const std::string*>(reinterpret_cast<asIScriptGeneric*>(call)->GetArgObject(0));
-g_string_not_copied=original!=nullptr&&data==original->data()&&length==original->size();
+const zodiac::String* original=static_cast<const zodiac::String*>(reinterpret_cast<asIScriptGeneric*>(call)->GetArgObject(0));
+g_string_not_copied=original!=nullptr&&data==original->data()&&length==static_cast<size_t>(original->byte_length());
 }
 int native_add(int a,int b)
 {
