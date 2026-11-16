@@ -42,15 +42,19 @@ INFO(source);
 REQUIRE(fixture.run(source.c_str(),"void main()")==asEXECUTION_EXCEPTION);
 return fixture.exception_string();
 }
-// True when "void main(){<statements>}" after the prelude compiles.
-bool compiles(ScriptFixture& fixture,std::string_view statements)
+// Builds source into the fixture's "test" module; true when it compiles.
+bool builds(ScriptFixture& fixture,const std::string& source)
 {
-const std::string source=std::string(prelude)+"void main(){"+std::string(statements)+"}";
 asIScriptModule* module=fixture.engine->GetModule("test",asGM_ALWAYS_CREATE);
 REQUIRE(module!=nullptr);
 REQUIRE(module->AddScriptSection("test",source.c_str())>=0);
 fixture.messages.clear();
 return module->Build()>=0;
+}
+// True when "void main(){<statements>}" after the prelude compiles.
+bool compiles(ScriptFixture& fixture,std::string_view statements)
+{
+return builds(fixture,std::string(prelude)+"void main(){"+std::string(statements)+"}");
 }
 std::string replaced(std::string text,std::string_view from,std::string_view to)
 {
@@ -255,12 +259,99 @@ ScriptFixture fixture;
 CHECK(value_of(fixture,"array<int> a={3,1,2};string e;try{a.sort(function(x,y){throw(\"boom\");return x<y;});}catch{e=exception_info();}return show(a)+\"|\"+e;")=="3,1,2|boom");
 REQUIRE(fixture.run("class Bad{int v;Bad(int x){v=x;}int opCmp(const Bad&in o) const{throw(\"no order\");return 0;}} string main(){array<Bad@> a={Bad(2),Bad(1)};string e;try{a.sort();}catch{e=exception_info();}return a[0].v+e;}","string main()")==asEXECUTION_FINISHED);
 CHECK(fixture.returned_string()=="2no order");
-REQUIRE(fixture.run("array<string> g={\"c\",\"a\",\"b\"}; string main(){string e;try{g.sort(function(x,y){g.remove_last();return x<y;});}catch{e=exception_info();}return g.length()+e;}","string main()")==asEXECUTION_FINISHED);
-CHECK(fixture.returned_string()=="2the array changed while it was sorted");
+REQUIRE(fixture.run("array<string> g={\"c\",\"a\",\"b\"}; string main(){string e;try{g.sort(function(x,y){g.remove_last();return x<y;});}catch{e=exception_info();}return g.length()+g[0]+g[1]+g[2]+e;}","string main()")==asEXECUTION_FINISHED);
+CHECK(fixture.returned_string()=="3cabthe array changed while it was sorted");
 REQUIRE(fixture.run("array<int> g={3,1,2}; string main(){string e;try{g.sort(function(x,y){g.insert_last(0);return x<y;});}catch{e=exception_info();}return g[0]+e;}","string main()")==asEXECUTION_FINISHED);
 CHECK(fixture.returned_string()=="3the array changed while it was sorted");
 REQUIRE(fixture.run("class Node{int v;Node(int x){v=x;}} array<Node@> g={Node(3),Node(1),Node(2)}; string main(){g.sort(function(x,y){@g[0]=Node(9);return x.v<y.v;});string s;for(int i=0;i<g.length();++i)s+=g[i].v;return s;}","string main()")==asEXECUTION_FINISHED);
 CHECK(fixture.returned_string()=="123");
+}
+
+TEST_CASE("enums with an unsigned underlying type sort and compare unsigned")
+{
+ScriptFixture fixture;
+constexpr const char* source=
+"enum Small:uint8{big=200,tiny=1}\n"
+"enum Wide:uint32{huge=3000000000,little=5}\n"
+"bool main(){\n"
+"array<Small> a={big,tiny,big,tiny};array<Small> b=a;a.sort();b.sort(function(x,y){return x<y;});\n"
+"array<Small> e=a;e.sort_descending();\n"
+"array<Wide> c={huge,little,huge};array<Wide> d=c;c.sort();d.sort(function(x,y){return x<y;});\n"
+"return big>tiny&&huge>little&&a[0]==tiny&&a[3]==big&&a==b&&e[0]==big&&e[3]==tiny&&c[0]==little&&c[2]==huge&&c==d&&c.find(huge)==1;\n"
+"}\n";
+REQUIRE(fixture.run(source,"bool main()")==asEXECUTION_FINISHED);
+CHECK(fixture.context->GetReturnByte()!=0);
+}
+
+TEST_CASE("a callback cannot destroy elements of an array being sorted or searched")
+{
+ScriptFixture fixture;
+REQUIRE(fixture.run("array<string> g={\"c\",\"a\",\"b\"}; string main(){string e;try{g.sort(function(x,y){g.remove_at(0);return x<y;});}catch{e=exception_info();}return g.length()+g[0]+g[1]+g[2]+\"|\"+e;}","string main()")==asEXECUTION_FINISHED);
+CHECK(fixture.returned_string()=="3cab|the array changed while it was sorted");
+constexpr const char* source=
+"class Val{int v;Val(){v=0;}Val(int x){v=x;}int opCmp(const Val&in o) const{g.clear();return v-o.v;}bool opEquals(const Val&in o) const{g.resize(0);return v==o.v;}}\n"
+"array<Val> g={Val(3),Val(1),Val(2)};\n"
+"string main(){\n"
+"string s;\n"
+"try{g.sort();}catch{s+=exception_info();}\n"
+"s+=\"|\"+g.length()+g[0].v;\n"
+"try{g.sort(function(x,y){g.remove_last();return x.v<y.v;});}catch{s+=\"|\"+exception_info();}\n"
+"try{g.sort(function(x,y){g=array<Val>();return x.v<y.v;});}catch{s+=\"|\"+exception_info();}\n"
+"try{g.find(Val(1));}catch{s+=\"|\"+exception_info();}\n"
+"array<Val> h=g;\n"
+"try{bool same=g==h;}catch{s+=\"|\"+exception_info();}\n"
+"try{g.contains(Val(2));}catch{s+=\"|\"+exception_info();}\n"
+"s+=\"|\"+g.length()+g[0].v+g[1].v+g[2].v;\n"
+"g.remove_last();\n"
+"return s+\"|\"+g.length();\n"
+"}\n";
+REQUIRE(fixture.run(source,"string main()")==asEXECUTION_FINISHED);
+CHECK(fixture.returned_string()=="the array changed while it was sorted|33|the array changed while it was sorted|the array changed while it was sorted|the array changed while it was searched|the array changed while it was searched|the array changed while it was searched|3312|2");
+}
+
+TEST_CASE("equality of elements without opEquals or opCmp throws like find")
+{
+ScriptFixture fixture;
+CHECK(error_of(fixture,"array<Bare> a(1);array<Bare> b(1);bool q=a==b;")=="type \"Bare\" has no opEquals or opCmp method");
+CHECK(value_of(fixture,"array<Bare> a;array<Bare> b;array<Bare> c(1);return (a==b)+\",\"+(a==c);")=="true,false");
+}
+
+TEST_CASE("the template callback rejects element types it cannot create and sets the GC flag per instance")
+{
+ScriptFixture fixture;
+CHECK_FALSE(builds(fixture,"class NoDefault{NoDefault(int x){}} void main(){array<NoDefault> a;}"));
+CHECK(builds(fixture,"class NoDefault{NoDefault(int x){}} void main(){array<NoDefault@> a;}"));
+CHECK_FALSE(builds(fixture,"void main(){array<void> a;}"));
+REQUIRE(builds(fixture,"final class Fin{} class Node{} void main(){array<Fin@> a;array<Node@> b;array<int> c;array<string> d;array<Fin> e;}"));
+asIScriptModule* module=fixture.engine->GetModule("test",asGM_ONLY_IF_EXISTS);
+REQUIRE(module!=nullptr);
+auto collected=[module](const char* declaration){
+asITypeInfo* type=module->GetTypeInfoByDecl(declaration);
+REQUIRE(type!=nullptr);
+return (type->GetFlags()&asOBJ_GC)!=0;
+};
+CHECK_FALSE(collected("array<int>"));
+CHECK_FALSE(collected("array<string>"));
+CHECK_FALSE(collected("array<Fin@>"));
+CHECK(collected("array<Node@>"));
+}
+
+TEST_CASE("callback sorts are stable")
+{
+ScriptFixture fixture;
+constexpr const char* source=
+"class Pair{int k;int t;Pair(){}Pair(int a,int b){k=a;t=b;}int opCmp(const Pair&in o) const{return k-o.k;}}\n"
+"bool ordered(const array<Pair>&in a,bool up){for(int i=1;i<a.length();++i){if(a[i-1].k==a[i].k){if(a[i-1].t>=a[i].t)return false;}else if((a[i-1].k<a[i].k)!=up)return false;}return true;}\n"
+"bool main(){\n"
+"array<Pair> a;for(int i=0;i<40;++i)a.insert_last(Pair((i*7)%3,i));\n"
+"array<Pair> b=a;array<Pair> c=a;\n"
+"a.sort();b.sort(function(x,y){return x.k<y.k;});c.sort_descending();\n"
+"array<Pair@> h;for(int i=0;i<40;++i)h.insert_last(Pair(i%4,i));h.sort();\n"
+"bool handles=true;for(int i=1;i<h.length();++i)if(h[i-1].k==h[i].k&&h[i-1].t>=h[i].t)handles=false;\n"
+"return a.length()==40&&ordered(a,true)&&ordered(b,true)&&ordered(c,false)&&handles;\n"
+"}\n";
+REQUIRE(fixture.run(source,"bool main()")==asEXECUTION_FINISHED);
+CHECK(fixture.context->GetReturnByte()!=0);
 }
 
 TEST_CASE("ScriptArray from C++: NaN sorts last, element type and string detection")

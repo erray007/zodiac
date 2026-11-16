@@ -62,6 +62,7 @@ constexpr const char* index_error="index out of range";
 constexpr const char* count_error="negative count";
 constexpr const char* memory_error="out of memory";
 constexpr const char* changed_error="the array changed while it was sorted";
+constexpr const char* searched_error="the array changed while it was searched";
 
 [[gnu::cold,gnu::noinline]] void raise(const char* text) noexcept
 {
@@ -261,32 +262,63 @@ bool lost_text_=false;
 std::string error_;
 };
 
-// 1 when the objects are equal, 0 when not, -1 when a call failed. Like the add-on: the same object (or two null handles) is
-// equal, a null handle equals nothing else, then opEquals or else opCmp()==0 decides.
-int objects_equal(ScriptCalls& calls,const ArrayCache& cache,void* a,void* b) noexcept
+// Marks an array busy for the duration of a callback sort, find or equality: while busy_ holds a text, every operation that
+// would destroy elements raises it and changes nothing, so a script call cannot free an element still being compared.
+class BusyGuard {
+public:
+BusyGuard(const char*& busy,const char* text) noexcept:busy_(busy),previous_(busy)
+{
+busy=text;
+}
+~BusyGuard()
+{
+busy_=previous_;
+}
+BusyGuard(const BusyGuard&)=delete;
+BusyGuard& operator=(const BusyGuard&)=delete;
+private:
+const char*& busy_;
+const char* previous_;
+};
+
+// 1 when the objects are equal, 0 when not, -1 when the type has neither opEquals nor opCmp or a call failed. Like the
+// add-on: the same object (or two null handles) is equal and a null handle equals nothing else; otherwise opEquals, or else
+// opCmp()==0, decides. Handle elements are counted during the call, so script code dropping them cannot free them.
+int objects_equal(ScriptCalls& calls,const ArrayCache& cache,void* a,void* b,asITypeInfo* held) noexcept
 {
 if(a==b)return 1;
 if(!a||!b)return 0;
 asIScriptFunction* function=cache.equals?cache.equals:cache.compare;
 if(!function||!calls.prepare(function))return -1;
+asIScriptEngine* engine=calls.context()->GetEngine();
+if(held){
+engine->AddRefScriptObject(a,held);
+engine->AddRefScriptObject(b,held);
+}
 asIScriptContext* context=calls.context();
 context->SetObject(a);
 context->SetArgObject(0,b);
-if(!calls.execute())return -1;
-if(cache.equals)return context->GetReturnByte()!=0?1:0;
-return static_cast<int>(context->GetReturnDWord())==0?1:0;
+int result=-1;
+if(calls.execute()){
+if(cache.equals)result=context->GetReturnByte()!=0?1:0;
+else result=static_cast<int>(context->GetReturnDWord())==0?1:0;
+}
+if(held){
+engine->ReleaseScriptObject(a,held);
+engine->ReleaseScriptObject(b,held);
+}
+return result;
 }
 
-// Orders the slot copies of a callback sort. Every call checks that the compare left the array as it was; after the first
-// failure or change every comparison is false, which ends std::stable_sort quickly with the copies still a permutation.
+// Orders the slot copies of a callback sort. The array is busy meanwhile, so the compare cannot destroy elements; every call
+// checks that it did not insert any either. After the first failure or change every comparison is false, which ends
+// std::stable_sort quickly with the copies still a permutation.
 struct CallLess {
 using Slot=std::uint64_t;
 ScriptCalls* calls;
 asIScriptFunction* less;
 asIScriptFunction* compare;
-const std::uint32_t* version;
 const std::uint32_t* count;
-std::uint32_t expected_version;
 std::uint32_t expected_count;
 bool descending;
 bool indirect;
@@ -318,7 +350,7 @@ context->SetArgObject(0,y);
 if(!calls->execute())return stop();
 result=static_cast<int>(context->GetReturnDWord())<0;
 }
-if(*version!=expected_version||*count!=expected_count){
+if(*count!=expected_count){
 *changed=true;
 return stop();
 }
@@ -416,7 +448,12 @@ cache_=precache(type);
 if(indirect_&&cache_&&cache_->strings)kind_=Kind::string;
 }else{
 element_size_=static_cast<std::uint32_t>(engine()->GetSizeOfPrimitiveType(sub_type_id_));
-kind_=primitive_kind(sub_type_id_,element_size_);
+// An enum compares as its underlying type, which may be unsigned.
+int value_type_id=sub_type_id_;
+if(value_type_id>asTYPEID_DOUBLE){
+if(asITypeInfo* enum_type=engine()->GetTypeInfoById(value_type_id))value_type_id=enum_type->GetUnderlyingTypeId();
+}
+kind_=primitive_kind(value_type_id,element_size_);
 }
 }
 
@@ -678,7 +715,10 @@ return engine()->AssignScriptObject(target,const_cast<void*>(value),sub_type())>
 void ScriptArray::erase_slots(std::uint32_t first,std::uint32_t count) noexcept
 {
 if(!count)return;
-++version_;
+if(busy_){
+raise(busy_);
+return;
+}
 const std::size_t tail=static_cast<std::size_t>(count_-first-count)*element_size_;
 if(!has_objects()){
 if(tail)std::memmove(slot(first),slot(first+count),tail);
@@ -724,6 +764,16 @@ return;
 if(static_cast<std::uint32_t>(capacity)>capacity_)set_capacity(static_cast<std::uint32_t>(capacity));
 }
 
+bool ScriptArray::try_reserve(int capacity) noexcept
+{
+if(capacity<=static_cast<int>(capacity_))return true;
+void* memory=std::realloc(data_,static_cast<std::size_t>(capacity)*element_size_);
+if(!memory)return false;
+data_=static_cast<std::byte*>(memory);
+capacity_=static_cast<std::uint32_t>(capacity);
+return true;
+}
+
 void ScriptArray::resize(int length) noexcept
 {
 if(length<0){
@@ -766,6 +816,10 @@ ScriptArray& ScriptArray::assign(const ScriptArray& other) noexcept
 {
 // Like the add-on: only arrays of the same type are copied.
 if(&other==this||other.type_!=type_)return *this;
+if(busy_){
+raise(busy_);
+return *this;
+}
 if(!has_objects()){
 const std::uint32_t count=other.count_;
 if(count>capacity_&&!set_capacity(count))return *this;
@@ -796,10 +850,15 @@ bool ScriptArray::equals(const ScriptArray& other) const noexcept
 {
 if(other.type_!=type_||other.count_!=count_)return false;
 if(native())return native_equals(other);
-if(!cache_)return false;
+if(!count_)return true;
+// Like find: elements without opEquals or opCmp cannot be compared.
+if(!check_compare(true))return false;
+const BusyGuard busy(busy_,searched_error);
+const BusyGuard other_busy(other.busy_,searched_error);
+asITypeInfo* held=kind_==Kind::handle?sub_type():nullptr;
 ScriptCalls calls(engine());
 for(std::uint32_t index=0;index<count_&&index<other.count_;++index){
-if(objects_equal(calls,*cache_,load_pointer(slot(index)),load_pointer(other.slot(index)))!=1)return false;
+if(objects_equal(calls,*cache_,load_pointer(slot(index)),load_pointer(other.slot(index)),held)!=1)return false;
 }
 return count_==other.count_;
 }
@@ -922,9 +981,11 @@ if(native())return native_find(value,static_cast<std::uint32_t>(start));
 if(!check_compare(true))return -1;
 // A handle parameter is the address of the handle.
 void* needle=kind_==Kind::handle?load_pointer(value):const_cast<void*>(value);
+const BusyGuard busy(busy_,searched_error);
+asITypeInfo* held=kind_==Kind::handle?sub_type():nullptr;
 ScriptCalls calls(engine());
 for(std::uint32_t index=static_cast<std::uint32_t>(start);index<count_;++index){
-const int result=objects_equal(calls,*cache_,load_pointer(slot(index)),needle);
+const int result=objects_equal(calls,*cache_,load_pointer(slot(index)),needle,held);
 if(result==1)return static_cast<int>(index);
 if(result<0)return -1;
 }
@@ -987,7 +1048,8 @@ bool ScriptArray::sort_with_calls(asIScriptFunction* less,bool descending) noexc
 const std::uint32_t count=count_;
 if(count<2)return true;
 // The sort runs on copies of the slots, so the array stays whole for the garbage collector and for the compare, which
-// may read it; handles are counted for the duration so a compare that replaces elements cannot free them.
+// may read it. The array is busy meanwhile (no element can be destroyed) and handles are counted for the duration, so a
+// compare that replaces handles cannot free them either.
 using Slot=CallLess::Slot;
 auto* order=static_cast<Slot*>(std::malloc(static_cast<std::size_t>(count)*sizeof(Slot)));
 if(!order){
@@ -1009,11 +1071,12 @@ if(void* pointer=load_pointer(&order[index]))owner->AddRefScriptObject(pointer,e
 bool stopped=false;
 bool changed=false;
 {
+const BusyGuard busy(busy_,changed_error);
 ScriptCalls calls(owner);
-const CallLess compare{&calls,less,cache_?cache_->compare:nullptr,&version_,&count_,version_,count,descending,indirect_,&stopped,&changed};
+const CallLess compare{&calls,less,cache_?cache_->compare:nullptr,&count_,count,descending,indirect_,&stopped,&changed};
 if(calls.ok())std::stable_sort(order,order+count,compare);
 else stopped=true;
-if(!stopped&&(version_!=compare.expected_version||count_!=count)){
+if(!stopped&&count_!=count){
 stopped=true;
 changed=true;
 }

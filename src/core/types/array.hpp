@@ -46,15 +46,21 @@
 // - Range rules (spec 8.1): an index or start outside [0, length()] (outside [0, length()) for element access and
 //   remove_at) throws "index out of range"; counts past the end are clamped; a negative count other than the -1 "to the end"
 //   default throws "negative count"; a failed allocation (or more than INT_MAX elements) throws "out of memory".
-// - Native fast paths: for bool, int8..int64, uint8..uint64, float, double, enums and Zodiac's string, sort(),
-//   sort_descending(), find, contains and opEquals compare in C++ without calling back into the engine (NaN sorts last in
-//   both orders and equals nothing). Other element types use their opCmp/opEquals (opCmp also serves equality) through a
-//   nested call on the active context; a type without them throws "type \"<name>\" has no opCmp method" or
+// - Native fast paths: for bool, int8..int64, uint8..uint64, float, double, enums (as their underlying type, signed or
+//   unsigned) and Zodiac's string, sort(), sort_descending(), find, contains and opEquals compare in C++ without calling
+//   back into the engine. Native sorts are not stable, which is only visible for values that compare equal but differ in
+//   bits (-0.0 and 0.0, NaN payloads); NaN sorts last in both orders and equals nothing. Other element types use their
+//   opCmp/opEquals (opCmp also serves equality) through a nested call on the active context; find, contains, opEquals on
+//   non-empty arrays and sort of a type without them throw "type \"<name>\" has no opCmp method" or
 //   "type \"<name>\" has no opEquals or opCmp method" ("... more than one ..." when overloads are ambiguous).
 // - Callback sorts (sort(less), and sort()/sort_descending() through opCmp) are stable and all-or-nothing: they sort a copy
 //   (holding a reference to every handle) and write it back only when every call finished. A call that throws or aborts
-//   leaves the array unchanged and passes the exception (same text) or the abort on to the caller; a compare that removes or
-//   inserts elements stops the sort with "the array changed while it was sorted".
+//   leaves the array unchanged and passes the exception (same text) or the abort on to the caller; a compare that inserts
+//   elements stops the sort with "the array changed while it was sorted".
+// - While a callback sort, find, contains or opEquals runs, the arrays involved are busy: remove_at, remove_last,
+//   remove_range, clear, a shrinking resize and opAssign raise "the array changed while it was sorted" (during a sort) or
+//   "the array changed while it was searched" and change nothing, so script code can never free an element still being
+//   compared. Handle elements are also counted around each opEquals/opCmp call.
 // - Script code run by element destructors may use the array: removed elements are released after the array is consistent.
 // - The C++ API mirrors the script one (snake case, int indices) for Zodiac's own bindings and the plugin ABI; errors raise
 //   script exceptions on the active context (nothing happens without one) and never throw C++ exceptions. at() returns
@@ -90,6 +96,8 @@ bool holds_strings() const noexcept {return kind_==Kind::string;}
 int length() const noexcept {return static_cast<int>(count_);}
 bool empty() const noexcept {return count_==0;}
 void reserve(int capacity) noexcept;
+// A capacity hint: false (and nothing raised) when the memory cannot be had.
+bool try_reserve(int capacity) noexcept;
 void resize(int length) noexcept;
 void clear() noexcept;
 
@@ -159,8 +167,8 @@ bool indirect_=false;
 std::uint32_t element_size_=0;
 std::uint32_t count_=0;
 std::uint32_t capacity_=0;
-// Bumped by every operation that destroys or replaces elements, so a callback sort sees changes made by its compare.
-std::uint32_t version_=0;
+// While a callback sort, find or equality runs: the error text every element-destroying operation raises instead.
+mutable const char* busy_=nullptr;
 int sub_type_id_=0;
 std::byte* data_=nullptr;
 asITypeInfo* type_=nullptr;

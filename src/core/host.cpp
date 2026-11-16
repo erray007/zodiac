@@ -419,8 +419,8 @@ return nullptr;
 }
 ScriptArray* array=ScriptArray::create(result.type);
 if(!array)return nullptr;
-// The hint is a capacity; pushes grow geometrically beyond it.
-if(reserve)array->reserve(static_cast<int>(std::min<uint32_t>(reserve,static_cast<uint32_t>(std::numeric_limits<int>::max()))));
+// The hint is only a capacity: when it cannot be had it is ignored, and pushes grow geometrically as needed.
+if(reserve)static_cast<void>(array->try_reserve(static_cast<int>(std::min<uint32_t>(reserve,static_cast<uint32_t>(std::numeric_limits<int>::max())))));
 return_handle(gen,result,array);
 return reinterpret_cast<zodiac_array*>(array);
 }
