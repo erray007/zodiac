@@ -37,7 +37,7 @@
 //   int, int64, uint8, uint16, uint, uint64, float, double, string, dictionary@ (null or a count with entry lines) and
 //   dictionary. Quoted text escapes \" \\ \n \r \t and other bytes below 0x20 and 0x7F as \xHH; bytes from 0x80 are kept.
 //   Every line ends with "\n". Nesting is limited to max_depth levels. Any other value throws
-//   "cannot serialize \"<key>\": unsupported type <type>" (the innermost key; <type> as the engine declares it), a
+//   "cannot serialize \"<key>\": unsupported type <type>" (the innermost key; <type> as scripts write it, e.g. array<Item@>), a
 //   dictionary reached again inside itself "cannot serialize \"<key>\": the dictionary contains itself", deeper nesting
 //   "cannot serialize \"<key>\": nested too deeply". Keys in messages go through one_line and are cut to 64 characters
 //   followed by "...".

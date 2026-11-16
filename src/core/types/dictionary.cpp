@@ -788,6 +788,7 @@ return result;
 void Dictionary::commit(Dictionary& source)
 {
 reserve(source.live_);
+// Past clear(), a bad_alloc from reserve(1) can leave the content partly replaced; "unchanged" covers malformed input only.
 clear();
 for(std::uint32_t index=source.first_;index!=no_entry;index=source.entry(index).next){
 Entry& item=source.entry(index);
@@ -1339,7 +1340,9 @@ case ArrayTag::uint32:return read_ranged<std::uint32_t>(text,slot);
 case ArrayTag::uint64:return read_whole_integer(text,*static_cast<std::uint64_t*>(slot));
 case ArrayTag::float32:{
 double value;
-if(!read_double(text,value)||(std::isfinite(value)&&std::fabs(value)>FLT_MAX))return false;
+// Refuse only what would round to infinity (the shortest text of FLT_MAX reads as a double just above it); the cast of
+// anything below is defined and rounds to the nearest float.
+if(!read_double(text,value)||(std::isfinite(value)&&std::fabs(value)>=0x1.ffffffp127))return false;
 *static_cast<float*>(slot)=static_cast<float>(value);
 return true;
 }
@@ -1415,6 +1418,7 @@ std::memcpy(&count,buffer,sizeof count);
 buffer+=sizeof count;
 while(count--){
 if(const auto misaligned=reinterpret_cast<std::uintptr_t>(buffer)&3)buffer+=4-misaligned;
+// The key String lies at the 4-byte boundary the engine's list buffer layout gives it, as the add-on also relies on.
 const String& key=*reinterpret_cast<const String*>(buffer);
 buffer+=sizeof(String);
 int type_id;

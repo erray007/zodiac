@@ -87,6 +87,14 @@ header+"dictionary \"a\" 2\nint64 \"x\" 1\nint64 \"x\" 2\n",
 header+"dictionary \"a\" nul\n",
 header+"array<int8> \"a\" 1\n300\n",
 header+"array<uint8> \"a\" 1\n-1\n",
+header+"array<int8> \"a\" 1\n-129\n",
+header+"array<int16> \"a\" 1\n32768\n",
+header+"array<int> \"a\" 1\n2147483648\n",
+header+"array<uint16> \"a\" 1\n65536\n",
+header+"array<uint> \"a\" 1\n4294967296\n",
+header+"array<uint64> \"a\" 1\n18446744073709551616\n",
+header+"array<float> \"a\" 1\n3.4028236e+38\n",
+header+"array<float> \"a\" 1\n-1e39\n",
 header+"array<int> \"a\" 2\n1\n",
 header+"array<int> \"a\" 1\n1\nint64 \"b\" 2 x\n",
 header+"array<Item> \"a\" 0\n",
@@ -268,8 +276,8 @@ CHECK(value_of(fixture,
 "dictionary inner;inner.set(\"x\",1);inner.set(\"ad\",\"Ay\xC5\x9F" "e\");d.set(\"inner\",inner);\n"
 "array<int> nums={1,-2,2147483647};d.set(\"nums\",nums);array<string> words={\"a\\nb\",\"\xC4\x9F\",\"\"};d.set(\"words\",words);\n"
 "array<dictionary@> ds={inner,null};d.set(\"ds\",ds);array<dictionary> dv(2);dv[1].set(\"z\",true);d.set(\"dv\",dv);\n"
-"array<double> ws={0.1,2,-1e-7};d.set(\"ws\",ws);array<float> fs={0.1f,3};d.set(\"fs\",fs);array<bool> flags={true,false};d.set(\"flags\",flags);\n"
-"array<int8> i8={-128,127};d.set(\"i8\",i8);array<int16> i16={-32768};d.set(\"i16\",i16);array<int64> i64={-9223372036854775807-1};d.set(\"i64\",i64);\n"
+"array<double> ws={0.1,2,-1e-7};d.set(\"ws\",ws);array<float> fs={0.1f,3,3.4028235e+38f,-3.4028235e+38f,1.4e-45f};d.set(\"fs\",fs);array<bool> flags={true,false};d.set(\"flags\",flags);\n"
+"array<int8> i8={-128,127};d.set(\"i8\",i8);array<int16> i16={-32768,32767};array<int> i32={-2147483647-1,2147483647};d.set(\"i32\",i32);d.set(\"i16\",i16);array<int64> i64={-9223372036854775807-1};d.set(\"i64\",i64);\n"
 "array<uint8> u8={0,255};d.set(\"u8\",u8);array<uint16> u16={65535};d.set(\"u16\",u16);array<uint> u32={4294967295};d.set(\"u32\",u32);array<uint64> u64={18446744073709551615};d.set(\"u64\",u64);\n"
 "array<int> empty;d.set(\"empty\",empty);array<int>@ nolist;d.set(\"nolist\",@nolist);d[\"none\"];\n"
 "string text=d.serialize();\n"
@@ -284,6 +292,9 @@ CHECK(value_of(fixture,
 "array<dictionary@>@ d2=cast<array<dictionary@>>(e[\"ds\"]);r+=\",\"+d2.length()+(d2[1] is null)+int(d2[0][\"x\"]);\n"
 "array<dictionary>@ v2=cast<array<dictionary>>(e[\"dv\"]);r+=\",\"+v2.length()+v2[0].length()+bool(v2[1][\"z\"]);\n"
 "array<uint64>@ q=cast<array<uint64>>(e[\"u64\"]);r+=\",\"+q[0];\n"
+"array<float>@ f2=cast<array<float>>(e[\"fs\"]);if(f2.length()!=5||f2[2]!=3.4028235e+38f||f2[3]!=-3.4028235e+38f||f2[4]!=1.4e-45f||f2[4]==0)r+=\",floats\";\n"
+"array<int>@ n32=cast<array<int>>(e[\"i32\"]);array<int16>@ n16=cast<array<int16>>(e[\"i16\"]);array<uint8>@ n8=cast<array<uint8>>(e[\"u8\"]);array<uint>@ nu=cast<array<uint>>(e[\"u32\"]);\n"
+"if(n32[0]!=-2147483647-1||n32[1]!=2147483647||n16[0]!=-32768||n16[1]!=32767||n8[1]!=255||nu[0]!=4294967295)r+=\",integers\";\n"
 "r+=\",\"+(cast<array<int>>(e[\"nolist\"]) is null)+\",\"+e.exists(\"none\");\n"
 "return r;")
 =="true,true,true,false,true,-1234567890123456789,true,true,inf,true,true,2Ay\xC5\x9F" "e,3:2147483647,true\xC4\x9F" "0,2true1,20true,18446744073709551615,true,true");
