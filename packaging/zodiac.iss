@@ -64,7 +64,10 @@ Source: "{#KitDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs cre
 
 [Registry]
 ; HKA is HKLM\Software\Classes for all users and HKCU\Software\Classes for only me.
-Root: HKA; Subkey: "Software\Classes\.zs"; ValueType: string; ValueName: ""; ValueData: "Zodiac.Script"; Flags: uninsdeletevalue uninsdeletekeyifempty; Tasks: associate
+; Software\Zodiac holds what the setup must know to undo exactly its own changes (see [Code]); uninstall deletes it.
+Root: HKA; Subkey: "Software\Zodiac"; Flags: uninsdeletekey
+; Uninstall gives the .zs default back to the program that had it before (see [Code]), so it is not an uninsdeletevalue entry.
+Root: HKA; Subkey: "Software\Classes\.zs"; ValueType: string; ValueName: ""; ValueData: "Zodiac.Script"; Flags: uninsdeletekeyifempty; Tasks: associate
 Root: HKA; Subkey: "Software\Classes\.zs\OpenWithProgids"; ValueType: string; ValueName: "Zodiac.Script"; ValueData: ""; Flags: uninsdeletevalue uninsdeletekeyifempty; Tasks: associate
 Root: HKA; Subkey: "Software\Classes\Zodiac.Script"; ValueType: string; ValueName: ""; ValueData: "Zodiac script"; Flags: uninsdeletekey; Tasks: associate
 Root: HKA; Subkey: "Software\Classes\Zodiac.Script\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\bin\zodiac.exe"",0"; Tasks: associate
@@ -81,15 +84,29 @@ Name: "{autoprograms}\Zodiac\Zodiac manual"; Filename: "{app}\docs"; Tasks: shor
 Name: "{autoprograms}\Zodiac\Zodiac examples"; Filename: "{app}\examples"; Tasks: shortcuts
 
 [Code]
-// The PATH entry is {app}\bin, in the user's Environment key (only me) or the system one (all users).
-// It is added once (never twice, compared without case and trailing backslash), removed when an upgrade unticks addtopath, and removed on uninstall.
+// Undoing exactly what was added (spec 8.7):
+// - The PATH entry is {app}\bin, in the user's Environment key (only me) or the system one (all users). It is added once (never twice, compared
+//   without case and trailing backslash). Only when this setup really added it is AddedToPath=1 written to Software\Zodiac; the entry is removed
+//   (when an upgrade unticks addtopath, and on uninstall) only when that marker is set, so an entry the user had already is never taken away.
+// - The .zs default: a different ProgID that was there before is saved as PrevZsProgId in Software\Zodiac. Uninstall puts it back if .zs still
+//   points at Zodiac.Script, deletes the default if .zs still points at Zodiac.Script and nothing was saved, and leaves any other value alone.
 
-function PathRoot: Integer;
+const
+  StateKey = 'Software\Zodiac';
+  ZsKey = 'Software\Classes\.zs';
+  ZodiacProgId = 'Zodiac.Script';
+
+function RootKey: Integer;
 begin
   if IsAdminInstallMode then
     Result := HKEY_LOCAL_MACHINE
   else
     Result := HKEY_CURRENT_USER;
+end;
+
+function PathRoot: Integer;
+begin
+  Result := RootKey;
 end;
 
 function PathKey: String;
@@ -173,33 +190,72 @@ begin
     WritePath(Others + Dir + ';')
   else
     WritePath(Others + ';' + Dir);
+  if not RegWriteDWordValue(RootKey, StateKey, 'AddedToPath', 1) then
+    Log('Could not record that the PATH entry was added');
 end;
 
-procedure RemoveFromPath(const Dir: String);
+// Removes Dir from PATH only if this setup added it (AddedToPath=1), then clears the marker.
+procedure RemoveAddedPathEntry(const Dir: String);
 var
   Path, Others: String;
+  Added: Cardinal;
   Found: Boolean;
 begin
-  if not RegQueryStringValue(PathRoot, PathKey, 'Path', Path) then
+  if not (RegQueryDWordValue(RootKey, StateKey, 'AddedToPath', Added) and (Added = 1)) then
     Exit;
-  Others := PathWithout(Path, Dir, Found);
-  if Found then
-    WritePath(Others);
+  if RegQueryStringValue(PathRoot, PathKey, 'Path', Path) then
+  begin
+    Others := PathWithout(Path, Dir, Found);
+    if Found then
+      WritePath(Others);
+  end;
+  RegDeleteValue(RootKey, StateKey, 'AddedToPath');
+end;
+
+// Before the [Registry] entries are written: save a .zs default that belongs to another program (an upgrade finds Zodiac.Script and keeps the saved one).
+procedure SaveOtherZsProgId;
+var
+  Current: String;
+begin
+  if not WizardIsTaskSelected('associate') then
+    Exit;
+  if RegQueryStringValue(RootKey, ZsKey, '', Current) and (Current <> '') and (CompareText(Current, ZodiacProgId) <> 0) then
+    if not RegWriteStringValue(RootKey, StateKey, 'PrevZsProgId', Current) then
+      Log('Could not save the previous .zs ProgID');
+end;
+
+procedure RestoreZsProgId;
+var
+  Current, Previous: String;
+begin
+  if RegQueryStringValue(RootKey, ZsKey, '', Current) and (CompareText(Current, ZodiacProgId) = 0) then
+  begin
+    if RegQueryStringValue(RootKey, StateKey, 'PrevZsProgId', Previous) and (Previous <> '') then
+      RegWriteStringValue(RootKey, ZsKey, '', Previous)
+    else
+      RegDeleteValue(RootKey, ZsKey, '');
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssPostInstall then
+  if CurStep = ssInstall then
+    SaveOtherZsProgId
+  else if CurStep = ssPostInstall then
   begin
     if WizardIsTaskSelected('addtopath') then
       AddToPath(ExpandConstant('{app}\bin'))
     else
-      RemoveFromPath(ExpandConstant('{app}\bin'));
+      RemoveAddedPathEntry(ExpandConstant('{app}\bin'));
   end;
 end;
 
+// usUninstall comes before the uninstaller deletes the registry entries it logged (Software\Zodiac among them), so the saved state is still there.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
-    RemoveFromPath(ExpandConstant('{app}\bin'));
+  begin
+    RemoveAddedPathEntry(ExpandConstant('{app}\bin'));
+    RestoreZsProgId;
+  end;
 end;

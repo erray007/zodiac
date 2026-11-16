@@ -120,7 +120,8 @@ jobs:
             "No signing certificate is set: the setup will be unsigned."
           }
       # ZODIAC_SIGNING_CERT is a base64 PFX file, ZODIAC_SIGNING_PASSWORD its password. The password stays in the packaging step's environment;
-      # the sign command Inno Setup runs (ZODIAC_SIGN_TOOL, see tools/build_installer.py) is a script that reads it from there.
+      # the sign command (ZODIAC_SIGN_TOOL) is a script that reads it from there. zodiac_zip runs it on the kit's executables and DLLs
+      # (tools/sign_kit.py) before the zip and the setup are made, and Inno Setup runs it on the setup and its uninstaller (tools/build_installer.py).
       - name: Prepare signing
         if: env.ZODIAC_SIGNING == '1'
         env:
@@ -191,27 +192,52 @@ jobs:
           "hello.exe ran and exited with 0. Size: $size bytes."
           # Size gate (spec 8.9): a core-only hello world release is at most 3 MB.
           if ($size -gt 3MB) { throw "hello.exe is $size bytes, more than the 3 MB limit" }
+      # Two rounds. Round 1: .zs already belongs to another program (a fake ProgID); every option is installed, then uninstall must give .zs back and
+      # remove everything else it added. Round 2: the user PATH already holds the kit's bin folder; uninstall must leave that entry, which it did not add.
       - name: Setup wizard, silent install and uninstall
         run: |
           $setup = Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\zodiac-kit" -Filter 'zodiac-setup-*.exe' | Select-Object -First 1
           if (-not $setup) { throw "The setup is missing from the artifact" }
           "Setup size: $($setup.Length) bytes."
           $version = $setup.BaseName -replace '^zodiac-setup-', ''
-          $log = Join-Path $env:RUNNER_TEMP 'zodiac-setup.log'
-          $pathBefore = (Get-Item -LiteralPath 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
-          $process = Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', '/TASKS="addtopath,associate,buildmenu"', "/LOG=`"$log`"" -Wait -PassThru
-          if ($process.ExitCode -ne 0) { Get-Content -LiteralPath $log; throw "The setup failed with exit code $($process.ExitCode)" }
           $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{98CB20B5-1340-41F1-80E7-8FD0E99FA8BC}_is1'
-          $app = (Get-ItemProperty -LiteralPath $uninstallKey).InstallLocation.TrimEnd('\')
+          $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'Zodiac'
+          $systemPath = $env:PATH
+          function Get-RawUserPath { (Get-Item -LiteralPath 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames') }
+          function Set-RawUserPath([string]$value) { Set-ItemProperty -LiteralPath 'HKCU:\Environment' -Name Path -Value $value -Type ExpandString }
+          function Install-Zodiac([string]$tasks, [string]$round) {
+            $log = Join-Path $env:RUNNER_TEMP "zodiac-setup-$round.log"
+            $process = Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', "/TASKS=`"$tasks`"", "/LOG=`"$log`"" -Wait -PassThru
+            if ($process.ExitCode -ne 0) { Get-Content -LiteralPath $log; throw "The setup failed with exit code $($process.ExitCode)" }
+            $app = (Get-ItemProperty -LiteralPath $uninstallKey).InstallLocation.TrimEnd('\')
+            if (-not (Test-Path -LiteralPath (Join-Path $app 'bin\zodiac.exe'))) { throw "$app\bin\zodiac.exe is missing" }
+            Write-Host "Round ${round}: installed into $app"
+            $app
+          }
+          function Uninstall-Zodiac([string]$app) {
+            $process = Start-Process -FilePath (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "The uninstaller failed with exit code $($process.ExitCode)" }
+            # The uninstaller finishes from a copy of itself in the temp folder, so wait for the install folder to go.
+            $deadline = (Get-Date).AddMinutes(2)
+            while ((Test-Path -LiteralPath $app) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+            if (Test-Path -LiteralPath $app) { Get-ChildItem -LiteralPath $app -Recurse | ForEach-Object FullName; throw "$app is still there after uninstall" }
+            if (Test-Path -LiteralPath $uninstallKey) { throw "$uninstallKey is still there after uninstall" }
+            if (Test-Path -LiteralPath 'HKCU:\Software\Zodiac') { throw "HKCU\Software\Zodiac is still there after uninstall" }
+          }
+
+          # Round 1.
+          New-Item -Path 'HKCU:\Software\Classes\.zs' -Force | Out-Null
+          Set-ItemProperty -LiteralPath 'HKCU:\Software\Classes\.zs' -Name '(default)' -Value 'Fake.ZsEditor'
+          $pathBefore = Get-RawUserPath
+          $app = Install-Zodiac 'addtopath,associate,buildmenu,shortcuts' 1
           $bin = Join-Path $app 'bin'
-          "Installed into $app"
-          if (-not (Test-Path -LiteralPath (Join-Path $bin 'zodiac.exe'))) { throw "$bin\zodiac.exe is missing" }
           # A new shell gets PATH from the registry, not from this process: run zodiac with the user PATH the setup wrote and the system folder only.
           $userPath = (Get-ItemProperty -LiteralPath 'HKCU:\Environment').Path
-          if (-not (($userPath -split ';') -contains $bin)) { throw "The user PATH does not hold $bin" }
+          if (@($userPath -split ';' | Where-Object { $_ -eq $bin }).Count -ne 1) { throw "The user PATH does not hold $bin exactly once: $userPath" }
           $env:PATH = "$userPath;$env:SystemRoot\System32"
           $reported = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command 'zodiac --version'
           if ($LASTEXITCODE -ne 0 -or $reported -ne "zodiac $version") { throw "zodiac --version in a new shell said '$reported' (exit code $LASTEXITCODE)" }
+          $env:PATH = $systemPath
           "zodiac --version in a new shell: $reported"
           $progId = (Get-Item -LiteralPath 'HKCU:\Software\Classes\.zs').GetValue('')
           if ($progId -ne 'Zodiac.Script') { throw "HKCU\Software\Classes\.zs is '$progId', not Zodiac.Script" }
@@ -220,19 +246,35 @@ jobs:
           $verb = Get-Item -LiteralPath 'HKCU:\Software\Classes\SystemFileAssociations\.zs\shell\zodiacbuild'
           $build = (Get-Item -LiteralPath 'HKCU:\Software\Classes\SystemFileAssociations\.zs\shell\zodiacbuild\command').GetValue('')
           if ($verb.GetValue('') -ne 'Build with Zodiac' -or $build -ne "`"$bin\zodiacw.exe`" build `"%1`"") { throw "The build verb is '$($verb.GetValue(''))' running '$build'" }
-          "Association and right-click verb are registered."
-          $process = Start-Process -FilePath (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
-          if ($process.ExitCode -ne 0) { throw "The uninstaller failed with exit code $($process.ExitCode)" }
-          # The uninstaller finishes from a copy of itself in the temp folder, so wait for the install folder to go.
-          $deadline = (Get-Date).AddMinutes(2)
-          while ((Test-Path -LiteralPath $app) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
-          if (Test-Path -LiteralPath $app) { Get-ChildItem -LiteralPath $app -Recurse | ForEach-Object FullName; throw "$app is still there after uninstall" }
-          $pathAfter = (Get-Item -LiteralPath 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+          foreach ($shortcut in 'Zodiac manual.lnk', 'Zodiac examples.lnk') {
+            if (-not (Test-Path -LiteralPath (Join-Path $menu $shortcut))) { throw "The Start menu shortcut $menu\$shortcut is missing" }
+          }
+          "Association, right-click verb and Start menu shortcuts are there."
+          Uninstall-Zodiac $app
+          $pathAfter = Get-RawUserPath
           if ($pathAfter -ne $pathBefore) { throw "The user PATH is '$pathAfter' after uninstall, but was '$pathBefore' before install" }
-          foreach ($key in 'HKCU:\Software\Classes\.zs', 'HKCU:\Software\Classes\Zodiac.Script', 'HKCU:\Software\Classes\SystemFileAssociations\.zs', $uninstallKey) {
+          $progId = (Get-Item -LiteralPath 'HKCU:\Software\Classes\.zs').GetValue('')
+          if ($progId -ne 'Fake.ZsEditor') { throw "HKCU\Software\Classes\.zs is '$progId' after uninstall, not the earlier Fake.ZsEditor" }
+          if ((Get-Item -LiteralPath 'HKCU:\Software\Classes\.zs').GetSubKeyNames().Count -ne 0) { throw "HKCU\Software\Classes\.zs still has subkeys after uninstall" }
+          foreach ($key in 'HKCU:\Software\Classes\Zodiac.Script', 'HKCU:\Software\Classes\SystemFileAssociations\.zs', $menu) {
             if (Test-Path -LiteralPath $key) { throw "$key is still there after uninstall" }
           }
-          "Uninstall removed the folder, the PATH entry, the ProgID and the verb."
+          "Round 1: uninstall gave .zs back to Fake.ZsEditor and removed the folder, the PATH entry, the ProgID, the verb and the shortcuts."
+          Remove-Item -LiteralPath 'HKCU:\Software\Classes\.zs' -Recurse
+
+          # Round 2: the default per-user folder, already on the user PATH.
+          $bin = Join-Path $env:LOCALAPPDATA 'Programs\Zodiac\bin'
+          $original = Get-RawUserPath
+          Set-RawUserPath "$original;$bin"
+          $pathBefore = Get-RawUserPath
+          $app = Install-Zodiac 'addtopath' 2
+          if ((Join-Path $app 'bin') -ne $bin) { throw "Round 2 installed into $app, not the default folder" }
+          if ((Get-RawUserPath) -ne $pathBefore) { throw "The setup changed a user PATH that already held $bin" }
+          Uninstall-Zodiac $app
+          if ((Get-RawUserPath) -ne $pathBefore) { throw "Uninstall removed the PATH entry $bin that the setup did not add" }
+          if (Test-Path -LiteralPath 'HKCU:\Software\Classes\.zs') { throw "HKCU\Software\Classes\.zs exists although associate was not chosen" }
+          Set-RawUserPath $original
+          "Round 2: the PATH entry the user already had was kept."
 
   # Tags v* publish the tested packages as a GitHub release.
   release:
@@ -250,6 +292,13 @@ jobs:
         with:
           name: zodiac-kit
           path: kit
+      - name: Check the tag against the kit version
+        run: |
+          $setup = Get-ChildItem -LiteralPath kit -Filter 'zodiac-setup-*.exe' | Select-Object -First 1
+          if (-not $setup) { throw "The setup is missing from the artifact" }
+          $version = $setup.BaseName -replace '^zodiac-setup-', ''
+          if ($env:GITHUB_REF_NAME -cne "v$version") { throw "The tag $env:GITHUB_REF_NAME does not match the kit version $version (PROJECT_VERSION in CMakeLists.txt): tag v$version instead" }
+          "Tag $env:GITHUB_REF_NAME matches the kit version $version."
       - name: Write SHA256SUMS
         run: |
           $lines = Get-ChildItem -LiteralPath kit -File | Sort-Object Name | ForEach-Object { "$((Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant())  $($_.Name)" }
