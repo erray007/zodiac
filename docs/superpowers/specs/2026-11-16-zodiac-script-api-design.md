@@ -1,6 +1,6 @@
 # Zodiac Script API — Design
 
-Status: draft for owner approval. Plan 2 of the series in `docs/superpowers/specs/2026-11-14-bgdk-design.md` (the "foundation spec"). That spec requires the scripting API, including the game-loop model, to be approved before any module is implemented, because every module's registration code and documentation depend on it.
+Status: approved by the owner (2026-11-16). Plan 2 of the series in `docs/superpowers/specs/2026-11-14-bgdk-design.md` (the "foundation spec"). That spec requires the scripting API, including the game-loop model, to be approved before any module is implemented, because every module's registration code and documentation depend on it.
 
 ## 1. Intent
 
@@ -25,7 +25,7 @@ Fix the shape of the language every Zodiac game is written in: how names look, h
 - Event-driven or callback-only game loops replacing `wait()`. Callbacks exist for async operations only (8.5).
 - Sharing script objects (class instances, script arrays, globals) between workers. Workers exchange copies.
 - Automatic restart of crashed workers or threads.
-- Engine-generated dialogs or speech for warnings and errors (see 8.9 for the change to the foundation spec's `dialog` sink).
+- Engine-generated speech for warnings and errors, and engine dialogs by default (the `dialog` sink is opt-in, see 8.9).
 - Worker-to-worker direct channels in v1. All messages go through the script that owns the worker. Can be added later without breaking scripts.
 - Translating the manual into languages other than English and Turkish in v1.
 
@@ -74,7 +74,7 @@ Fix the shape of the language every Zodiac game is written in: how names look, h
 
 | Option | Summary |
 |---|---|
-| **A. No engine dialog (chosen)** | Errors are logged by level (8.9); the game handles what it wants with `try`/`catch`. |
+| **A. No engine dialog by default (chosen)** | Errors are logged by level (8.9); the developer may opt in to the `dialog` sink; the game handles what it wants with `try`/`catch`. |
 | B. Accessible system message box | Engine shows "the game closed because of an error". Rejected by the owner. |
 
 ## 7. Decisions made with the project owner
@@ -83,7 +83,7 @@ Fix the shape of the language every Zodiac game is written in: how names look, h
 - Both free threads (B) and isolated workers (C).
 - Native engine objects such as `map` may be shared across threads and lock internally; script objects never are.
 - Dev-mode race checker: runtime, dev builds only, console and log only, never spoken or shown, one report per location, configurable `warn` / `stop` / `off`.
-- No engine crash dialog; developers handle errors with `try`/`catch`.
+- No engine dialog by default; the `dialog` sink stays configurable and is off unless the developer enables it. Developers handle errors with `try`/`catch`.
 - Log verbosity: one `verbose` level, 0 = nothing, 1 = crashes and errors, 2 = plus warnings, 3 = everything. Readable and writable from game code.
 - A tutorial manual (language and engine) and an API reference, in English and Turkish.
 
@@ -206,7 +206,7 @@ warning: unlocked concurrent access to array 'players'
 - An uncaught exception in `main` ends the program: the error with call stack is logged at level 1 and the exit code is 1 (foundation spec).
 - Uncaught exceptions in coroutines, workers and threads end only that unit and are logged at level 1; the owner can read them from `.error`.
 - Native crashes (access violation, abort) are caught by a platform crash handler that writes a crash entry (signal, module, script file and line if known) to the sinks at level 1 before the process ends.
-- There is no engine crash dialog and no `on_crash` hook; developers decide what players hear by catching errors in script.
+- No engine dialog appears unless the developer enabled the `dialog` sink (8.9), and there is no `on_crash` hook; developers decide what players hear by catching errors in script.
 
 ### 8.9 Log verbosity and diagnostics changes
 
@@ -220,7 +220,7 @@ warning: unlocked concurrent access to array 'players'
 - Set in `zodiac.toml` (`[diagnostics] verbose = 2`), on the command line (`--verbose 3`, overrides the file), and from game code: `verbose` is a global `int` property, readable and writable at runtime from any thread (atomic).
 - Defaults: 2 in dev mode, 1 in release builds.
 - Out-of-range values are clamped to 0–3 and a warning is logged (if the new level allows it); the script never fails.
-- **Change to the foundation spec 8.10 (my call, for owner review):** the `dialog` sink's default becomes `never`, because the owner chose "no engine dialogs". To keep errors from vanishing in a released game started by double-click, release builds without a configured `file` write to `<game name>.log` next to the executable (falling back to the per-user data directory if that is not writable). Level 0 still writes nothing, by the developer's explicit choice.
+- **Change to the foundation spec 8.10 (approved by the owner):** the `dialog` sink stays a developer choice (`[diagnostics] dialog = "auto"`, `"always"` or `"never"`, and a launch flag), but its default becomes `never`, so the engine shows no window unless the developer turns it on. When enabled, the dialog shows messages at the current `verbose` level. To keep errors from vanishing in a released game started by double-click, release builds without a configured `file` write to `<game name>.log` next to the executable (falling back to the per-user data directory if that is not writable). Level 0 still writes nothing, by the developer's explicit choice.
 
 ### 8.10a Program shutdown (my call)
 
