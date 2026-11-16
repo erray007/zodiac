@@ -11,12 +11,16 @@
 // "error: the modules were registered in a different order than when the game was built".
 // Never throws and never writes to the console itself; every message goes through Diagnostics as one line. Call it once, on the main thread.
 //
-// The Windows entry point (src/release/win_main.cpp) reads the payload from the symbol zodiac_payload, which only the object zodiac build
-// writes defines, and calls start() with the running executable's path.
+// start_linked() takes the linked payload section as written by write_payload_object (core/coff_object.hpp): [begin, end) holds a u64
+// little-endian size followed by the payload. The stored size is never trusted: unless it equals end - begin - 8 it reports
+// "error: the game data is damaged (size mismatch)" on the console and returns 2 without reading the payload; otherwise it calls start().
+// The Windows entry point (src/release/win_main.cpp) calls it with the symbols zodiac_payload and zodiac_payload_end, which only the object
+// zodiac build writes defines, and the running executable's path.
 #pragma once
 #include <filesystem>
 #include <string_view>
 
 namespace zodiac::release {
 int start(std::string_view payload_bytes,const std::filesystem::path& executable);
+int start_linked(const unsigned char* begin,const unsigned char* end,const std::filesystem::path& executable);
 }

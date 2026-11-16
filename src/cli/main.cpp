@@ -95,9 +95,16 @@ bool add_log_file(Diagnostics& diagnostics,const fs::path& file)
 return file.empty()||diagnostics.add_file_sink(file);
 }
 
+// Absolute, so the search is unaffected when run enters the project root.
 std::vector<fs::path> search_dirs(const Options& options)
 {
-std::vector<fs::path> dirs=options.module_dirs;
+std::vector<fs::path> dirs;
+dirs.reserve(options.module_dirs.size()+1);
+for(const fs::path& dir:options.module_dirs){
+std::error_code error;
+fs::path absolute=fs::absolute(dir,error);
+dirs.push_back(error?dir:absolute.lexically_normal());
+}
 const fs::path exe=platform::executable_path();
 if(!exe.empty())dirs.push_back((exe.parent_path()/".."/"modules").lexically_normal());
 return dirs;
@@ -136,10 +143,11 @@ fail(diagnostics,project.error());
 return exit_usage_error;
 }
 if(options.log_file.empty()&&!project->diagnostics.file.empty()&&!diagnostics.add_file_sink(project->diagnostics.file))return exit_usage_error;
+// Every path from the command line is resolved (the module directories) or already used (the log file is open, the project root is absolute)
+// before the project root becomes the working directory, which happens before any module registers or script code runs, exactly as in a release.
 ScriptRuntime runtime(diagnostics,ModuleSearchPaths{search_dirs(options)});
-if(const int code=runtime.build(*project);code!=0)return code;
-// After the build: relative --module-dir and --log-file values are relative to the directory zodiac was started in.
 if(const int code=enter_root(project->root,diagnostics);code!=0)return code;
+if(const int code=runtime.build(*project);code!=0)return code;
 return exit_code_of(runtime.run(),diagnostics);
 }
 

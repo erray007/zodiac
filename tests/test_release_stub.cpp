@@ -227,15 +227,66 @@ CHECK(started.lines[0]=="error: module \"example\" is missing");
 TEST_CASE("start refuses a static module that is not linked in")
 {
 const TempDir folder;
-zodiac::GamePayload payload=fixture_payload("uses_module");
+zodiac::GamePayload payload=source_payload("\"cwd_probe\"","int main(){return cwd().length()>0?0:3;}\n");
 REQUIRE(payload.modules.size()==1);
-CHECK(payload.modules[0].link==zodiac::LinkMode::static_link);
+payload.modules[0].link=zodiac::LinkMode::static_link;
 // The shared library next to the executable must not stand in for a static module.
-copy_module("example",from_utf8(ZODIAC_TEST_MODULE_DIR),folder.dir());
+copy_module("cwd_probe",from_utf8(ZODIAC_TEST_FIXTURE_DIR),folder.dir());
 const Started started=start_in(folder.dir(),payload);
 CHECK(started.code==2);
 REQUIRE(started.lines.size()==1);
-CHECK(started.lines[0]=="error: module \"example\" is missing");
+CHECK(started.lines[0]=="error: module \"cwd_probe\" is missing");
+}
+
+#ifdef ZODIAC_TEST_STATIC_EXAMPLE
+TEST_CASE("start registers a static module from the records linked into the executable")
+{
+const TempDir folder;
+const zodiac::GamePayload payload=fixture_payload("uses_module");
+REQUIRE(payload.modules.size()==1);
+CHECK(payload.modules[0].link==zodiac::LinkMode::static_link);
+// No shared library anywhere near the executable: example comes from zodiac_mod_example_static, forced in with -u.
+const Started started=start_in(folder.dir(),payload);
+INFO(join(started.lines));
+// uses_module returns example_add(2,3)+example_echo("ab").length().
+CHECK(started.code==7);
+CHECK(started.lines.empty());
+}
+#endif
+
+TEST_CASE("start_linked checks the stored size against the linked section")
+{
+const TempDir folder;
+const std::string payload=zodiac::serialize_payload(fixture_payload("int_main"));
+std::string section(8,'\0');
+for(std::size_t i=0;i<8;++i)section[i]=static_cast<char>((static_cast<std::uint64_t>(payload.size())>>(8*i))&0xFFu);
+section.append(payload);
+const auto* begin=reinterpret_cast<const unsigned char*>(section.data());
+const auto run=[&folder](const unsigned char* first,const unsigned char* last){
+const TempDir capture_dir;
+const WorkingDirectoryGuard guard;
+Started started;
+StderrCapture capture(capture_dir.dir()/"stderr.txt");
+started.code=zodiac::release::start_linked(first,last,folder.dir()/"game.exe");
+started.lines=capture.lines();
+return started;
+};
+const Started intact=run(begin,begin+section.size());
+INFO(join(intact.lines));
+CHECK(intact.code==7);
+const std::vector<std::string> damaged{"error: the game data is damaged (size mismatch)"};
+// A stored size larger than the section (a tampered length field) is refused without reading past the end.
+Started started=run(begin,begin+section.size()-1);
+CHECK(started.code==2);
+CHECK(started.lines==damaged);
+section[0]=static_cast<char>(section[0]+1);
+started=run(begin,begin+section.size());
+CHECK(started.code==2);
+CHECK(started.lines==damaged);
+// A section too short to hold the size field.
+started=run(begin,begin+7);
+CHECK(started.code==2);
+CHECK(started.lines==damaged);
 }
 
 TEST_CASE("start refuses a different module version")
@@ -290,7 +341,8 @@ const TempDir base;
 const fs::path folder=base.dir()/from_utf8("oyun klas\xC3\xB6r\xC3\xBC");
 fs::create_directories(folder);
 const std::string expected=to_utf8(fs::canonical(folder));
-const zodiac::GamePayload payload=source_payload("\"cwd_probe\"","int main(){return cwd()==\""+expected+"\"?0:3;}\n");
+// The global is initialised while the bytecode loads, so the working directory is already set then (zodiac run sets it before the build).
+const zodiac::GamePayload payload=source_payload("\"cwd_probe\"","string g_start=cwd();\nint main(){if(g_start!=\""+expected+"\")return 4;return cwd()==\""+expected+"\"?0:3;}\n");
 copy_module("cwd_probe",from_utf8(ZODIAC_TEST_FIXTURE_DIR),folder);
 const Started started=start_in(folder,payload);
 INFO(join(started.lines));

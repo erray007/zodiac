@@ -8,6 +8,8 @@
 #include <core/static_modules.hpp>
 #include <zodiac/plugin.h>
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <memory>
 #include <span>
@@ -69,7 +71,6 @@ return exit_start_error;
 }
 project.core_exclude=payload.core_exclude;
 project.diagnostics=payload.diagnostics;
-if(!project.diagnostics.file.empty())project.diagnostics.file=(root/project.diagnostics.file).lexically_normal();
 return 0;
 }
 
@@ -134,10 +135,13 @@ if(root.empty()){
 diagnostics.report(ZODIAC_LOG_ERROR,"error: cannot find the folder of the game executable");
 return exit_start_error;
 }
-if(!payload->diagnostics.file.empty()&&!diagnostics.add_file_sink((root/payload->diagnostics.file).lexically_normal()))return exit_start_error;
+// The payload stores the log file relative to the game folder; the project carries the resolved path, as load_project does in dev.
+const fs::path log_file=payload->diagnostics.file.empty()?fs::path():(root/payload->diagnostics.file).lexically_normal();
+if(!log_file.empty()&&!diagnostics.add_file_sink(log_file))return exit_start_error;
 Project project;
 const PayloadScript* main=nullptr;
 if(const int code=project_of(*payload,root,project,main,diagnostics))return code;
+project.diagnostics.file=log_file;
 std::vector<const zodiac_module_info*> linked;
 if(const int code=collect_modules(*payload,root,linked,diagnostics))return code;
 if(const int code=enter_root(root,diagnostics))return code;
@@ -146,14 +150,15 @@ const ScriptRuntime::ModuleCheck check=[&payload,&diagnostics](std::span<const z
 if(const int code=runtime.load_bytecode(project,main->bytecode,linked,check))return code;
 return exit_code_of(runtime.run(),diagnostics);
 }
-}
 
-int start(std::string_view payload_bytes,const std::filesystem::path& executable)
+// Runs body(diagnostics,sinks_ready) and turns any exception into one reported line and exit code 1.
+template<class Body>
+int guarded(Body&& body) noexcept
 {
 Diagnostics diagnostics;
 bool sinks_ready=false;
 try{
-return run_game(payload_bytes,executable,diagnostics,sinks_ready);
+return body(diagnostics,sinks_ready);
 }
 catch(...){
 // Nothing may reach std::terminate: on Windows that could show an abort dialog.
@@ -175,5 +180,28 @@ catch(...){
 }
 return exit_script_error;
 }
+}
+}
+
+int start(std::string_view payload_bytes,const std::filesystem::path& executable)
+{
+return guarded([payload_bytes,&executable](Diagnostics& diagnostics,bool& sinks_ready){return run_game(payload_bytes,executable,diagnostics,sinks_ready);});
+}
+
+int start_linked(const unsigned char* begin,const unsigned char* end,const std::filesystem::path& executable)
+{
+constexpr std::size_t length_field=8;
+const std::size_t available=begin&&end>begin?static_cast<std::size_t>(end-begin):0;
+std::uint64_t size=0;
+if(available>=length_field)for(std::size_t i=0;i<length_field;++i)size|=static_cast<std::uint64_t>(begin[i])<<(8*i);
+if(available<length_field||size!=available-length_field){
+return guarded([](Diagnostics& diagnostics,bool& sinks_ready){
+diagnostics.add_sink(std::make_unique<ConsoleSink>());
+sinks_ready=true;
+diagnostics.report(ZODIAC_LOG_ERROR,"error: the game data is damaged (size mismatch)");
+return exit_start_error;
+});
+}
+return start(std::string_view(reinterpret_cast<const char*>(begin+length_field),available-length_field),executable);
 }
 }

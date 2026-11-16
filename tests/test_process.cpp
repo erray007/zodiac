@@ -17,6 +17,20 @@ CHECK(result->output.find("err")!=std::string::npos);
 CHECK(result->output.find('\r')==std::string::npos);
 }
 
+#ifdef ZODIAC_TEST_ATTACH_PROBE
+TEST_CASE("a GUI-subsystem program keeps redirected streams after attach_parent_console")
+{
+const std::vector<std::string> argv{ZODIAC_TEST_ATTACH_PROBE};
+auto result=zodiac::platform::run_process(argv);
+REQUIRE(result);
+CHECK(result->exit_code==3);
+CHECK(result->output.find("stdio out\n")!=std::string::npos);
+CHECK(result->output.find("line out\n")!=std::string::npos);
+CHECK(result->output.find("stdio err\n")!=std::string::npos);
+CHECK(result->output.find("line err\n")!=std::string::npos);
+}
+#endif
+
 TEST_CASE("run_process reports a missing program")
 {
 #ifdef _WIN32

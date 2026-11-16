@@ -67,14 +67,20 @@ class CliTest(unittest.TestCase):
 
     def test_run_sets_working_directory_to_project_root(self):
         project = self.root / "Kanka şövalye oyunu"
-        self.make_project(project, ["example", "cwd_probe"], "void main()\n{\nexample_print(cwd());\n}\n")
-        elsewhere = self.root / "elsewhere"
-        elsewhere.mkdir()
-        code, out, err = zodiac("run", str(project), "--module-dir", MODULE_DIR, "--module-dir", TEST_MODULE_DIR, cwd=elsewhere)
+        # The global is initialised during the build, so the root must be the working directory before it (as in a release).
+        self.make_project(project, ["example", "cwd_probe"], "string start_dir = cwd();\nvoid main()\n{\nexample_print(start_dir);\nexample_print(cwd());\n}\n")
+        # Started from the build tree (the temp folder may be on another drive), with --module-dir values relative to it: they must keep
+        # meaning that directory after zodiac enters the project root.
+        elsewhere = Path(MODULE_DIR).parent
+        module_dir = os.path.relpath(MODULE_DIR, elsewhere)
+        test_module_dir = os.path.relpath(TEST_MODULE_DIR, elsewhere)
+        code, out, err = zodiac("run", str(project), "--module-dir", module_dir, "--module-dir", test_module_dir, cwd=elsewhere)
         self.assertEqual((code, err), (0, ""))
         lines = out.splitlines()
-        self.assertEqual(len(lines), 1, out)
-        self.assertEqual(os.path.normcase(os.path.realpath(lines[0])), os.path.normcase(os.path.realpath(project)))
+        self.assertEqual(len(lines), 2, out)
+        expected = os.path.normcase(os.path.realpath(project))
+        for line in lines:
+            self.assertEqual(os.path.normcase(os.path.realpath(line)), expected)
 
     def test_missing_module_exit_2(self):
         project = self.root / "game"
