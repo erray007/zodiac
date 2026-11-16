@@ -146,3 +146,26 @@
 - [ ] **Step 3: Implement**; run the bench locally on `windows-release` and record the table in the report.
 - [ ] **Step 4: Verify**: local bench passes the gate; push; CI green including the bench steps. If any operation cannot meet the gate after optimization, STOP and report (the controller records a ruling and tells the owner — spec 8.4).
 - [ ] **Step 5: Commit** `git commit -m "Gate Zodiac's types against the sample add-ons with a benchmark"`
+
+### Task 7: Release optimization flags
+
+Owner decision (2026-11-17): release builds must be the fastest and the smallest; debug builds stay unoptimized and fully debuggable. The hello size gate is 5 MB, measured on release builds only.
+
+**Files:**
+- Modify: `cmake/` toolchain/flags files, `src/core/CMakeLists.txt`, `cmake/Dependencies.cmake` (AngelScript and other dependencies compiled with the same release flags), `cmake/CaptureReleaseLink.cmake` (the captured release link line), `.github/workflows/ci.yml` if a step changes
+- Test: existing e2e `test_build.py` (size gate, release hello runs), `bench_types` from Task 6
+
+**Interfaces:**
+- No source or ABI change. Only release-configuration compile and link flags of the engine, its dependencies, the kit's `lib/release` libraries and the captured link line games are linked with. Debug configuration flags unchanged (`-O0 -g`).
+
+Candidates, each measured alone and then together, against the current release (`-O3`, `--gc-sections`, `-s`):
+1. `-ffunction-sections -fdata-sections` on every release object, so `--gc-sections` removes unused functions and data.
+2. `-Wl,--icf=all` (identical code folding in lld).
+3. ThinLTO (`-flto=thin`) for the engine and dependencies, only if the kit's bundled `ld.lld.exe` links the kit's `lib/release` archives with it on a clean machine (kit-clean-machine CI job); otherwise rejected with the reason recorded.
+4. `-O2` vs `-O3` for the release core, decided by bench and size.
+
+- [ ] **Step 1: Measure the baseline**: release hello size and the full `bench_types` table, in the report.
+- [ ] **Step 2: Apply each candidate alone**, re-measure size and bench; record a table (candidate, hello bytes, per-op median ratio vs baseline).
+- [ ] **Step 3: Keep the set that wins**: smaller hello and no bench op slower than baseline by more than 2 %; a candidate that shrinks size but slows an op beyond that is dropped and listed with its numbers.
+- [ ] **Step 4: Verify**: full suite on windows-debug, windows-release and linux; kit-windows and kit-clean-machine CI jobs green (the clean-machine build of a hello with the bundled lld is the proof the kit's link line works).
+- [ ] **Step 5: Commit** `git commit -m "Optimize release builds for speed and size"`
