@@ -1,0 +1,380 @@
+// zodiac::String: Zodiac's UTF-8 string value type, the pure C++ core behind the script `string` (spec 8.1).
+// Contract:
+// - Bytes are kept exactly as given (embedded NULs included), always followed by a NUL so data() can be handed to C code,
+//   at most max_byte_length bytes (longer results throw std::bad_alloc, like running out of memory).
+// - A character is a Unicode code point. A byte that does not start a well-formed UTF-8 sequence (Unicode Table 3-7: no
+//   overlongs, surrogates, values above U+10FFFF, truncated or 5/6-byte forms) is one character of its own, so length(),
+//   indices and counts are consistent for any bytes, invalid bytes survive every operation, and no operation splits a sequence
+//   (searches only match whole characters). code_at() of such a byte is U+FFFD.
+// - Layout (32 bytes): up to inline_capacity bytes live inside the object without allocation; longer text lives in one heap
+//   block (an 8-byte header for the sparse index, then the bytes). Copies of heap strings that fit are stored inline.
+// - Metadata is computed lazily and invalidated on every mutation (or updated exactly when an append cannot change earlier
+//   characters): the character count with the all-ASCII flag (one word-at-a-time scan), the 64-bit hash (cached for heap
+//   strings; inline strings hash their at most 23 bytes on each call), and for non-ASCII heap text longer than index_step
+//   characters a sparse index with the byte offset of every index_step-th character, so indexed access, substr and the
+//   character position of a search hit scan at most index_step characters. When every character is one byte, indices are
+//   byte offsets and no index exists.
+// - hash() is a fixed-seed wyhash-style 64-bit hash of the bytes read little-endian: equal on every platform and run.
+// - Range rules: lengths, indices and counts are int and "not found" is -1. char_at/code_at need 0 <= i < length(),
+//   byte_at 0 <= i < byte_length(); find/substr/insert/erase starts must lie in [0, length()] (rfind also takes -1 = end);
+//   counts that run past the end are clamped; a negative count other than the -1 "to the end" default is negative_count.
+//   Violations are returned as StringError (no C++ exceptions for script errors); the binding maps them to exception texts.
+// - Comparisons are by bytes (unsigned), which for valid UTF-8 is code point order.
+// - Not internally synchronized: even const members fill the caches, so threads exchange copies, never shared references.
+#pragma once
+#include <climits>
+#include <compare>
+#include <concepts>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <functional>
+#include <span>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+namespace zodiac {
+// Script-visible failures; the binding turns them into "index out of range", "\"<text>\" is not a number", "negative count".
+enum class StringError:std::uint8_t {index_out_of_range,not_a_number,negative_count};
+
+namespace string_detail {
+// Integer types formatted as numbers: every integral type except bool and the character types.
+template<typename T>
+concept integer_value=std::integral<T>&&!std::is_same_v<T,bool>&&!std::is_same_v<T,char>&&!std::is_same_v<T,wchar_t>&&!std::is_same_v<T,char8_t>&&!std::is_same_v<T,char16_t>&&!std::is_same_v<T,char32_t>;
+// The 64-bit hash of String::hash() over any bytes.
+std::uint64_t hash_bytes(const char* data,std::size_t size) noexcept;
+// String's packed fields. size: bit 31 is set while the bytes live on the heap. meta: meta_unknown, or the character count
+// with meta_ascii; String::max_byte_length keeps a known meta from ever equalling meta_unknown.
+inline constexpr std::uint32_t heap_bit=0x80000000u;
+inline constexpr std::uint32_t meta_unknown=0xFFFFFFFFu;
+inline constexpr std::uint32_t meta_ascii=0x80000000u;
+inline constexpr std::uint32_t meta_length=0x7FFFFFFFu;
+}
+
+class String {
+public:
+static constexpr int inline_capacity=23;
+static constexpr int index_step=32;
+static constexpr int max_byte_length=INT_MAX-1;
+
+String() noexcept
+{
+init_empty();
+}
+String(std::string_view bytes)
+{
+init(bytes.data(),bytes.size(),meta_unknown);
+}
+String(const char* text):String(std::string_view(text)) {}
+String(const String& other);
+String(String&& other) noexcept:rep_(other.rep_)
+{
+other.init_empty();
+}
+~String()
+{
+if(is_heap())release();
+}
+String& operator=(const String& other);
+String& operator=(String&& other) noexcept
+{
+if(this!=&other){
+if(is_heap())release();
+rep_=other.rep_;
+other.init_empty();
+}
+return *this;
+}
+// Replaces the bytes; bytes may view this string's own text.
+String& operator=(std::string_view bytes);
+String& operator=(const char* text)
+{
+return *this=std::string_view(text);
+}
+
+static String from_code_point(char32_t code_point);
+static String from_bool(bool value);
+// Shortest text that reads back as the same double (std::to_chars), so integers have no ".0"; "inf", "-inf", "nan",
+// and negative zero is "0".
+static String from_number(double value);
+template<string_detail::integer_value T>
+static String from_number(T value)
+{
+String text;
+text.append(value);
+return text;
+}
+
+const char* data() const noexcept
+{
+return is_heap()?rep_.storage.heap.ptr:rep_.storage.buffer;
+}
+const char* c_str() const noexcept
+{
+return data();
+}
+std::string_view bytes() const noexcept
+{
+return {data(),size_bytes()};
+}
+int byte_length() const noexcept
+{
+return static_cast<int>(size_bytes());
+}
+bool empty() const noexcept
+{
+return size_bytes()==0;
+}
+// Number of characters (cached).
+int length() const noexcept
+{
+const std::uint32_t meta=rep_.meta;
+if(meta!=meta_unknown)return static_cast<int>(meta&meta_length);
+return scan();
+}
+// True when every byte is below 0x80 (cached with length()).
+bool is_ascii() const noexcept
+{
+if(rep_.meta==meta_unknown)scan();
+return (rep_.meta&meta_ascii)!=0;
+}
+std::uint64_t hash() const noexcept
+{
+if(!is_heap())return string_detail::hash_bytes(rep_.storage.buffer,rep_.size);
+if(rep_.storage.heap.hash_known!=0)return rep_.storage.heap.hash;
+return cache_hash();
+}
+// Bytes the string can hold without reallocating.
+int capacity() const noexcept
+{
+return static_cast<int>(capacity_bytes());
+}
+void reserve(int bytes);
+// Empties the string, keeping its storage.
+void clear() noexcept;
+
+std::expected<String,StringError> char_at(int index) const;
+std::expected<char32_t,StringError> code_at(int index) const;
+std::expected<std::uint8_t,StringError> byte_at(int index) const;
+
+// Character index of the first match at or after start; an empty needle matches at start.
+std::expected<int,StringError> find(std::string_view needle,int start=0) const;
+// Character index of the last match beginning at or before start (-1: the end).
+std::expected<int,StringError> rfind(std::string_view needle,int start=-1) const;
+bool contains(std::string_view needle) const noexcept;
+bool starts_with(std::string_view prefix) const noexcept;
+bool ends_with(std::string_view suffix) const noexcept;
+// Non-overlapping matches; 0 for an empty needle.
+int count(std::string_view needle) const noexcept;
+
+std::expected<String,StringError> substr(int start,int count=-1) const;
+std::expected<String,StringError> left(int count) const;
+std::expected<String,StringError> right(int count) const;
+// Parts between matches of delimiter; an empty delimiter splits into characters. keep_empty=false drops empty parts.
+std::vector<String> split(std::string_view delimiter,bool keep_empty=true) const;
+static String join(std::span<const String> parts,std::string_view separator);
+
+// Replaces every match (only the first when all is false); an empty old_text changes nothing.
+String replace(std::string_view old_text,std::string_view new_text,bool all=true) const;
+// Removes leading and trailing White_Space characters.
+String trim() const;
+String trim_left() const;
+String trim_right() const;
+// Simple (one-to-one) case mapping, locale-independent.
+String lower() const;
+String upper() const;
+// locale "tr" or "az" (any case, optionally followed by '-' or '_' and a region) applies the Turkish dotted/dotless I rules,
+// including SpecialCasing's After_I rule (I followed directly by U+0307 lowers to i, dropping the dot); others are invariant.
+String lower(std::string_view locale) const;
+String upper(std::string_view locale) const;
+std::expected<String,StringError> repeat(int count) const;
+// Characters in reverse order (bytes of each character kept in order).
+String reverse() const;
+std::expected<String,StringError> insert(int index,std::string_view text) const;
+std::expected<String,StringError> erase(int start,int count=-1) const;
+// Normalization Form C of each run of well-formed text; invalid bytes are kept and nothing composes across them.
+String normalize() const;
+
+// The whole string as a decimal number: [+-] digits [. digits] [e [+-] digits] (digits on at least one side of the point),
+// or [+-] inf / infinity / nan in any case; no surrounding white space. Correctly rounded; overflow gives +-inf.
+std::expected<double,StringError> to_number() const;
+// An integer text exactly (saturating at the int64 limits); any other number truncated toward zero and saturated; nan fails.
+std::expected<std::int64_t,StringError> to_int() const;
+bool is_number() const noexcept;
+// True when non-empty and every byte is an ASCII digit 0-9.
+bool is_digits() const noexcept;
+
+String& append(const String& other);
+// bytes may view this string's own text.
+String& append(std::string_view bytes);
+String& append(const char* text)
+{
+return append(std::string_view(text));
+}
+// Appends the UTF-8 encoding; surrogates and values above U+10FFFF append U+FFFD.
+String& append(char32_t code_point);
+String& append(bool value);
+String& append(double value);
+template<string_detail::integer_value T>
+String& append(T value)
+{
+if constexpr(std::is_signed_v<T>){
+return append_signed(static_cast<long long>(value));
+}else{
+return append_unsigned(static_cast<unsigned long long>(value));
+}
+}
+template<typename T>
+String& operator+=(const T& value)
+{
+return append(value);
+}
+
+friend bool operator==(const String& a,const String& b) noexcept
+{
+return a.bytes()==b.bytes();
+}
+friend bool operator==(const String& a,std::string_view b) noexcept
+{
+return a.bytes()==b;
+}
+friend bool operator==(const String& a,const char* b) noexcept
+{
+return a.bytes()==std::string_view(b);
+}
+friend std::strong_ordering operator<=>(const String& a,const String& b) noexcept
+{
+return a.bytes()<=>b.bytes();
+}
+friend std::strong_ordering operator<=>(const String& a,std::string_view b) noexcept
+{
+return a.bytes()<=>b;
+}
+friend std::strong_ordering operator<=>(const String& a,const char* b) noexcept
+{
+return a.bytes()<=>std::string_view(b);
+}
+friend String operator+(const String& a,const String& b)
+{
+return concat(a.bytes(),a.rep_.meta,b.bytes(),b.rep_.meta);
+}
+friend String operator+(String&& a,const String& b)
+{
+a.append(b);
+return std::move(a);
+}
+friend String operator+(const String& a,std::string_view b)
+{
+return concat(a.bytes(),a.rep_.meta,b,meta_unknown);
+}
+friend String operator+(String&& a,std::string_view b)
+{
+a.append(b);
+return std::move(a);
+}
+friend String operator+(const String& a,const char* b)
+{
+return a+std::string_view(b);
+}
+friend String operator+(String&& a,const char* b)
+{
+a.append(std::string_view(b));
+return std::move(a);
+}
+friend String operator+(std::string_view a,const String& b)
+{
+return concat(a,meta_unknown,b.bytes(),b.rep_.meta);
+}
+friend String operator+(const char* a,const String& b)
+{
+return std::string_view(a)+b;
+}
+
+private:
+friend class StringWriter;
+static constexpr std::uint32_t heap_bit=string_detail::heap_bit;
+static constexpr std::uint32_t meta_unknown=string_detail::meta_unknown;
+static constexpr std::uint32_t meta_ascii=string_detail::meta_ascii;
+static constexpr std::uint32_t meta_length=string_detail::meta_length;
+struct Heap {
+char* ptr;
+std::uint32_t capacity;
+std::uint32_t hash_known;
+std::uint64_t hash;
+};
+union Storage {
+char buffer[inline_capacity+1];
+Heap heap;
+};
+struct Rep {
+Storage storage;
+std::uint32_t size;
+std::uint32_t meta;
+};
+static_assert(sizeof(Rep)==32);
+
+String(const char* bytes,std::size_t size,std::uint32_t meta)
+{
+init(bytes,size,meta);
+}
+bool is_heap() const noexcept
+{
+return (rep_.size&heap_bit)!=0;
+}
+std::uint32_t size_bytes() const noexcept
+{
+return rep_.size&~heap_bit;
+}
+std::uint32_t capacity_bytes() const noexcept
+{
+return is_heap()?rep_.storage.heap.capacity:static_cast<std::uint32_t>(inline_capacity);
+}
+char* mutable_data() noexcept
+{
+return is_heap()?rep_.storage.heap.ptr:rep_.storage.buffer;
+}
+void init_empty() noexcept
+{
+rep_.storage.buffer[0]='\0';
+rep_.size=0;
+rep_.meta=meta_ascii;
+}
+void init(const char* bytes,std::size_t size,std::uint32_t meta);
+void release() noexcept;
+void free_index() noexcept;
+int scan() const noexcept;
+std::uint64_t cache_hash() const noexcept;
+void reallocate(std::uint32_t capacity);
+char* raw_reserve(std::size_t capacity);
+void raw_set_size(std::uint32_t size,std::uint32_t meta) noexcept;
+String& append_raw(const char* bytes,std::size_t size,std::uint32_t meta);
+String& append_signed(long long value);
+String& append_unsigned(unsigned long long value);
+static String concat(std::string_view a,std::uint32_t a_meta,std::string_view b,std::uint32_t b_meta);
+static String with_size(std::size_t size);
+bool is_simple() const noexcept
+{
+return static_cast<std::uint32_t>(length())==size_bytes();
+}
+const std::uint32_t* index() const;
+std::uint32_t char_to_byte(std::uint32_t index) const;
+std::uint32_t byte_to_char(std::uint32_t offset) const;
+std::uint32_t ascii_meta(std::uint32_t length) const noexcept
+{
+return (rep_.meta!=meta_unknown&&(rep_.meta&meta_ascii)!=0)?length|meta_ascii:meta_unknown;
+}
+String bytes_between(std::uint32_t begin,std::uint32_t end,std::uint32_t meta) const;
+
+mutable Rep rep_;
+};
+}
+
+template<>
+struct std::hash<zodiac::String> {
+std::size_t operator()(const zodiac::String& text) const noexcept
+{
+return static_cast<std::size_t>(text.hash());
+}
+};
