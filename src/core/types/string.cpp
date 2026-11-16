@@ -239,7 +239,15 @@ if(a==meta_unknown||b==meta_unknown)return meta_unknown;
 if(!b_bytes.empty()&&is_continuation(static_cast<byte>(b_bytes[0])))return meta_unknown;
 return ((a&meta_length)+(b&meta_length))|(a&b&meta_ascii);
 }
-std::uint32_t format_double(double value,char* out) noexcept
+// The longest text format_number writes: fixed notation is used only for 1e-7 <= |v| < 1e21, so it is at most a sign,
+// "0.", six zeros and 17 significant digits (26 bytes) or a sign and 21 integer digits; shortest scientific is at most
+// 24 bytes ("-2.2250738585072014e-308"). float needs fewer.
+constexpr std::size_t number_buffer=32;
+static_assert(number_buffer>=26);
+// Shortest round-trip text of value (std::to_chars), JavaScript's choice of notation: fixed for 1e-7 <= |value| < 1e21,
+// otherwise scientific without leading zeros in the exponent; "nan", "inf", "-inf", and "0" for both zeros.
+template<typename T>
+std::uint32_t format_number(T value,char* out) noexcept
 {
 if(std::isnan(value)){
 std::memcpy(out,"nan",3);
@@ -253,14 +261,29 @@ return 4;
 std::memcpy(out,"inf",3);
 return 3;
 }
-if(value==0.0){
+if(value==0){
 out[0]='0';
 return 1;
 }
-return static_cast<std::uint32_t>(std::to_chars(out,out+32,value).ptr-out);
+const T magnitude=value<0?-value:value;
+if(magnitude>=static_cast<T>(1e-7)&&magnitude<static_cast<T>(1e21)){
+return static_cast<std::uint32_t>(std::to_chars(out,out+number_buffer,value,std::chars_format::fixed).ptr-out);
+}
+char* end=std::to_chars(out,out+number_buffer,value,std::chars_format::scientific).ptr;
+char* digits=std::find(out,end,'e')+2;
+char* first=digits;
+while(end-first>1&&*first=='0')++first;
+std::memmove(digits,first,static_cast<std::size_t>(end-first));
+end-=first-digits;
+return static_cast<std::uint32_t>(end-out);
 }
 
-// The hash: wyhash's structure (multiply-fold mixing of 8-byte little-endian reads) with a fixed seed.
+// The hash: wyhash's structure (multiply-fold mixing of 8-byte little-endian reads) with a fixed seed. It needs the 64x64->128
+// multiply of unsigned __int128, which clang has on every 64-bit target Zodiac builds for.
+#if !defined(__SIZEOF_INT128__)
+#error "zodiac::String's hash needs unsigned __int128 (a 64-bit clang target)"
+#endif
+static_assert(sizeof(unsigned __int128)==16,"the hash folds a 128-bit product");
 constexpr std::uint64_t hash_seed=0x2D358DCCAA6C78A5u;
 constexpr std::uint64_t secret0=0xA0761D6478BD642Fu;
 constexpr std::uint64_t secret1=0xE7037ED1A0B428DBu;
@@ -314,14 +337,6 @@ inline bool is_digit(char c) noexcept
 {
 return static_cast<unsigned char>(c-'0')<10;
 }
-inline bool equals_ignoring_case(std::string_view text,std::string_view lower) noexcept
-{
-if(text.size()!=lower.size())return false;
-for(std::size_t i=0;i<text.size();++i){
-if((text[i]|0x20)!=lower[i])return false;
-}
-return true;
-}
 // Correctly rounded conversion of text that already matched the grammar; text is NUL-terminated.
 // from_chars where the library has it for double (libc++ 20 and later); strtod in the "C" locale otherwise and for
 // results out of range (overflow to infinity, underflow and subnormals as strtod rounds them).
@@ -352,18 +367,6 @@ negative=*p=='-';
 ++p;
 }
 if(p==end)return false;
-if(!is_digit(*p)&&*p!='.'){
-const std::string_view word(p,static_cast<std::size_t>(end-p));
-if(equals_ignoring_case(word,"inf")||equals_ignoring_case(word,"infinity")){
-value=negative?-std::numeric_limits<double>::infinity():std::numeric_limits<double>::infinity();
-return true;
-}
-if(equals_ignoring_case(word,"nan")){
-value=std::numeric_limits<double>::quiet_NaN();
-return true;
-}
-return false;
-}
 std::uint64_t significand=0;
 int digits=0;
 long long exponent=0;
@@ -487,7 +490,8 @@ String map_case(std::string_view text)
 {
 const byte* p=ubytes(text.data());
 const byte* end=p+text.size();
-StringWriter out(text.size()+text.size()/4+8);
+// Most text maps to the same size; starting there keeps results that fit inline, and the writer grows for the rest.
+StringWriter out(text.size());
 std::uint32_t count=0;
 bool ascii=true;
 constexpr byte trigger=Upper?'i':'I';
@@ -506,22 +510,42 @@ const byte b=*p;
 ++count;
 if(b<0x80){
 if(Turkic&&b==trigger){
-char* w=out.reserve(2);
-ascii=false;
 if constexpr(Upper){
+char* w=out.reserve(2);
 w[0]=static_cast<char>(0xC4);
 w[1]=static_cast<char>(0xB0);
 out.advance(2);
+ascii=false;
 ++p;
-}else if(end-p>=3&&p[1]==0xCC&&p[2]==0x87){
-// SpecialCasing After_I: I followed by U+0307 COMBINING DOT ABOVE is i.
-w[0]='i';
-out.advance(1);
-p+=3;
+continue;
+}
+// SpecialCasing After_I: I, then marks whose combining class is neither 0 nor 230, then U+0307 COMBINING DOT ABOVE
+// lowers to i followed by those marks; the U+0307 is dropped. Otherwise I is dotless ı.
+const byte* marks=p+1;
+const byte* q=marks;
+std::uint32_t mark_count=0;
+while(q<end&&*q>=0x80){
+const std::uint32_t size=char_size(q,end);
+if(size==1)break;
+const char32_t mark=decode(q,size);
+if(mark==0x307)break;
+const unsigned ccc=unicode::combining_class(mark);
+if(ccc==0||ccc==230)break;
+q+=size;
+++mark_count;
+}
+if(end-q>=2&&q[0]==0xCC&&q[1]==0x87){
+out.put_byte('i');
+out.put(reinterpret_cast<const char*>(marks),static_cast<std::size_t>(q-marks));
+count+=mark_count;
+ascii=ascii&&mark_count==0;
+p=q+2;
 }else{
+char* w=out.reserve(2);
 w[0]=static_cast<char>(0xC4);
 w[1]=static_cast<char>(0xB1);
 out.advance(2);
+ascii=false;
 ++p;
 }
 continue;
@@ -620,48 +644,66 @@ return mix(a^secret0^size,b^secret1);
 }
 }
 
+// Copies read other's caches atomically: other may be read (and its caches filled) by other threads at the same time.
+// The inline buffer and the sizes are never written by const members.
 String::String(const String& other)
 {
+const std::uint32_t meta=other.load_meta();
 if(!other.is_heap()){
-rep_=other.rep_;
+rep_.storage=other.rep_.storage;
+rep_.size=other.rep_.size;
+rep_.meta=meta;
 return;
 }
 const std::uint32_t size=other.size_bytes();
 if(size<=static_cast<std::uint32_t>(inline_capacity)){
 std::memcpy(rep_.storage.buffer,other.rep_.storage.heap.ptr,std::size_t{size}+1);
 rep_.size=size;
-rep_.meta=other.rep_.meta;
+rep_.meta=meta;
 return;
 }
 char* ptr=allocate_block(size);
 std::memcpy(ptr,other.rep_.storage.heap.ptr,std::size_t{size}+1);
-rep_.storage.heap={ptr,size,other.rep_.storage.heap.hash_known,other.rep_.storage.heap.hash};
+rep_.storage.heap={ptr,size,0,0};
 rep_.size=size|heap_bit;
-rep_.meta=other.rep_.meta;
+rep_.meta=meta;
+copy_hash(other);
+}
+
+void String::copy_hash(const String& other) noexcept
+{
+if(other.is_heap()&&__atomic_load_n(&other.rep_.storage.heap.hash_known,__ATOMIC_ACQUIRE)!=0){
+rep_.storage.heap.hash=__atomic_load_n(&other.rep_.storage.heap.hash,__ATOMIC_RELAXED);
+rep_.storage.heap.hash_known=1;
+}else{
+rep_.storage.heap.hash_known=0;
+}
 }
 
 String& String::operator=(const String& other)
 {
 if(this==&other)return *this;
 const std::uint32_t size=other.size_bytes();
+const std::uint32_t meta=other.load_meta();
 if(!is_heap()){
 if(!other.is_heap()){
-rep_=other.rep_;
+rep_.storage=other.rep_.storage;
+rep_.size=other.rep_.size;
+rep_.meta=meta;
 return *this;
 }
 if(size<=static_cast<std::uint32_t>(inline_capacity)){
 std::memcpy(rep_.storage.buffer,other.rep_.storage.heap.ptr,std::size_t{size}+1);
 rep_.size=size;
-rep_.meta=other.rep_.meta;
+rep_.meta=meta;
 return *this;
 }
 }else if(rep_.storage.heap.capacity>=size){
 free_index();
 std::memcpy(rep_.storage.heap.ptr,other.data(),std::size_t{size}+1);
 rep_.size=size|heap_bit;
-rep_.meta=other.rep_.meta;
-rep_.storage.heap.hash_known=other.is_heap()?other.rep_.storage.heap.hash_known:0;
-rep_.storage.heap.hash=other.is_heap()?other.rep_.storage.heap.hash:0;
+rep_.meta=meta;
+copy_hash(other);
 return *this;
 }
 String copy(other);
@@ -722,15 +764,30 @@ int String::scan() const noexcept
 const byte* p=ubytes(data());
 bool ascii=true;
 const std::uint32_t count=count_chars(p,p+size_bytes(),ascii);
-rep_.meta=count|(ascii?meta_ascii:0);
+// Concurrent const callers all store the same value, so a relaxed store is enough.
+string_detail::store_relaxed(rep_.meta,count|(ascii?meta_ascii:0));
 return static_cast<int>(count);
+}
+
+bool String::settle_ascii() const noexcept
+{
+// The count is known and equals the byte length: the text is ASCII unless a byte is 0x80 or above (an invalid byte).
+const byte* p=ubytes(data());
+const std::uint32_t size=size_bytes();
+std::uint64_t high=0;
+std::uint32_t i=0;
+for(;i+8<=size;i+=8)high|=load_word(p+i);
+for(;i<size;++i)high|=p[i];
+if((high&high_bits)!=0)return false;
+string_detail::store_relaxed(rep_.meta,size|meta_ascii);
+return true;
 }
 
 std::uint64_t String::cache_hash() const noexcept
 {
 const std::uint64_t value=string_detail::hash_bytes(rep_.storage.heap.ptr,size_bytes());
-rep_.storage.heap.hash=value;
-rep_.storage.heap.hash_known=1;
+__atomic_store_n(&rep_.storage.heap.hash,value,__ATOMIC_RELAXED);
+__atomic_store_n(&rep_.storage.heap.hash_known,std::uint32_t{1},__ATOMIC_RELEASE);
 return value;
 }
 
@@ -786,6 +843,7 @@ if(size==0)return *this;
 const std::uint32_t old_size=size_bytes();
 if(size>max_size-old_size)too_long();
 const auto total=old_size+static_cast<std::uint32_t>(size);
+const bool joins=is_continuation(static_cast<byte>(bytes[0]));
 const std::uint32_t new_meta=joined_meta(rep_.meta,meta,std::string_view(bytes,size));
 if(total>capacity_bytes()){
 const auto base=reinterpret_cast<std::uintptr_t>(data());
@@ -802,28 +860,62 @@ rep_.meta=new_meta;
 if(is_heap()){
 rep_.storage.heap.hash_known=0;
 // Earlier characters (and so the index entries) change only when the new bytes start with a continuation byte that
-// completes a sequence the old end left open; otherwise the index stays and index() extends it.
-if(is_continuation(static_cast<byte>(bytes[0])))free_index();
+// completes a sequence the old end left open; otherwise the index is extended over the new text.
+if(header_of(rep_.storage.heap.ptr)->index!=nullptr){
+if(joins)free_index();
+else extend_index();
+}
 }
 return *this;
 }
 
+void String::extend_index()
+{
+// Non-const (exclusive access), so the block may be grown in place. An index exists only for text with a multi-byte
+// character, so the result is non-ASCII; the count of the new text falls out of the extension.
+HeapHeader* header=header_of(rep_.storage.heap.ptr);
+std::uint32_t* block=header->index;
+const byte* begin=ubytes(rep_.storage.heap.ptr);
+const byte* end=begin+size_bytes();
+std::uint32_t entries=block[0];
+const byte* last=begin+block[1+entries];
+bool ascii=true;
+const std::uint32_t length=(entries-1)*step+count_chars(last,end,ascii);
+const std::uint32_t needed=(length-1)/step+1;
+if(needed>block[1]){
+const std::uint32_t capacity=std::max(needed,block[1]*2);
+auto* grown=static_cast<std::uint32_t*>(::operator new(sizeof(std::uint32_t)*(std::size_t{capacity}+2)));
+std::memcpy(grown,block,sizeof(std::uint32_t)*(std::size_t{entries}+2));
+::operator delete(block);
+grown[1]=capacity;
+header->index=block=grown;
+}
+for(const byte* p=last;entries<needed;++entries){
+p=skip_chars(p,end,step);
+block[2+entries]=static_cast<std::uint32_t>(p-begin);
+}
+block[0]=entries;
+rep_.meta=length;
+}
+
+std::uint32_t String::view_meta(std::string_view bytes) noexcept
+{
+// Short texts are counted on the spot (cheaper than a later rescan of the whole result); long ones stay unknown.
+if(bytes.empty()||bytes.size()>64)return bytes.empty()?meta_ascii:meta_unknown;
+const byte* p=ubytes(bytes.data());
+bool ascii=true;
+const std::uint32_t count=count_chars(p,p+bytes.size(),ascii);
+return count|(ascii?meta_ascii:0);
+}
+
 String& String::append(const String& other)
 {
-return append_raw(other.data(),other.size_bytes(),other.rep_.meta);
+return append_raw(other.data(),other.size_bytes(),other.load_meta());
 }
 
 String& String::append(std::string_view bytes)
 {
-std::uint32_t meta=meta_unknown;
-// Short appends to a string whose metadata is known keep it known (a cheap count instead of a later full rescan).
-if(rep_.meta!=meta_unknown&&!bytes.empty()&&bytes.size()<=64){
-const byte* p=ubytes(bytes.data());
-bool ascii=true;
-const std::uint32_t count=count_chars(p,p+bytes.size(),ascii);
-meta=count|(ascii?meta_ascii:0);
-}
-return append_raw(bytes.data(),bytes.size(),meta);
+return append_raw(bytes.data(),bytes.size(),rep_.meta==meta_unknown?meta_unknown:view_meta(bytes));
 }
 
 String& String::append(char32_t code_point)
@@ -840,8 +932,15 @@ return value?append_raw("true",4,4|meta_ascii):append_raw("false",5,5|meta_ascii
 
 String& String::append(double value)
 {
-char buffer[32];
-const std::uint32_t size=format_double(value,buffer);
+char buffer[number_buffer];
+const std::uint32_t size=format_number(value,buffer);
+return append_raw(buffer,size,size|meta_ascii);
+}
+
+String& String::append(float value)
+{
+char buffer[number_buffer];
+const std::uint32_t size=format_number(value,buffer);
 return append_raw(buffer,size,size|meta_ascii);
 }
 
@@ -892,48 +991,49 @@ return value?String("true",4,4|meta_ascii):String("false",5,5|meta_ascii);
 
 String String::from_number(double value)
 {
-char buffer[32];
-const std::uint32_t size=format_double(value,buffer);
+char buffer[number_buffer];
+const std::uint32_t size=format_number(value,buffer);
+return String(buffer,size,size|meta_ascii);
+}
+
+String String::from_number(float value)
+{
+char buffer[number_buffer];
+const std::uint32_t size=format_number(value,buffer);
 return String(buffer,size,size|meta_ascii);
 }
 
 const std::uint32_t* String::index() const
 {
+// A published index always covers the whole text (appends extend it, other mutations free it), so readers never change
+// it. The first reader builds it in one go and publishes it with a release compare-and-swap; a reader that loses the race
+// frees its copy and uses the winner's.
 char* ptr=rep_.storage.heap.ptr;
 HeapHeader* header=header_of(ptr);
-const std::uint32_t needed=((rep_.meta&meta_length)-1)/step+1;
-std::uint32_t* block=header->index;
-if(block==nullptr||block[1]<needed){
-const std::uint32_t capacity=block==nullptr?needed:std::max(needed,block[1]*2);
-auto* grown=static_cast<std::uint32_t*>(::operator new(sizeof(std::uint32_t)*(std::size_t{capacity}+2)));
-if(block==nullptr){
-grown[0]=1;
-grown[2]=0;
-}else{
-std::memcpy(grown,block,sizeof(std::uint32_t)*(std::size_t{block[0]}+2));
-::operator delete(block);
-}
-grown[1]=capacity;
-header->index=block=grown;
-}
-std::uint32_t built=block[0];
-if(built<needed){
+std::uint32_t* block=__atomic_load_n(&header->index,__ATOMIC_ACQUIRE);
+if(block!=nullptr)return block+2;
+const std::uint32_t needed=((load_meta()&meta_length)-1)/step+1;
+auto* built=static_cast<std::uint32_t*>(::operator new(sizeof(std::uint32_t)*(std::size_t{needed}+2)));
+built[0]=needed;
+built[1]=needed;
+built[2]=0;
 const byte* begin=ubytes(ptr);
 const byte* end=begin+size_bytes();
-const byte* p=begin+block[1+built];
-for(;built<needed;++built){
+const byte* p=begin;
+for(std::uint32_t k=1;k<needed;++k){
 p=skip_chars(p,end,step);
-block[2+built]=static_cast<std::uint32_t>(p-begin);
+built[2+k]=static_cast<std::uint32_t>(p-begin);
 }
-block[0]=built;
-}
-return block+2;
+std::uint32_t* expected=nullptr;
+if(__atomic_compare_exchange_n(&header->index,&expected,built,false,__ATOMIC_RELEASE,__ATOMIC_ACQUIRE))return built+2;
+::operator delete(built);
+return expected+2;
 }
 
 std::uint32_t String::char_to_byte(std::uint32_t position) const
 {
 const std::uint32_t size=size_bytes();
-const std::uint32_t length=rep_.meta&meta_length;
+const std::uint32_t length=load_meta()&meta_length;
 if(length==size)return position;
 if(position==length)return size;
 const byte* begin=ubytes(data());
@@ -947,7 +1047,7 @@ return static_cast<std::uint32_t>(skip_chars(begin+offset,end,position-k*step)-b
 std::uint32_t String::byte_to_char(std::uint32_t offset) const
 {
 const std::uint32_t size=size_bytes();
-const std::uint32_t length=rep_.meta&meta_length;
+const std::uint32_t length=load_meta()&meta_length;
 if(length==size)return offset;
 if(offset==size)return length;
 const byte* begin=ubytes(data());
@@ -1062,7 +1162,8 @@ end=static_cast<std::uint32_t>(skip_chars(base+begin,base+size_bytes(),n)-base);
 }else{
 end=char_to_byte(static_cast<std::uint32_t>(start)+n);
 }
-return bytes_between(begin,end,ascii_meta(n));
+// A part between two character boundaries decodes as it did in the whole string: its count is n.
+return bytes_between(begin,end,part_meta(n));
 }
 
 std::expected<String,StringError> String::left(int count) const
@@ -1094,14 +1195,17 @@ p+=size;
 }
 return parts;
 }
-const bool ascii=rep_.meta!=meta_unknown&&(rep_.meta&meta_ascii)!=0;
+// When every character is one byte, each part's count is its byte length; otherwise parts are counted lazily (counting
+// them here would cost a scan of the whole text that split itself does not need).
+const std::uint32_t meta=load_meta();
+const bool simple=meta!=meta_unknown&&(meta&meta_length)==size_bytes();
 std::size_t from=0;
 for(;;){
 const std::size_t pos=find_aligned(text,delimiter,from);
 const std::size_t end=pos==npos?text.size():pos;
 if(keep_empty||end>from){
 const auto size=static_cast<std::uint32_t>(end-from);
-parts.push_back(String(text.data()+from,size,ascii?size|meta_ascii:meta_unknown));
+parts.push_back(String(text.data()+from,size,simple?size|(meta&meta_ascii):meta_unknown));
 }
 if(pos==npos)break;
 from=pos+delimiter.size();
@@ -1136,8 +1240,8 @@ if(old_text.empty())return *this;
 const std::string_view text=bytes();
 std::size_t pos=find_aligned(text,old_text,0);
 if(pos==npos)return *this;
-const std::size_t growth=new_text.size()>old_text.size()?(new_text.size()-old_text.size())*(all?4:1):0;
-StringWriter out(text.size()+growth);
+// Start at the input size (results that fit stay inline); the writer grows when replacements are longer.
+StringWriter out(text.size()+(all||new_text.size()<=old_text.size()?0:new_text.size()-old_text.size()));
 std::size_t from=0;
 do{
 out.put(text.data()+from,pos-from);
@@ -1150,70 +1254,56 @@ out.put(text.data()+from,text.size()-from);
 return out.finish(meta_unknown);
 }
 
-String String::trim_left() const
+String String::trimmed(bool left,bool right) const
 {
 const byte* begin=ubytes(data());
 const byte* end=begin+size_bytes();
 const byte* p=begin;
-while(p<end){
+std::uint32_t removed=0;
+while(left&&p<end){
 if(*p<0x80){
 if(!unicode::is_whitespace(*p))break;
 ++p;
+++removed;
 continue;
 }
 const std::uint32_t size=char_size(p,end);
 if(size==1||!unicode::is_whitespace(decode(p,size)))break;
 p+=size;
-}
-return bytes_between(static_cast<std::uint32_t>(p-begin),size_bytes(),meta_unknown);
-}
-
-String String::trim_right() const
-{
-const byte* begin=ubytes(data());
-const byte* e=begin+size_bytes();
-while(e>begin){
-if(e[-1]<0x80){
-if(!unicode::is_whitespace(e[-1]))break;
---e;
-continue;
-}
-const byte* start=previous_char(begin,e);
-const auto size=static_cast<std::uint32_t>(e-start);
-if(size==1||!unicode::is_whitespace(decode(start,size)))break;
-e=start;
-}
-return bytes_between(0,static_cast<std::uint32_t>(e-begin),meta_unknown);
-}
-
-String String::trim() const
-{
-const byte* begin=ubytes(data());
-const byte* end=begin+size_bytes();
-const byte* p=begin;
-while(p<end){
-if(*p<0x80){
-if(!unicode::is_whitespace(*p))break;
-++p;
-continue;
-}
-const std::uint32_t size=char_size(p,end);
-if(size==1||!unicode::is_whitespace(decode(p,size)))break;
-p+=size;
+++removed;
 }
 const byte* e=end;
-while(e>p){
+while(right&&e>p){
 if(e[-1]<0x80){
 if(!unicode::is_whitespace(e[-1]))break;
 --e;
+++removed;
 continue;
 }
 const byte* start=previous_char(p,e);
 const auto size=static_cast<std::uint32_t>(e-start);
 if(size==1||!unicode::is_whitespace(decode(start,size)))break;
 e=start;
+++removed;
 }
-return bytes_between(static_cast<std::uint32_t>(p-begin),static_cast<std::uint32_t>(e-begin),meta_unknown);
+// The result lies between character boundaries, so its count is the original minus the removed characters.
+const std::uint32_t meta=load_meta();
+return bytes_between(static_cast<std::uint32_t>(p-begin),static_cast<std::uint32_t>(e-begin),meta==meta_unknown?meta_unknown:part_meta((meta&meta_length)-removed));
+}
+
+String String::trim_left() const
+{
+return trimmed(true,false);
+}
+
+String String::trim_right() const
+{
+return trimmed(false,true);
+}
+
+String String::trim() const
+{
+return trimmed(true,true);
 }
 
 String String::lower() const
@@ -1251,7 +1341,7 @@ const std::uint32_t chunk=std::min(copied,total-copied);
 std::memcpy(d+copied,d,chunk);
 copied+=chunk;
 }
-const std::uint32_t meta=rep_.meta;
+const std::uint32_t meta=load_meta();
 if(meta!=meta_unknown&&!is_continuation(static_cast<byte>(d[0])))out.rep_.meta=((meta&meta_length)*static_cast<std::uint32_t>(count))|(meta&meta_ascii);
 return out;
 }
@@ -1324,7 +1414,8 @@ String out=with_size(size-(end-begin));
 char* d=out.mutable_data();
 std::memcpy(d,data(),begin);
 std::memcpy(d+begin,data()+end,size-end);
-if(!out.empty())out.rep_.meta=ascii_meta(static_cast<std::uint32_t>(length)-n);
+// The two parts keep their counts unless the second starts with a continuation byte that can join the first's end.
+if(!out.empty()&&(end==size||!is_continuation(static_cast<byte>(data()[end]))))out.rep_.meta=part_meta(static_cast<std::uint32_t>(length)-n);
 return out;
 }
 
@@ -1338,7 +1429,7 @@ for(const char c:text)top=std::max(top,static_cast<byte>(c));
 if(top<0xCC)return *this;
 const byte* p=ubytes(text.data());
 const byte* end=p+text.size();
-StringWriter out(text.size()+16);
+StringWriter out(text.size());
 std::u32string run;
 const byte* run_begin=p;
 const auto flush=[&](const byte* run_end){
@@ -1399,7 +1490,7 @@ return static_cast<std::int64_t>(magnitude);
 }
 }
 double value=0;
-if(!parse_number(text,value)||std::isnan(value))return std::unexpected(StringError::not_a_number);
+if(!parse_number(text,value))return std::unexpected(StringError::not_a_number);
 constexpr double limit=9223372036854775808.0;
 if(value>=limit)return std::numeric_limits<std::int64_t>::max();
 if(value<=-limit)return std::numeric_limits<std::int64_t>::min();

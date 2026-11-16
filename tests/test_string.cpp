@@ -4,14 +4,17 @@
 #include <core/types/string.hpp>
 #include <core/types/unicode.hpp>
 #include <doctest/doctest.h>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <random>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -107,6 +110,12 @@ joined.append(c->bytes());
 if(joined!=s.bytes())return "characters do not reproduce the bytes";
 if(s.data()[s.byte_length()]!='\0')return "not NUL-terminated";
 return {};
+}
+// The exhaustive length-3 test takes about a minute in a debug build; it runs when ZODIAC_LONG_TESTS=1 (set in CI's Linux job).
+bool long_tests_enabled()
+{
+const char* value=std::getenv("ZODIAC_LONG_TESTS");
+return value!=nullptr&&std::string_view(value)=="1";
 }
 std::string hex_bytes(std::string_view bytes)
 {
@@ -240,7 +249,29 @@ CHECK(String::from_number(0.1)=="0.1");
 CHECK(String::from_number(1.5)=="1.5");
 CHECK(String::from_number(123456789.0)=="123456789");
 CHECK(String::from_number(0.1+0.2)=="0.30000000000000004");
+CHECK(String::from_number(100000.0)=="100000");
+CHECK(String::from_number(1e6)=="1000000");
+CHECK(String::from_number(1.2e8)=="120000000");
+CHECK(String::from_number(-1.2e8)=="-120000000");
+CHECK(String::from_number(0.0001)=="0.0001");
+CHECK(String::from_number(1e20)=="100000000000000000000");
+// Integers print their exact digits (std::to_chars picks the closest of equally short texts), unlike JavaScript's zero padding.
+CHECK(String::from_number(123456789012345680000.0)=="123456789012345683968");
 CHECK(String::from_number(1e21)=="1e+21");
+CHECK(String::from_number(1.5e300)=="1.5e+300");
+CHECK(String::from_number(1e-7)=="0.0000001");
+CHECK(String::from_number(-1.25e-7)=="-0.000000125");
+CHECK(String::from_number(9.9e-8)=="9.9e-8");
+CHECK(String::from_number(5e-324)=="5e-324");
+CHECK(String::from_number(-2.2250738585072014e-308)=="-2.2250738585072014e-308");
+CHECK(String::from_number(1.7976931348623157e308)=="1.7976931348623157e+308");
+CHECK(String::from_number(0.1f)=="0.1");
+CHECK(String::from_number(16777216.0f)=="16777216");
+CHECK(String::from_number(1e-8f)=="1e-8");
+CHECK(String::from_number(3.4028235e38f)=="3.4028235e+38");
+String with_float;
+with_float+=0.1f;
+CHECK(with_float=="0.1");
 CHECK(String::from_number(std::numeric_limits<double>::infinity())=="inf");
 CHECK(String::from_number(-std::numeric_limits<double>::infinity())=="-inf");
 CHECK(String::from_number(std::numeric_limits<double>::quiet_NaN())=="nan");
@@ -272,10 +303,7 @@ CHECK(String("0.000000000000000000000000000001").to_number()==1e-30);
 CHECK(String("1e400").to_number()==std::numeric_limits<double>::infinity());
 CHECK(String("-1e400").to_number()==-std::numeric_limits<double>::infinity());
 CHECK(String("1e-400").to_number()==0.0);
-CHECK(String("inf").to_number()==std::numeric_limits<double>::infinity());
-CHECK(String("-Infinity").to_number()==-std::numeric_limits<double>::infinity());
-CHECK(std::isnan(String("nan").to_number().value()));
-for(const char* text:{"","abc"," 1","1 ","1e","1e+",".","-","+.e1","0x10","1,5","1.2.3","--1","١","in","nanx"}){
+for(const char* text:{"","abc"," 1","1 ","1e","1e+",".","-","+.e1","0x10","1,5","1.2.3","--1","١","in","nanx","inf","-inf","Infinity","nan","NaN","-nan"}){
 CAPTURE(text);
 CHECK(String(text).to_number()==std::unexpected(StringError::not_a_number));
 CHECK_FALSE(String(text).is_number());
@@ -298,6 +326,13 @@ const auto parsed=String::from_number(value).to_number();
 if(!parsed||*parsed!=value)++mismatches;
 }
 CHECK(mismatches==0);
+for(int i=0;i<20000;++i){
+const float value=std::bit_cast<float>(static_cast<std::uint32_t>(random()));
+if(!std::isfinite(value))continue;
+const auto parsed=String::from_number(value).to_number();
+if(!parsed||static_cast<float>(*parsed)!=value)++mismatches;
+}
+CHECK(mismatches==0);
 }
 
 TEST_CASE("to_int, is_number and is_digits")
@@ -312,7 +347,8 @@ CHECK(String("-1e300").to_int()==std::numeric_limits<std::int64_t>::min());
 CHECK(String("3.9").to_int()==3);
 CHECK(String("-3.9").to_int()==-3);
 CHECK(String("1e3").to_int()==1000);
-CHECK(String("inf").to_int()==std::numeric_limits<std::int64_t>::max());
+CHECK(String("1e400").to_int()==std::numeric_limits<std::int64_t>::max());
+CHECK(String("inf").to_int()==std::unexpected(StringError::not_a_number));
 CHECK(String("nan").to_int()==std::unexpected(StringError::not_a_number));
 CHECK(String("x").to_int()==std::unexpected(StringError::not_a_number));
 CHECK(String("").to_int()==std::unexpected(StringError::not_a_number));
@@ -574,6 +610,131 @@ uppered.push_back(zodiac::unicode::to_upper(c));
 }
 CHECK(String(utf8(mixed)).lower()==utf8(lowered));
 CHECK(String(utf8(mixed)).upper()==utf8(uppered));
+}
+
+TEST_CASE("After_I skips marks of combining classes other than 0 and 230")
+{
+CHECK(String("Ị̇").lower("tr")=="ị");
+CHECK(String("Ị̇").lower("tr").length()==2);
+CHECK(String("Į̣̇x").lower("tr")=="į̣x");
+CHECK(String("Í̇").lower("tr")=="ı́̇");
+CHECK(String("Ị").lower("tr")=="ı̣");
+CHECK(String("Ị̇").lower()=="ị̇");
+CHECK(String("İ").lower("tr")=="i");
+CHECK(String("İ").lower("tr").is_ascii());
+}
+
+TEST_CASE("case mapping results carry exact metadata")
+{
+const char* inputs[]={"","İ","İstanbul","I","i","ı","İ","IŞIK","istanbul ışık","İstanbul'da IŞIK","ABCDEFGHIJKLMNOP","\xFF\x41","K","KK","Ⱥ","Ị̇","ii","plain ascii text, long enough for words","\xC3\xA7\xA7"};
+const auto check=[](const String& result){
+const String fresh(result.bytes());
+CAPTURE(hex_bytes(result.bytes()));
+CHECK(result.length()==fresh.length());
+CHECK(result.is_ascii()==fresh.is_ascii());
+};
+for(const char* input:inputs){
+const String s(input);
+check(s.lower());
+check(s.upper());
+check(s.lower("tr"));
+check(s.upper("tr"));
+check(s.lower("az"));
+check(s.upper("az"));
+}
+}
+
+TEST_CASE("results that fit stay inline")
+{
+for(int size=13;size<=23;++size){
+CAPTURE(size);
+const String s(std::string(static_cast<std::size_t>(size),'A'));
+CHECK(stored_inline(s.lower()));
+CHECK(stored_inline(s.upper()));
+CHECK(stored_inline(s.lower("tr")));
+CHECK(stored_inline(s.replace("A","b")));
+CHECK(stored_inline(s.replace("A","",false)));
+CHECK(stored_inline(s.normalize()));
+}
+CHECK(stored_inline(String("abcdefghijklm é").normalize()));
+CHECK(String("abcdefghijklm é").normalize()=="abcdefghijklm é");
+CHECK(stored_inline(String("iiiiiiiiiii").upper("tr")));
+CHECK(String("iiiiiiiiiii").upper("tr").byte_length()==22);
+CHECK_FALSE(stored_inline(String("iiiiiiiiiiii").upper("tr")));
+CHECK(String("iiiiiiiiiiii").upper("tr").length()==12);
+}
+
+TEST_CASE("parts keep a known character count")
+{
+const String s="  şehir şehir  ";
+CHECK(s.length()==15);
+const String trimmed=s.trim();
+CHECK(trimmed.length()==11);
+CHECK(trimmed.length()==String(trimmed.bytes()).length());
+CHECK(s.substr(2,5)->length()==5);
+CHECK(s.erase(0,2)->length()==13);
+CHECK((s+"ğ").length()==16);
+CHECK(("ğ"+s).length()==16);
+const String joined=String("\xC3")+std::string_view("\xA7");
+CHECK(joined.length()==1);
+const String erased=String("\xC3" "x\xA7").erase(1,1).value();
+CHECK(erased=="ç");
+CHECK(erased.length()==1);
+const String simple="\xFF" "a,b";
+CHECK(simple.length()==4);
+const std::vector<String> parts=simple.split(",");
+REQUIRE(parts.size()==2);
+CHECK(parts[0].length()==2);
+CHECK_FALSE(parts[0].is_ascii());
+CHECK(parts[1].is_ascii());
+CHECK(String("abc").substr(1)->is_ascii());
+const String mixed="\xFF" "abc";
+CHECK(mixed.length()==4);
+const String tail=mixed.substr(1).value();
+CHECK(tail.is_ascii());
+CHECK(tail.length()==3);
+}
+
+TEST_CASE("concurrent const access to one string is safe")
+{
+std::u32string model;
+for(int i=0;i<3000;++i)model.push_back(i%4==0?U'ş':i%4==1?U'中':char32_t(U'a'+i%26));
+const std::string bytes=utf8(model);
+const String reference(bytes);
+std::vector<int> positions;
+for(int i=0;i<3000;i+=97)positions.push_back(i);
+std::vector<std::u32string> expected_chars;
+for(const int i:positions)expected_chars.push_back(model.substr(static_cast<std::size_t>(i),1));
+const std::string needle=utf8(model.substr(2500,6));
+const int expected_find=reference.find(needle).value();
+const std::uint64_t expected_hash=reference.hash();
+for(int round=0;round<20;++round){
+const String shared(bytes);
+std::atomic<bool> go{false};
+std::atomic<int> failures{0};
+std::vector<std::thread> threads;
+for(int t=0;t<8;++t){
+threads.emplace_back([&,t]{
+while(!go.load(std::memory_order_acquire)){}
+for(int k=0;k<4;++k){
+const std::size_t first=static_cast<std::size_t>(t+k)%positions.size();
+for(std::size_t j=0;j<positions.size();++j){
+const std::size_t n=(first+j)%positions.size();
+if(shared.char_at(positions[n])!=utf8(expected_chars[n]))++failures;
+}
+if(shared.length()!=3000)++failures;
+if(shared.hash()!=expected_hash)++failures;
+if(shared.find(needle)!=expected_find)++failures;
+if(shared.is_ascii())++failures;
+const String copy=shared;
+if(copy.hash()!=expected_hash||copy.length()!=3000)++failures;
+}
+});
+}
+go.store(true,std::memory_order_release);
+for(std::thread& thread:threads)thread.join();
+CHECK(failures.load()==0);
+}
 }
 
 TEST_CASE("repeat, reverse and normalize")
@@ -873,6 +1034,22 @@ const std::uint64_t r=random();
 bytes.push_back(static_cast<char>(r%3==0?static_cast<unsigned char>(r>>8):r%3==1?interesting[(r>>8)%std::size(interesting)]:static_cast<unsigned char>('a'+(r>>8)%26)));
 }
 run(bytes);
+}
+CHECK(first_failure=="");
+CHECK(failures==0);
+}
+
+TEST_CASE("every byte string of length 3 (ZODIAC_LONG_TESTS=1)"*doctest::skip(!long_tests_enabled()))
+{
+std::string first_failure;
+int failures=0;
+std::string bytes(3,'\0');
+for(int a=0;a<256;++a)for(int b=0;b<256;++b)for(int c=0;c<256;++c){
+bytes[0]=static_cast<char>(a);
+bytes[1]=static_cast<char>(b);
+bytes[2]=static_cast<char>(c);
+const std::string result=check_characters(String(bytes));
+if(!result.empty()&&failures++==0)first_failure=hex_bytes(bytes)+": "+result;
 }
 CHECK(first_failure=="");
 CHECK(failures==0);

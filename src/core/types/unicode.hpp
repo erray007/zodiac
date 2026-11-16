@@ -44,6 +44,8 @@ inline bool is_whitespace(char32_t c) noexcept
 if(c<0x80)return c<64&&((detail::ascii_whitespace_mask>>c)&1)!=0;
 return detail::is_whitespace_table(c);
 }
+// Canonical_Combining_Class from UnicodeData.txt (0 for starters, unassigned code points and values above U+10FFFF).
+unsigned combining_class(char32_t c) noexcept;
 // True when the NFC quick check (UAX #15) proves text is already in Normalization Form C; false when it may not be.
 // Allocation-free; nfc() runs the same check first and returns a plain copy when it passes.
 bool quick_check_nfc(std::u32string_view text) noexcept;

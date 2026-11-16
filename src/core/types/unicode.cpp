@@ -176,6 +176,10 @@ return false;
 }
 }
 
+unsigned combining_class(char32_t c) noexcept
+{
+return c<t::quick_check_limit?0u:properties(c).ccc;
+}
 bool quick_check_nfc(std::u32string_view text) noexcept
 {
 return quick_check_failure(text)==text.size();

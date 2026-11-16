@@ -83,6 +83,9 @@ jobs:
       - name: Bootstrap
         run: python bootstrap.py
       - name: Build and test
+        # The Linux job also runs the long tests (test_string's exhaustive length-3 UTF-8 check).
+        env:
+          ZODIAC_LONG_TESTS: "1"
         run: .tools/cmake/bin/cmake --workflow --preset linux
       - name: Upload logs on failure
         if: failure()

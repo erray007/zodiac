@@ -125,6 +125,20 @@ for(char32_t c=0;c<=0x10FFFF;++c)if(zodiac::unicode::is_whitespace(c))++count;
 CHECK(count==25);
 }
 
+TEST_CASE("combining_class reports Canonical_Combining_Class")
+{
+CHECK(zodiac::unicode::combining_class(U'A')==0);
+CHECK(zodiac::unicode::combining_class(U'ş')==0);
+CHECK(zodiac::unicode::combining_class(char32_t{0x0300})==230);
+CHECK(zodiac::unicode::combining_class(char32_t{0x0307})==230);
+CHECK(zodiac::unicode::combining_class(char32_t{0x0323})==220);
+CHECK(zodiac::unicode::combining_class(char32_t{0x0327})==202);
+CHECK(zodiac::unicode::combining_class(char32_t{0x05B0})==10);
+CHECK(zodiac::unicode::combining_class(char32_t{0x1D165})==216);
+CHECK(zodiac::unicode::combining_class(U'中')==0);
+CHECK(zodiac::unicode::combining_class(char32_t{0x110000})==0);
+}
+
 TEST_CASE("nfc keeps Turkish text, composes decomposed text and Hangul")
 {
 CHECK(zodiac::unicode::nfc(U"ş")==U"ş");

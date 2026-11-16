@@ -8,11 +8,12 @@
 //   (searches only match whole characters). code_at() of such a byte is U+FFFD.
 // - Layout (32 bytes): up to inline_capacity bytes live inside the object without allocation; longer text lives in one heap
 //   block (an 8-byte header for the sparse index, then the bytes). Copies of heap strings that fit are stored inline.
-// - Metadata is computed lazily and invalidated on every mutation (or updated exactly when an append cannot change earlier
-//   characters): the character count with the all-ASCII flag (one word-at-a-time scan), the 64-bit hash (cached for heap
-//   strings; inline strings hash their at most 23 bytes on each call), and for non-ASCII heap text longer than index_step
-//   characters a sparse index with the byte offset of every index_step-th character, so indexed access, substr and the
-//   character position of a search hit scan at most index_step characters. When every character is one byte, indices are
+// - Metadata is computed lazily and invalidated on every mutation (or carried over exactly when an operation provably
+//   cannot change the character count): the character count with an all-ASCII flag (one word-at-a-time scan), the 64-bit
+//   hash (cached for heap strings; inline strings hash their at most 23 bytes on each call), and for non-ASCII heap text
+//   longer than index_step characters a sparse index with the byte offset of every index_step-th character, so indexed
+//   access, substr and the character position of a search hit scan at most index_step characters. The index always covers
+//   the whole text: const members build it in one go, appends extend it. When every character is one byte, indices are
 //   byte offsets and no index exists.
 // - hash() is a fixed-seed wyhash-style 64-bit hash of the bytes read little-endian: equal on every platform and run.
 // - Range rules: lengths, indices and counts are int and "not found" is -1. char_at/code_at need 0 <= i < length(),
@@ -20,7 +21,10 @@
 //   counts that run past the end are clamped; a negative count other than the -1 "to the end" default is negative_count.
 //   Violations are returned as StringError (no C++ exceptions for script errors); the binding maps them to exception texts.
 // - Comparisons are by bytes (unsigned), which for valid UTF-8 is code point order.
-// - Not internally synchronized: even const members fill the caches, so threads exchange copies, never shared references.
+// - Thread safety like a standard container: any number of threads may call const members (and copy) one String at the
+//   same time; the caches they fill are written atomically (relaxed counts, release/acquire for the hash and the index
+//   pointer, which is published once by compare-and-swap and only replaced or freed by non-const members). Non-const
+//   members need exclusive access.
 #pragma once
 #include <climits>
 #include <compare>
@@ -46,11 +50,22 @@ concept integer_value=std::integral<T>&&!std::is_same_v<T,bool>&&!std::is_same_v
 // The 64-bit hash of String::hash() over any bytes.
 std::uint64_t hash_bytes(const char* data,std::size_t size) noexcept;
 // String's packed fields. size: bit 31 is set while the bytes live on the heap. meta: meta_unknown, or the character count
-// with meta_ascii; String::max_byte_length keeps a known meta from ever equalling meta_unknown.
+// plus meta_ascii when the text is known to be ASCII. Without meta_ascii the text is non-ASCII when the count differs from
+// the byte length, and not yet known otherwise (every character one byte: ASCII or invalid bytes; is_ascii() settles it).
+// String::max_byte_length keeps a known meta from ever equalling meta_unknown.
 inline constexpr std::uint32_t heap_bit=0x80000000u;
 inline constexpr std::uint32_t meta_unknown=0xFFFFFFFFu;
 inline constexpr std::uint32_t meta_ascii=0x80000000u;
 inline constexpr std::uint32_t meta_length=0x7FFFFFFFu;
+// Atomic access to the caches const members fill (clang builtins: libc++ 18 has no std::atomic_ref).
+inline std::uint32_t load_relaxed(const std::uint32_t& value) noexcept
+{
+return __atomic_load_n(&value,__ATOMIC_RELAXED);
+}
+inline void store_relaxed(std::uint32_t& value,std::uint32_t written) noexcept
+{
+__atomic_store_n(&value,written,__ATOMIC_RELAXED);
+}
 }
 
 class String {
@@ -97,8 +112,11 @@ return *this=std::string_view(text);
 static String from_code_point(char32_t code_point);
 static String from_bool(bool value);
 // Shortest text that reads back as the same double (std::to_chars), so integers have no ".0"; "inf", "-inf", "nan",
-// and negative zero is "0".
+// and negative zero is "0". Like JavaScript, fixed notation for 1e-7 <= |value| < 1e21 ("100000", "0.0001"), otherwise
+// scientific with the shortest exponent ("1e+21", "1e-7").
 static String from_number(double value);
+// The same for float, with the shortest text that reads back as the same float (0.1f is "0.1").
+static String from_number(float value);
 template<string_detail::integer_value T>
 static String from_number(T value)
 {
@@ -130,20 +148,26 @@ return size_bytes()==0;
 // Number of characters (cached).
 int length() const noexcept
 {
-const std::uint32_t meta=rep_.meta;
+const std::uint32_t meta=load_meta();
 if(meta!=meta_unknown)return static_cast<int>(meta&meta_length);
 return scan();
 }
 // True when every byte is below 0x80 (cached with length()).
 bool is_ascii() const noexcept
 {
-if(rep_.meta==meta_unknown)scan();
-return (rep_.meta&meta_ascii)!=0;
+std::uint32_t meta=load_meta();
+if(meta==meta_unknown){
+scan();
+meta=load_meta();
+}
+if((meta&meta_ascii)!=0)return true;
+if((meta&meta_length)!=size_bytes())return false;
+return settle_ascii();
 }
 std::uint64_t hash() const noexcept
 {
 if(!is_heap())return string_detail::hash_bytes(rep_.storage.buffer,rep_.size);
-if(rep_.storage.heap.hash_known!=0)return rep_.storage.heap.hash;
+if(__atomic_load_n(&rep_.storage.heap.hash_known,__ATOMIC_ACQUIRE)!=0)return __atomic_load_n(&rep_.storage.heap.hash,__ATOMIC_RELAXED);
 return cache_hash();
 }
 // Bytes the string can hold without reallocating.
@@ -186,7 +210,8 @@ String trim_right() const;
 String lower() const;
 String upper() const;
 // locale "tr" or "az" (any case, optionally followed by '-' or '_' and a region) applies the Turkish dotted/dotless I rules,
-// including SpecialCasing's After_I rule (I followed directly by U+0307 lowers to i, dropping the dot); others are invariant.
+// including SpecialCasing's After_I rule (I, then marks of combining class other than 0 and 230, then U+0307 lowers to i
+// with those marks, dropping the U+0307); others are invariant.
 String lower(std::string_view locale) const;
 String upper(std::string_view locale) const;
 std::expected<String,StringError> repeat(int count) const;
@@ -198,9 +223,10 @@ std::expected<String,StringError> erase(int start,int count=-1) const;
 String normalize() const;
 
 // The whole string as a decimal number: [+-] digits [. digits] [e [+-] digits] (digits on at least one side of the point),
-// or [+-] inf / infinity / nan in any case; no surrounding white space. Correctly rounded; overflow gives +-inf.
+// with no surrounding white space. "inf" and "nan" are not numbers (input validation). Correctly rounded; a decimal too
+// large for a double gives +-inf.
 std::expected<double,StringError> to_number() const;
-// An integer text exactly (saturating at the int64 limits); any other number truncated toward zero and saturated; nan fails.
+// An integer text exactly (saturating at the int64 limits); any other number truncated toward zero and saturated.
 std::expected<std::int64_t,StringError> to_int() const;
 bool is_number() const noexcept;
 // True when non-empty and every byte is an ASCII digit 0-9.
@@ -217,6 +243,7 @@ return append(std::string_view(text));
 String& append(char32_t code_point);
 String& append(bool value);
 String& append(double value);
+String& append(float value);
 template<string_detail::integer_value T>
 String& append(T value)
 {
@@ -258,7 +285,7 @@ return a.bytes()<=>std::string_view(b);
 }
 friend String operator+(const String& a,const String& b)
 {
-return concat(a.bytes(),a.rep_.meta,b.bytes(),b.rep_.meta);
+return concat(a.bytes(),a.load_meta(),b.bytes(),b.load_meta());
 }
 friend String operator+(String&& a,const String& b)
 {
@@ -267,7 +294,8 @@ return std::move(a);
 }
 friend String operator+(const String& a,std::string_view b)
 {
-return concat(a.bytes(),a.rep_.meta,b,meta_unknown);
+const std::uint32_t a_meta=a.load_meta();
+return concat(a.bytes(),a_meta,b,a_meta==meta_unknown?meta_unknown:view_meta(b));
 }
 friend String operator+(String&& a,std::string_view b)
 {
@@ -285,7 +313,8 @@ return std::move(a);
 }
 friend String operator+(std::string_view a,const String& b)
 {
-return concat(a,meta_unknown,b.bytes(),b.rep_.meta);
+const std::uint32_t b_meta=b.load_meta();
+return concat(a,b_meta==meta_unknown?meta_unknown:view_meta(a),b.bytes(),b_meta);
 }
 friend String operator+(const char* a,const String& b)
 {
@@ -335,6 +364,10 @@ char* mutable_data() noexcept
 {
 return is_heap()?rep_.storage.heap.ptr:rep_.storage.buffer;
 }
+std::uint32_t load_meta() const noexcept
+{
+return string_detail::load_relaxed(rep_.meta);
+}
 void init_empty() noexcept
 {
 rep_.storage.buffer[0]='\0';
@@ -345,7 +378,11 @@ void init(const char* bytes,std::size_t size,std::uint32_t meta);
 void release() noexcept;
 void free_index() noexcept;
 int scan() const noexcept;
+bool settle_ascii() const noexcept;
 std::uint64_t cache_hash() const noexcept;
+void extend_index();
+void copy_hash(const String& other) noexcept;
+static std::uint32_t view_meta(std::string_view bytes) noexcept;
 void reallocate(std::uint32_t capacity);
 char* raw_reserve(std::size_t capacity);
 void raw_set_size(std::uint32_t size,std::uint32_t meta) noexcept;
@@ -361,11 +398,14 @@ return static_cast<std::uint32_t>(length())==size_bytes();
 const std::uint32_t* index() const;
 std::uint32_t char_to_byte(std::uint32_t index) const;
 std::uint32_t byte_to_char(std::uint32_t offset) const;
-std::uint32_t ascii_meta(std::uint32_t length) const noexcept
+// The meta of a part of this string with length characters (known whenever this string's count is known).
+std::uint32_t part_meta(std::uint32_t length) const noexcept
 {
-return (rep_.meta!=meta_unknown&&(rep_.meta&meta_ascii)!=0)?length|meta_ascii:meta_unknown;
+const std::uint32_t meta=load_meta();
+return meta==meta_unknown?meta_unknown:length|(meta&meta_ascii);
 }
 String bytes_between(std::uint32_t begin,std::uint32_t end,std::uint32_t meta) const;
+String trimmed(bool left,bool right) const;
 
 mutable Rep rep_;
 };
