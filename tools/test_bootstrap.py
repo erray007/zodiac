@@ -97,6 +97,71 @@ class BootstrapTests(unittest.TestCase):
             self.assertFalse(bootstrap.ensure_tool("tool", spec, root))
             self.assertEqual(patched.call_count, 1)
 
+    def test_manifest_pins_inno_setup_for_windows(self):
+        manifest = bootstrap.load_manifest(Path(__file__).resolve().parent / "toolchain.json")
+        spec = manifest["hosts"]["windows-x86_64"]["innosetup"]
+        self.assertRegex(spec["version"], r"^6\.\d+\.\d+$")
+        self.assertTrue(spec["url"].startswith("https://"))
+        self.assertTrue(spec["url"].endswith(".exe"))
+        self.assertRegex(spec["sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(spec["kind"], "installer")
+        self.assertNotIn("innosetup", manifest["hosts"]["linux-x86_64"])
+
+    def test_installer_command_installs_silently_for_the_current_user(self):
+        dest = self.tmp / "root" / ".tools" / "innosetup.new"
+        command = bootstrap.installer_command(self.tmp / "innosetup.exe", dest)
+        self.assertEqual(command[0], str(self.tmp / "innosetup.exe"))
+        for flag in ("/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/PORTABLE=1"):
+            self.assertIn(flag, command)
+        self.assertIn("/DIR=" + str(dest.resolve()), command)
+        self.assertTrue(Path(command[-1].removeprefix("/DIR=")).is_absolute())
+
+    def test_ensure_tool_runs_an_installer_once(self):
+        payload = b"setup"
+        spec = {
+            "version": "6.0.0",
+            "url": "https://example.invalid/setup-6.0.0.exe",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "kind": "installer",
+        }
+        root = self.tmp / "root"
+
+        def fake_download(url, dest, sha256):
+            Path(dest).write_bytes(payload)
+
+        def fake_run(command, **kwargs):
+            target = Path(command[-1].removeprefix("/DIR="))
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "ISCC.exe").write_text("iscc")
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(bootstrap, "download", side_effect=fake_download), \
+                mock.patch.object(bootstrap.subprocess, "run", side_effect=fake_run) as ran:
+            self.assertTrue(bootstrap.ensure_tool("innosetup", spec, root))
+            self.assertEqual(ran.call_count, 1)
+            self.assertIn("/CURRENTUSER", ran.call_args.args[0])
+            self.assertEqual((root / ".tools" / "innosetup" / ".stamp").read_text().strip(), "6.0.0")
+            self.assertTrue((root / ".tools" / "innosetup" / "ISCC.exe").exists())
+            self.assertFalse((root / ".tools" / "innosetup.new").exists())
+            self.assertFalse(bootstrap.ensure_tool("innosetup", spec, root))
+            self.assertEqual(ran.call_count, 1)
+
+    def test_ensure_tool_reports_a_failed_installer(self):
+        payload = b"setup"
+        spec = {
+            "version": "6.0.0",
+            "url": "https://example.invalid/setup-6.0.0.exe",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "kind": "installer",
+        }
+        root = self.tmp / "root"
+        with mock.patch.object(bootstrap, "download", side_effect=lambda url, dest, sha256: Path(dest).write_bytes(payload)), \
+                mock.patch.object(bootstrap.subprocess, "run", return_value=mock.Mock(returncode=5)):
+            with self.assertRaises(bootstrap.InstallerError):
+                bootstrap.ensure_tool("innosetup", spec, root)
+        self.assertFalse((root / ".tools" / "innosetup").exists())
+        self.assertFalse((root / ".tools" / "innosetup.new").exists())
+
     def test_next_step_uses_the_host_path_separator(self):
         self.assertEqual(bootstrap.next_step("windows-x86_64"), r"Setup complete. Next: .tools\cmake\bin\cmake --workflow --preset windows")
         self.assertEqual(bootstrap.next_step("linux-x86_64"), "Setup complete. Next: .tools/cmake/bin/cmake --workflow --preset linux")

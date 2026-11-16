@@ -19,7 +19,9 @@ _Static_assert(offsetof(zodiac_module_info,dependency_count)==ZT_HEADER+4*ZT_PTR
 /* dependency_count (4 bytes) is followed by 4 bytes of padding so the next pointer is 8-byte aligned. */
 _Static_assert(offsetof(zodiac_module_info,register_module)==ZT_HEADER+5*ZT_PTR,"zodiac_module_info.register_module");
 _Static_assert(offsetof(zodiac_module_info,shutdown_module)==ZT_HEADER+6*ZT_PTR,"zodiac_module_info.shutdown_module");
-_Static_assert(sizeof(zodiac_module_info)==ZT_HEADER+7*ZT_PTR,"sizeof(zodiac_module_info)");
+/* Appended after ABI v1: link_modes (4 bytes), then 4 bytes of tail padding so the struct stays 8-byte aligned. */
+_Static_assert(offsetof(zodiac_module_info,link_modes)==ZT_HEADER+7*ZT_PTR,"zodiac_module_info.link_modes");
+_Static_assert(sizeof(zodiac_module_info)==ZT_HEADER+8*ZT_PTR,"sizeof(zodiac_module_info)");
 
 _Static_assert(offsetof(zodiac_host,abi_version)==0,"zodiac_host.abi_version");
 _Static_assert(offsetof(zodiac_host,struct_size)==4,"zodiac_host.struct_size");
@@ -67,6 +69,7 @@ static const zodiac_module_info zodiac_test_module_info = {
 .dependency_count = 0,
 .register_module = NULL,
 .shutdown_module = NULL,
+.link_modes = ZODIAC_LINK_STATIC|ZODIAC_LINK_DYNAMIC,
 };
 
 ZODIAC_DEFINE_MODULE(zodiac_test_module_info)

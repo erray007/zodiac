@@ -44,16 +44,53 @@ host.set_current_module(module);
 };
 }
 
+std::string module_file_name(std::string_view name)
+{
+constexpr std::string_view prefix="zodiac_mod_";
+constexpr std::string_view suffix=ZODIAC_MODULE_SUFFIX;
+std::string file;
+file.reserve(prefix.size()+name.size()+suffix.size());
+file.append(prefix).append(name).append(suffix);
+return file;
+}
+
+std::vector<InstalledModule> find_installed_modules(std::span<const std::filesystem::path> dirs)
+{
+namespace fs=std::filesystem;
+constexpr std::string_view prefix="zodiac_mod_";
+constexpr std::string_view suffix=ZODIAC_MODULE_SUFFIX;
+const fs::path extension(suffix);
+std::vector<InstalledModule> found;
+for(const fs::path& dir:dirs){
+std::error_code error;
+fs::directory_iterator it(dir,error);
+if(error)continue;
+for(const fs::directory_iterator end;it!=end;it.increment(error)){
+if(error)break;
+const fs::path& file=it->path();
+if(file.extension()!=extension)continue;
+std::string name=path_to_utf8(file.filename());
+if(!name.starts_with(prefix))continue;
+std::error_code status;
+if(!it->is_regular_file(status))continue;
+name.erase(name.size()-suffix.size());
+name.erase(0,prefix.size());
+if(std::any_of(found.begin(),found.end(),[&name](const InstalledModule& module){return module.name==name;}))continue;
+found.push_back({file,std::move(name)});
+}
+}
+return found;
+}
+
 ModuleSearchPaths ModuleSearchPaths::defaults(const std::filesystem::path& exe_dir,const std::filesystem::path& project_dir)
 {
 return ModuleSearchPaths{{(exe_dir/".."/"modules").lexically_normal(),project_dir/"plugins"}};
 }
 
-std::expected<void,std::string> ModuleRegistry::resolve(std::string_view name,const ModuleSearchPaths& search,std::vector<std::string>& stack)
+std::expected<void,std::string> ModuleRegistry::resolve(std::string_view name,const ModuleSearchPaths& search,std::span<const zodiac_module_info* const> linked,std::vector<std::string>& stack)
 {
 if(!valid_module_name(name))return failure("module name "+in_quotes(name)+" is invalid");
-const auto loaded=std::find_if(entries_.begin(),entries_.end(),[&](const Entry& entry){return entry.name==name;});
-if(loaded!=entries_.end())return {};
+if(std::find(names_.begin(),names_.end(),name)!=names_.end())return {};
 const auto cycle=std::find(stack.begin(),stack.end(),name);
 if(cycle!=stack.end()){
 std::string message="module dependency cycle: ";
@@ -61,8 +98,13 @@ for(auto it=cycle;it!=stack.end();++it)message.append(*it).append(" -> ");
 message.append(name);
 return failure(std::move(message));
 }
-std::string file="zodiac_mod_";
-file.append(name).append(ZODIAC_MODULE_SUFFIX);
+DynamicLibrary library;
+const zodiac_module_info* info=nullptr;
+const auto match=std::find_if(linked.begin(),linked.end(),[name](const zodiac_module_info* candidate){return candidate&&candidate->name&&name==candidate->name;});
+if(match!=linked.end()){
+info=*match;
+}else{
+const std::string file=module_file_name(name);
 std::filesystem::path found;
 for(const std::filesystem::path& dir:search.dirs){
 std::error_code error;
@@ -80,13 +122,15 @@ message.append(path_to_utf8(search.dirs[i]));
 }
 return failure(std::move(message));
 }
-auto library=DynamicLibrary::open(found);
-if(!library)return failure("module "+in_quotes(name)+" could not be loaded: "+library.error());
+auto opened=DynamicLibrary::open(found);
+if(!opened)return failure("module "+in_quotes(name)+" could not be loaded: "+opened.error());
+library=std::move(*opened);
 using EntryFunction=const zodiac_module_info*(*)(void);
-void* symbol=library->symbol(ZODIAC_MODULE_ENTRY_NAME);
+void* symbol=library.symbol(ZODIAC_MODULE_ENTRY_NAME);
 if(!symbol)return failure("module "+in_quotes(name)+" has no "+ZODIAC_MODULE_ENTRY_NAME+" entry");
-const zodiac_module_info* info=reinterpret_cast<EntryFunction>(symbol)();
+info=reinterpret_cast<EntryFunction>(symbol)();
 if(!info)return failure("module "+in_quotes(name)+" returned no module info");
+}
 if(info->abi_version==0)return failure("module "+in_quotes(name)+" reports ABI version 0");
 if(info->abi_version>ZODIAC_ABI_VERSION)return failure("module "+in_quotes(name)+" needs ABI "+std::to_string(info->abi_version)+" but this Zodiac provides "+std::to_string(ZODIAC_ABI_VERSION));
 if(!module_info_provides(*info,module_info_v1_size))return failure("module "+in_quotes(name)+" has an invalid info structure");
@@ -96,23 +140,25 @@ stack.emplace_back(name);
 for(uint32_t i=0;i<info->dependency_count;++i){
 const char* dependency=info->dependencies?info->dependencies[i]:nullptr;
 if(!dependency)return failure("module "+in_quotes(name)+" lists an empty dependency");
-if(auto resolved=resolve(dependency,search,stack);!resolved)return resolved;
+if(auto resolved=resolve(dependency,search,linked,stack);!resolved)return resolved;
 }
 stack.pop_back();
-entries_.push_back(Entry{std::string(name),std::move(*library),info,false});
+entries_.push_back(Entry{std::move(library),info,false});
 infos_.push_back(info);
+names_.emplace_back(name);
 return {};
 }
 
-std::expected<void,std::string> ModuleRegistry::load(std::span<const std::string> names,const ModuleSearchPaths& search)
+std::expected<void,std::string> ModuleRegistry::load(std::span<const std::string> names,const ModuleSearchPaths& search,std::span<const zodiac_module_info* const> linked)
 {
 const size_t before=entries_.size();
 std::vector<std::string> stack;
 for(const std::string& name:names){
-auto resolved=resolve(name,search,stack);
+auto resolved=resolve(name,search,linked,stack);
 if(resolved)continue;
 while(entries_.size()>before)entries_.pop_back();
 infos_.resize(before);
+names_.resize(before);
 return resolved;
 }
 return {};
@@ -127,14 +173,16 @@ host.set_log_handler([&scope,&first_error,&baseline,&host](zodiac_log_level leve
 if(level==ZODIAC_LOG_ERROR&&first_error.empty()&&host.registration_failures()>baseline)first_error.assign(message);
 if(scope.handler)scope.handler(level,message);
 });
-for(Entry& entry:entries_){
+for(std::size_t i=0;i<entries_.size();++i){
+Entry& entry=entries_[i];
 if(entry.registered)continue;
+const std::string& name=names_[i];
 first_error.clear();
 baseline=host.registration_failures();
-host.set_current_module(entry.name);
+host.set_current_module(name);
 const int code=entry.info->register_module?entry.info->register_module(host.abi()):ZODIAC_OK;
 if(code!=ZODIAC_OK||host.registration_failures()>baseline){
-return failure("module "+in_quotes(entry.name)+" failed to register: "+(first_error.empty()?"error code "+std::to_string(code):first_error));
+return failure("module "+in_quotes(name)+" failed to register: "+(first_error.empty()?"error code "+std::to_string(code):first_error));
 }
 entry.registered=true;
 }

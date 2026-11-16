@@ -51,8 +51,8 @@ Zodiac is distributed as an installable package. A game developer installs only 
 
 | Option | Summary |
 |---|---|
-| **A. Load every installed module (chosen)** | One-file experiments (`speak("hello")`) just work, as in NVGT. `zodiac build` still requires a project file. |
-| B. Core only | Stricter; every experiment needs a project file. |
+| **A. Load every installed module (chosen first, superseded: see row B and kit usability spec item 8)** | One-file experiments (`speak("hello")`) just work, as in NVGT. `zodiac build` still required a project file (later changed: it builds a lone script with the core only). |
+| B. Core only | Stricter; every experiment needs a project file. *Chosen later instead of A: `2026-11-16-zodiac-kit-usability-design.md` item 8.* |
 
 **Code signing**
 
@@ -66,7 +66,7 @@ Zodiac is distributed as an installable package. A game developer installs only 
 
 - Zodiac is distributed as an installable kit; the developer needs nothing else to build games.
 - Both a setup wizard and a portable zip.
-- Double-clicking a `.zs` file runs it; with no `zodiac.toml` nearby every installed module is loaded.
+- Double-clicking a `.zs` file runs it; with no `zodiac.toml` nearby every installed module is loaded. *Superseded by `2026-11-16-zodiac-kit-usability-design.md` item 8: without a `zodiac.toml` only the core is loaded.*
 - The console window closes when the program ends, error or not. Developers who want to read errors run from a terminal or use `verbose` and the log file.
 - Unsigned for now, designed so signing is one setting away; `zodiac build` can sign games with the developer's own certificate.
 
@@ -166,7 +166,7 @@ Starting an undeclared worker is an error in dev mode too, so dev and release fa
 ### 8.5 `zodiac run` with a `.zs` file
 
 - `zodiac run` accepts a project directory (as now) or a `.zs` file.
-- For a file: search the file's folder and its parents for `zodiac.toml`. Found: use that project's modules and settings, but run the given file as the main script. Not found: run the file with every installed module loaded, in the kit's fixed dependency order; this is logged at `verbose` 3.
+- For a file: search the file's folder and its parents for `zodiac.toml`. Found: use that project's modules and settings, but run the given file as the main script. Not found: run the file with every installed module loaded, in the kit's fixed dependency order; this is logged at `verbose` 3. *Superseded by `2026-11-16-zodiac-kit-usability-design.md` item 8: not found means the core only, no modules.*
 - Double-click runs exactly this command, so double-click and terminal behave identically. The console closes when the program ends.
 
 ### 8.6 Signing
@@ -210,7 +210,7 @@ command = ["signtool", "sign", "/fd", "SHA256", "/a", "{file}"]
 - On a Windows machine with only the Zodiac kit (from the zip or the wizard), `zodiac new hello`, `zodiac build hello` produces `hello/release/hello.exe`, which runs on another clean Windows machine with nothing installed.
 - The release executable contains no code from undeclared modules (verifiable by symbol inspection); a `dynamic` module ships as a DLL next to it and is loaded from there.
 - Every script fixture gives the same exit code and diagnostics under `run` and as a release build.
-- Double-clicking a `.zs` file runs it; with no project file, a script calling a function from an installed module runs.
+- Double-clicking a `.zs` file runs it; with no project file, a script calling a function from an installed module runs. *Superseded by `2026-11-16-zodiac-kit-usability-design.md` item 8: with no project file a core-only script runs, and a module call fails to compile with the note line.*
 - The owner completes the setup wizard and the uninstall with NVDA alone.
 - A core-only hello world release is at most 3 MB.
 

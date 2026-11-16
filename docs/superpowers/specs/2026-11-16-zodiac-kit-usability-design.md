@@ -1,0 +1,34 @@
+# Zodiac Kit Usability Changes — Short Design
+
+Status: approved by the owner (2026-11-16), including the display name "Zodiac Game Toolkit". Amends `docs/superpowers/specs/2026-11-16-zodiac-release-and-kit-design.md` (plan 3) after the owner's first hands-on test of the installed kit with NVDA.
+
+## Intent
+
+The owner tried the kit: right-click "Build with Zodiac" on a lone `.zs` file stopped with `zodiac.toml not found`, and a script error on double-click vanished with the closing console. Building and error reporting must work for someone who never opens a terminal.
+
+## Decisions (owner)
+
+1. **Build without a project file (A + B together).** `zodiac build <file.zs>` with no `zodiac.toml` in the file's folder or its parents no longer fails. It builds like `zodiac run` does for a lone script: every installed module linked statically, the file as main script, the root is the file's folder, the game name is the file name without extension. The result gets the warning line `warning: no zodiac.toml; every installed module was linked in (create a project file to choose modules)`. *Superseded by item 8.*
+2. **"Create project file" button.** The build result window shows a `Create project file` button when the build ran without a project file. It writes `zodiac.toml` next to the script, in the same format `zodiac new` writes, with `main` set to that script and `static` listing the installed modules that were linked, so the developer only deletes what the game does not use. *Superseded by item 8.* It never overwrites an existing file. The button reports the outcome in the window's text (`Created <path>` or the error).
+3. **Window rule.** Without `--no-window`:
+   - `zodiac build` always shows the result window, on success and failure (as now).
+   - `zodiac run` shows the same accessible window only when the run ends with an error (compile error, module error, uncaught exception, exit code 1 or 2 from the engine). A clean exit shows nothing. Title `Zodiac run - <game name>`, the first line `Run failed: <N> errors`, no output folder button.
+   - With `--no-window`, nothing is shown and everything goes to the console. When no interactive desktop exists, no window opens: a failed `run` prints `Run failed: N errors` and `build` prints its summary on standard output instead; `--no-window` on `run` prints no summary.
+4. **`--config <file>` flag.** `zodiac run` and `zodiac build` accept `--config <file>` (also `--config=<file>`) naming the project file explicitly, with any file name or extension (`.toml`, `.txt`, ...). The content is the same TOML as `zodiac.toml`. The project root becomes the config file's folder; every relative path in it resolves against that folder. A positional `.zs` argument together with `--config` overrides `main`; a positional folder together with `--config` is a usage error (exit 2). A missing or unreadable config file is `error: config file "<path>" does not exist` (exit 2).
+5. **Name in Windows "Apps / Programs and Features".** The setup's display name becomes `Zodiac Game Toolkit` (Inno `AppName` and the uninstall entry's `DisplayName`). The Start menu folder uses the same name.
+
+6. **Modules that cannot be linked statically in a lone build** (approved after the first review). A lone build links a module dynamically when its link modes lack static or it has no static library; the generated `zodiac.toml` lists those under `dynamic`. *Superseded by item 8.*
+7. **Third-party DLLs of dynamic modules ship automatically** (approved). Closed libraries such as BASS or FMOD exist only as DLLs. For every DLL `zodiac build` copies (dynamic modules and plugins), it reads the DLL's import table (and delay-import table) and copies each imported DLL found in the same folder as that module DLL, recursively for those DLLs too. Windows system DLLs (anything not next to the module, e.g. `KERNEL32.dll`, `api-ms-win-*`) are never copied. An imported DLL that is neither next to the module nor a system DLL stops the build: `error: module "<name>" needs "<dll>", which is not next to "<module dll path>"` (exit 2). Copied third-party DLLs are signed like the module DLLs when signing is configured. Licensing of such libraries (e.g. BASS/FMOD commercial terms) stays the game developer's responsibility; the README says so.
+
+8. **No project file means core only (supersedes items 1 and 6, and plan 3 spec 8.5's "every installed module").** The owner found the flaw: Zodiac will ship several audio engines that register the same names, so loading every installed module would make them collide. Without a `zodiac.toml` (and without `--config`), `zodiac run <file.zs>` and `zodiac build <file.zs>` load no modules at all, only the core.
+   - The build warning becomes `warning: no zodiac.toml; only the core is available (create a project file to add modules)`.
+   - When the compile fails in this mode, one extra line follows the compiler errors: `note: no zodiac.toml; only the core is available, so module functions are not declared (create a project file to add modules)`. In `run` and `build` alike. Only a failed compile draws the note; a missing or misdeclared `main()` or a throwing global initializer does not.
+   - `Create project file` writes a `zodiac.toml` with empty `static` and `dynamic` lists. The run error window offers the same button, only when that note was reported (no project file and the scripts failed to compile); every other run failure has no button.
+   - The lone-build static/dynamic split of item 6 is removed.
+   - Design note for the audio plan: audio engine modules share one API so a game switches engine by changing one line of `zodiac.toml`.
+
+## Left to the builder
+
+- Where the window code is shared between build and run (one function for both).
+- How `run` collects its diagnostics for the window (the same `BuildReport` style sink).
+- Tests: e2e for the lone-file build, `--config` (both spellings, `.txt` name, relative paths, conflicts), the run-error window path through `ZODIAC_FORCE_NO_DESKTOP` (prints the summary) and a unit test of the generated `zodiac.toml` text; CI's setup checks updated for the new display name.

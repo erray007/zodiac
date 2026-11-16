@@ -80,9 +80,11 @@ return zodiac::plugin::function<&echo>(host,"string example_echo(const string &i
 }
 }
 
-extern "C" const zodiac_module_info zodiac_module_info_example={ZODIAC_ABI_VERSION,sizeof(zodiac_module_info),"example","0.1.0","Zlib",nullptr,0,&register_module,nullptr};
+extern "C" const zodiac_module_info zodiac_module_info_example={ZODIAC_ABI_VERSION,sizeof(zodiac_module_info),"example","0.1.0","Zlib",nullptr,0,&register_module,nullptr,ZODIAC_LINK_STATIC|ZODIAC_LINK_DYNAMIC};
 ZODIAC_DEFINE_MODULE(zodiac_module_info_example)
 ```
+
+The last member, link_modes, says how a game may link the module: ZODIAC_LINK_STATIC (built into the game's executable), ZODIAC_LINK_DYNAMIC (a DLL next to it), or both. A module whose license does not allow static linking (LGPL, for example) sets only ZODIAC_LINK_DYNAMIC, and zodiac build then refuses to link it statically.
 
 The script declaration string must match the C++ function signature. For a hot path with only primitive parameters, register a plain `extern "C"` function with `host->register_native_function` as modules/example/example.cpp does for `example_add`.
 

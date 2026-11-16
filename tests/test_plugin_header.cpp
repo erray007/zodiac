@@ -27,7 +27,9 @@ static_assert(offsetof(zodiac_module_info,dependency_count)==kHeader+4*kPointer)
 // dependency_count (4 bytes) is followed by 4 bytes of padding so the next pointer is 8-byte aligned.
 static_assert(offsetof(zodiac_module_info,register_module)==kHeader+5*kPointer);
 static_assert(offsetof(zodiac_module_info,shutdown_module)==kHeader+6*kPointer);
-static_assert(sizeof(zodiac_module_info)==kHeader+7*kPointer);
+// Appended after ABI v1: link_modes (4 bytes), then 4 bytes of tail padding so the struct stays 8-byte aligned.
+static_assert(offsetof(zodiac_module_info,link_modes)==kHeader+7*kPointer);
+static_assert(sizeof(zodiac_module_info)==kHeader+8*kPointer);
 
 static_assert(offsetof(zodiac_host,abi_version)==0);
 static_assert(offsetof(zodiac_host,struct_size)==4);
@@ -69,6 +71,8 @@ TEST_CASE("abi constants are stable")
 {
 CHECK(ZODIAC_ABI_VERSION == 1);
 CHECK(std::string(ZODIAC_MODULE_ENTRY_NAME) == "zodiac_module_get_info");
+CHECK(ZODIAC_LINK_STATIC == 1u);
+CHECK(ZODIAC_LINK_DYNAMIC == 2u);
 }
 
 TEST_CASE("module info defined in C is exported through the entry point")

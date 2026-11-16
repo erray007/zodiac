@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-command bootstrap for Zodiac: downloads pinned CMake, Ninja and llvm-mingw into .tools/."""
+"""One-command bootstrap for Zodiac: downloads pinned CMake, Ninja and, on Windows, llvm-mingw and Inno Setup into .tools/."""
 
 import hashlib
 import json
@@ -27,6 +27,10 @@ class ChecksumError(Exception):
 
 class UnsafeArchiveError(Exception):
     """Raised when an archive member would be extracted outside the destination."""
+
+
+class InstallerError(Exception):
+    """Raised when a pinned tool's own installer fails."""
 
 
 def say(message: str) -> None:
@@ -160,6 +164,22 @@ def safe_extract(archive: Path, dest: Path, strip_prefix: str) -> None:
                     target.chmod(member.mode | 0o600)
 
 
+def installer_command(installer: Path, dest: Path) -> list:
+    """The command line that runs an Inno Setup installer silently, for the current user only, into dest.
+
+    /PORTABLE=1 (supported by Inno Setup's own installer) also skips its uninstaller entry, file association and Start menu icons, so nothing is left outside dest."""
+    return [str(installer), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/PORTABLE=1", "/DIR=" + str(Path(dest).resolve())]
+
+
+def run_installer(installer: Path, dest: Path) -> None:
+    """Run a silent installer into dest, which must hold a non-empty install afterwards."""
+    result = subprocess.run(installer_command(installer, dest), check=False)
+    if result.returncode != 0:
+        raise InstallerError(f"{Path(installer).name} failed with exit code {result.returncode}")
+    if not (Path(dest).is_dir() and any(Path(dest).iterdir())):
+        raise InstallerError(f"{Path(installer).name} installed nothing into {dest}")
+
+
 def ensure_tool(name: str, spec: dict, root: Path) -> bool:
     """Install one pinned tool under root/.tools/name. Returns False if already up to date."""
     root = Path(root)
@@ -171,16 +191,24 @@ def ensure_tool(name: str, spec: dict, root: Path) -> bool:
         return False
     cache = tools_dir / "cache"
     cache.mkdir(parents=True, exist_ok=True)
-    archive = cache / spec["url"].rsplit("/", 1)[-1]
-    if not (archive.is_file() and _sha256_of(archive) == spec["sha256"].lower()):
+    download_file = cache / spec["url"].rsplit("/", 1)[-1]
+    if not (download_file.is_file() and _sha256_of(download_file) == spec["sha256"].lower()):
         say(f"Downloading {name} {version}")
-        download(spec["url"], archive, spec["sha256"])
-    say(f"Extracting {name} {version}")
+        download(spec["url"], download_file, spec["sha256"])
     staging = tools_dir / (name + ".new")
     if staging.exists():
         shutil.rmtree(staging)
-    safe_extract(archive, staging, spec.get("strip_prefix", ""))
-    (staging / ".stamp").write_text(version + "\n", encoding="utf-8")
+    try:
+        if spec.get("kind") == "installer":
+            say(f"Installing {name} {version}")
+            run_installer(download_file, staging)
+        else:
+            say(f"Extracting {name} {version}")
+            safe_extract(download_file, staging, spec.get("strip_prefix", ""))
+        (staging / ".stamp").write_text(version + "\n", encoding="utf-8")
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     if target.exists():
         shutil.rmtree(target)
     os.replace(staging, target)
@@ -261,7 +289,7 @@ def main() -> int:
         for name, spec in specs.items():
             if not ensure_tool(name, spec, root):
                 say(f"{name} {spec['version']} is already installed.")
-    except (ChecksumError, UnsafeArchiveError) as error:
+    except (ChecksumError, UnsafeArchiveError, InstallerError) as error:
         say(f"Error: {error}")
         return 1
     except OSError as error:

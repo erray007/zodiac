@@ -171,6 +171,40 @@ outcome.build=runtime.build(project);
 if(run&&outcome.build==0)outcome.run=runtime.run();
 return outcome;
 }
+// Builds the fixture from source and returns its saved bytecode.
+std::string bytecode_of(std::string_view name,bool strip_debug_info=false)
+{
+std::vector<Line> lines;
+const zodiac::Project project=project_of(name);
+zodiac::Diagnostics diagnostics;
+diagnostics.add_sink(std::make_unique<MemorySink>(lines));
+zodiac::ScriptRuntime runtime(diagnostics,search());
+INFO(join(lines));
+REQUIRE(runtime.build(project)==0);
+auto bytecode=runtime.save_bytecode(strip_debug_info);
+INFO(bytecode.error_or(""));
+REQUIRE(bytecode.has_value());
+CHECK_FALSE(bytecode->empty());
+CHECK(lines.empty());
+return std::move(*bytecode);
+}
+struct BytecodeOutcome{
+std::vector<Line> lines;
+int load=-1;
+int run=-1;
+};
+// Loads bytecode into a fresh runtime for the named project (no linked modules) and runs it when the load succeeds.
+BytecodeOutcome execute_bytecode(std::string_view name,std::string_view bytecode)
+{
+BytecodeOutcome outcome;
+const zodiac::Project project=project_of(name);
+zodiac::Diagnostics diagnostics;
+diagnostics.add_sink(std::make_unique<MemorySink>(outcome.lines));
+zodiac::ScriptRuntime runtime(diagnostics,search());
+outcome.load=runtime.load_bytecode(project,bytecode,{});
+if(outcome.load==0)outcome.run=runtime.run();
+return outcome;
+}
 }
 
 TEST_CASE("compile error format")
@@ -423,4 +457,99 @@ zodiac_host* host=runtime.host().abi();
 host->log(host,ZODIAC_LOG_WARNING,"from a plugin");
 CHECK(texts(lines)==std::vector<std::string>{"from a plugin"});
 CHECK(lines[0].level==ZODIAC_LOG_WARNING);
+}
+
+TEST_CASE("bytecode round trip runs the same")
+{
+const Outcome source=execute("int_main");
+const BytecodeOutcome bytecode=execute_bytecode("int_main",bytecode_of("int_main"));
+INFO(join(bytecode.lines));
+CHECK(bytecode.load==0);
+CHECK(bytecode.run==source.run);
+CHECK(bytecode.run==7);
+CHECK(bytecode.lines.empty());
+}
+
+TEST_CASE("bytecode using a module runs the same")
+{
+const BytecodeOutcome bytecode=execute_bytecode("uses_module",bytecode_of("uses_module"));
+INFO(join(bytecode.lines));
+CHECK(bytecode.load==0);
+CHECK(bytecode.run==7);
+}
+
+TEST_CASE("runtime errors keep file and line from bytecode")
+{
+const Outcome source=execute("runtime_error");
+const BytecodeOutcome bytecode=execute_bytecode("runtime_error",bytecode_of("runtime_error"));
+INFO(join(bytecode.lines));
+CHECK(bytecode.load==0);
+CHECK(bytecode.run==source.run);
+CHECK(texts(bytecode.lines)==texts(source.lines));
+CHECK(has_line(bytecode.lines,"main.zs:8: runtime error: Null pointer access"));
+}
+
+TEST_CASE("stripped bytecode reports line unknown")
+{
+const BytecodeOutcome bytecode=execute_bytecode("runtime_error",bytecode_of("runtime_error",true));
+INFO(join(bytecode.lines));
+CHECK(bytecode.load==0);
+CHECK(bytecode.run==1);
+REQUIRE_FALSE(bytecode.lines.empty());
+CHECK(bytecode.lines[0].text=="main.zs: runtime error: Null pointer access (line unknown)");
+CHECK(bytecode.lines[0].level==ZODIAC_LOG_ERROR);
+}
+
+TEST_CASE("bytecode built against another module set is refused")
+{
+const BytecodeOutcome bytecode=execute_bytecode("int_main",bytecode_of("uses_module"));
+// A module error, not a script error.
+CHECK(bytecode.load==2);
+CHECK(texts(bytecode.lines)==std::vector<std::string>{"error: the game data does not match the modules it was built with"});
+}
+
+TEST_CASE("truncated bytecode is refused without reading past the end")
+{
+const std::string full=bytecode_of("runtime_error");
+for(const std::size_t size:{std::size_t{0},std::size_t{1},full.size()/2,full.size()-1}){
+const std::string truncated=full.substr(0,size);
+const BytecodeOutcome bytecode=execute_bytecode("runtime_error",truncated);
+INFO("size ",size);
+CHECK(bytecode.load==2);
+CHECK(texts(bytecode.lines)==std::vector<std::string>{"error: the game data does not match the modules it was built with"});
+}
+}
+
+TEST_CASE("bytecode load reports a missing module with code 2")
+{
+std::vector<Line> lines;
+const zodiac::Project project=project_of("missing_module");
+zodiac::Diagnostics diagnostics;
+diagnostics.add_sink(std::make_unique<MemorySink>(lines));
+zodiac::ScriptRuntime runtime(diagnostics,search());
+CHECK(runtime.load_bytecode(project,bytecode_of("int_main"),{})==2);
+REQUIRE(lines.size()==1);
+CHECK(lines[0].text.starts_with("module \"nope\" not found in: "));
+}
+
+TEST_CASE("save_bytecode before a successful build")
+{
+std::vector<Line> lines;
+zodiac::Diagnostics diagnostics;
+diagnostics.add_sink(std::make_unique<MemorySink>(lines));
+const zodiac::ScriptRuntime runtime(diagnostics,search());
+const auto bytecode=runtime.save_bytecode(false);
+REQUIRE_FALSE(bytecode.has_value());
+CHECK(bytecode.error()=="error: no script has been built");
+}
+
+TEST_CASE("module order lists the loaded modules in registration order")
+{
+const zodiac::Project project=project_of("uses_module");
+zodiac::Diagnostics diagnostics;
+zodiac::ScriptRuntime runtime(diagnostics,search());
+CHECK(runtime.module_order().empty());
+REQUIRE(runtime.build(project)==0);
+const auto order=runtime.module_order();
+CHECK(std::vector<std::string>(order.begin(),order.end())==std::vector<std::string>{"example"});
 }

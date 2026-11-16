@@ -1,0 +1,9 @@
+# Zodiac project file.
+[game]
+name = "hello"
+main = "main.zs"
+
+[modules]
+# Modules this game uses, for example "example". Both lists are searched as shared libraries.
+static = []
+dynamic = []

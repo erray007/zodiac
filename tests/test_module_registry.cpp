@@ -119,7 +119,7 @@ TEST_CASE("module info larger than v1 (a newer header) still loads")
 zodiac::ModuleRegistry registry;
 REQUIRE(registry.load(std::vector<std::string>{"larger_info"},search()).has_value());
 REQUIRE(registry.ordered().size()==1);
-CHECK(registry.ordered()[0]->struct_size==72);
+CHECK(registry.ordered()[0]->struct_size==80);
 CHECK(registry.ordered()[0]->struct_size>zodiac::module_info_v1_size);
 CHECK(std::string_view(registry.ordered()[0]->name)=="larger_info");
 }
@@ -132,6 +132,63 @@ CHECK(zodiac::module_info_provides(info,zodiac::module_info_v1_size));
 CHECK_FALSE(zodiac::module_info_provides(info,zodiac::module_info_v1_size+1));
 info.struct_size=zodiac::module_info_v1_size+8;
 CHECK(zodiac::module_info_provides(info,zodiac::module_info_v1_size+8));
+}
+
+TEST_CASE("link modes default to both when the member is absent or 0")
+{
+zodiac_module_info info{};
+info.struct_size=zodiac::module_info_v1_size;
+info.link_modes=ZODIAC_LINK_DYNAMIC;
+// A v1-sized info does not contain link_modes, so whatever the bytes hold is ignored.
+CHECK(zodiac::module_link_modes(info)==(ZODIAC_LINK_STATIC|ZODIAC_LINK_DYNAMIC));
+info.struct_size=sizeof(zodiac_module_info);
+CHECK(zodiac::module_link_modes(info)==ZODIAC_LINK_DYNAMIC);
+info.link_modes=ZODIAC_LINK_STATIC;
+CHECK(zodiac::module_link_modes(info)==ZODIAC_LINK_STATIC);
+info.link_modes=0;
+CHECK(zodiac::module_link_modes(info)==(ZODIAC_LINK_STATIC|ZODIAC_LINK_DYNAMIC));
+CHECK(zodiac::module_info_link_modes_end==zodiac::module_info_v1_size+sizeof(uint32_t));
+}
+
+TEST_CASE("a linked static module is used instead of a library")
+{
+const zodiac_module_info info{ZODIAC_ABI_VERSION,sizeof(zodiac_module_info),"example","0.1.0","Zlib",nullptr,0,nullptr,nullptr,ZODIAC_LINK_STATIC};
+const zodiac_module_info* const linked[]={&info};
+zodiac::ModuleRegistry registry;
+const auto result=registry.load(std::vector<std::string>{"example"},zodiac::ModuleSearchPaths{},linked);
+INFO(reason(result));
+REQUIRE(result.has_value());
+REQUIRE(registry.ordered().size()==1);
+CHECK(registry.ordered()[0]==&info);
+const auto names=registry.ordered_names();
+CHECK(std::vector<std::string>(names.begin(),names.end())==std::vector<std::string>{"example"});
+}
+
+TEST_CASE("a linked module's dependency may come from a library")
+{
+const char* const dependencies[]={"example"};
+const zodiac_module_info info{ZODIAC_ABI_VERSION,sizeof(zodiac_module_info),"linked_child","0.1.0","Zlib",dependencies,1,nullptr,nullptr,0};
+const zodiac_module_info* const linked[]={nullptr,&info};
+zodiac::ModuleRegistry registry;
+const auto result=registry.load(std::vector<std::string>{"linked_child"},search(),linked);
+INFO(reason(result));
+REQUIRE(result.has_value());
+CHECK(module_names(registry)==std::vector<std::string>{"example","linked_child"});
+const auto names=registry.ordered_names();
+CHECK(std::vector<std::string>(names.begin(),names.end())==std::vector<std::string>{"example","linked_child"});
+}
+
+TEST_CASE("linked info is validated like a library")
+{
+const zodiac_module_info info{0,sizeof(zodiac_module_info),"abi_zero","0.1.0","Zlib",nullptr,0,nullptr,nullptr,0};
+const zodiac_module_info* const linked[]={&info};
+zodiac::ModuleRegistry registry;
+const auto result=registry.load(std::vector<std::string>{"abi_zero"},zodiac::ModuleSearchPaths{},linked);
+REQUIRE_FALSE(result.has_value());
+CHECK(result.error()==load_error({"abi_zero"}));
+CHECK(result.error()=="module \"abi_zero\" reports ABI version 0");
+CHECK(registry.ordered().empty());
+CHECK(registry.ordered_names().empty());
 }
 
 TEST_CASE("module reporting another name is refused")
@@ -149,6 +206,7 @@ TEST_CASE("a failed load leaves nothing behind")
 zodiac::ModuleRegistry registry;
 CHECK_FALSE(registry.load(std::vector<std::string>{"example","nope"},search()).has_value());
 CHECK(registry.ordered().empty());
+CHECK(registry.ordered_names().empty());
 }
 
 TEST_CASE("example loads and registers")

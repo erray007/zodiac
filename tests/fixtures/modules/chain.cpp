@@ -1,5 +1,5 @@
 // Configurable fixture module for the module loader tests. CMake sets the ZODIAC_FIXTURE_* macros per target:
-// NAME (required, string), REPORTED (name in the info, defaults to NAME), DEP (one dependency, string), ABI, STRUCT_SIZE (defaults to sizeof(zodiac_module_info)), RESULT (return code of register_module), LOG_ERROR (string logged as an error while registering), EXTRA_BYTES (the info is embedded in a struct with this many bytes after it).
+// NAME (required, string), REPORTED (name in the info, defaults to NAME), DEP (one dependency, string), ABI, STRUCT_SIZE (defaults to sizeof(zodiac_module_info)), RESULT (return code of register_module), LOG_ERROR (string logged as an error while registering), EXTRA_BYTES (the info is embedded in a struct with this many bytes after it), LICENSE (string, defaults to "Zlib"), LINK_MODES (ZODIAC_LINK_* bits, defaults to 0: both).
 // Registering and shutting down log "<NAME> register" and "<NAME> shutdown" so the tests can observe the order.
 #include <zodiac/plugin.h>
 #include <stdint.h>
@@ -15,6 +15,12 @@
 #endif
 #ifndef ZODIAC_FIXTURE_RESULT
 #define ZODIAC_FIXTURE_RESULT ZODIAC_OK
+#endif
+#ifndef ZODIAC_FIXTURE_LICENSE
+#define ZODIAC_FIXTURE_LICENSE "Zlib"
+#endif
+#ifndef ZODIAC_FIXTURE_LINK_MODES
+#define ZODIAC_FIXTURE_LINK_MODES 0
 #endif
 
 namespace {
@@ -53,10 +59,10 @@ struct larger_info{
 zodiac_module_info info;
 unsigned char appended[ZODIAC_FIXTURE_EXTRA_BYTES];
 };
-const larger_info g_larger_info={{ZODIAC_FIXTURE_ABI,ZODIAC_FIXTURE_STRUCT_SIZE,ZODIAC_FIXTURE_REPORTED,"0.0.1","Zlib",g_dependency_list,g_dependency_count,&register_module,&shutdown_module},{}};
+const larger_info g_larger_info={{ZODIAC_FIXTURE_ABI,ZODIAC_FIXTURE_STRUCT_SIZE,ZODIAC_FIXTURE_REPORTED,"0.0.1",ZODIAC_FIXTURE_LICENSE,g_dependency_list,g_dependency_count,&register_module,&shutdown_module,ZODIAC_FIXTURE_LINK_MODES},{}};
 const zodiac_module_info& g_info=g_larger_info.info;
 #else
-const zodiac_module_info g_info={ZODIAC_FIXTURE_ABI,ZODIAC_FIXTURE_STRUCT_SIZE,ZODIAC_FIXTURE_REPORTED,"0.0.1","Zlib",g_dependency_list,g_dependency_count,&register_module,&shutdown_module};
+const zodiac_module_info g_info={ZODIAC_FIXTURE_ABI,ZODIAC_FIXTURE_STRUCT_SIZE,ZODIAC_FIXTURE_REPORTED,"0.0.1",ZODIAC_FIXTURE_LICENSE,g_dependency_list,g_dependency_count,&register_module,&shutdown_module,ZODIAC_FIXTURE_LINK_MODES};
 #endif
 }
 
