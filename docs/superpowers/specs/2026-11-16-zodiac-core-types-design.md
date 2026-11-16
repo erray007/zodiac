@@ -40,7 +40,7 @@ Give game scripts the everyday tools a BGT or NVGT developer reaches for first �
 
 | Option | Summary |
 |---|---|
-| A. Bytes (BGT) | Fast; `"şehir".length()` is 7; indices can split letters. |
+| A. Bytes (BGT) | Fast; `"şehir".length()` is 6; indices can split letters. |
 | B. Characters | `"şehir".length()` is 5; correct for menus and text input. |
 | **C. Characters plus byte access (chosen)** | B, plus `byte_length()` and byte-level access for files and network data. |
 
@@ -132,7 +132,7 @@ The exception helper `getExceptionInfo()` from the sample `scripthelper` add-on 
 
 ## 9. Success criteria
 
-- `"şehir".length()==5`, `"şehir".byte_length()==7`, `"şehir"[1]=="e"`, `"İSTANBUL".lower("tr")=="istanbul"`, and no operation ever returns half a character (property tests over random strings mixing ASCII, Turkish, CJK, emoji and invalid bytes).
+- `"şehir".length()==5`, `"şehir".byte_length()==6`, `"şehir"[1]=="e"`, `"İSTANBUL".lower("tr")=="istanbul"`, and no operation ever returns half a character (property tests over random strings mixing ASCII, Turkish, CJK, emoji and invalid bytes).
 - Every benchmark operation of the new types is at most 5 % slower than its add-on counterpart (target: faster), enforced in CI.
 - The plugin ABI tests and all existing script fixtures pass unchanged on the new types.
 - A Blood Bath–style script using the string, file, timer and random operations listed in T4 runs in dev and release with identical output.
