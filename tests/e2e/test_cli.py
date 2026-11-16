@@ -1,4 +1,4 @@
-"""End-to-end tests for the zodiac command line. Needs ZODIAC_EXE and ZODIAC_MODULE_DIR in the environment (CTest sets them)."""
+"""End-to-end tests for the zodiac command line. Needs ZODIAC_EXE, ZODIAC_MODULE_DIR and ZODIAC_TEST_MODULE_DIR in the environment (CTest sets them)."""
 import os
 import subprocess
 import tempfile
@@ -7,6 +7,7 @@ from pathlib import Path
 
 EXE = os.environ["ZODIAC_EXE"]
 MODULE_DIR = os.environ["ZODIAC_MODULE_DIR"]
+TEST_MODULE_DIR = os.environ["ZODIAC_TEST_MODULE_DIR"]
 VERSION = os.environ.get("ZODIAC_VERSION", "")
 
 
@@ -63,6 +64,17 @@ class CliTest(unittest.TestCase):
         code, out, err = zodiac("run", str(project), "--module-dir", MODULE_DIR)
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out.splitlines(), ["şövalye ğüşiöç"])
+
+    def test_run_sets_working_directory_to_project_root(self):
+        project = self.root / "Kanka şövalye oyunu"
+        self.make_project(project, ["example", "cwd_probe"], "void main()\n{\nexample_print(cwd());\n}\n")
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        code, out, err = zodiac("run", str(project), "--module-dir", MODULE_DIR, "--module-dir", TEST_MODULE_DIR, cwd=elsewhere)
+        self.assertEqual((code, err), (0, ""))
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 1, out)
+        self.assertEqual(os.path.normcase(os.path.realpath(lines[0])), os.path.normcase(os.path.realpath(project)))
 
     def test_missing_module_exit_2(self):
         project = self.root / "game"

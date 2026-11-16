@@ -58,6 +58,7 @@ zodiac_fixture_module(bad_decl BAD_DECL)
 zodiac_fixture_module(fails_code RESULT -2)
 zodiac_add_module(no_entry SOURCES fixtures/modules/no_entry.cpp NO_STATIC OUTPUT_DIRECTORY "${ZODIAC_TEST_MODULE_DIR}")
 zodiac_add_module(ref_object SOURCES fixtures/modules/ref_object.cpp NO_STATIC OUTPUT_DIRECTORY "${ZODIAC_TEST_MODULE_DIR}")
+zodiac_add_module(cwd_probe SOURCES fixtures/modules/cwd_probe.cpp NO_STATIC OUTPUT_DIRECTORY "${ZODIAC_TEST_MODULE_DIR}")
 configure_file(fixtures/modules/corrupt_module.txt "${ZODIAC_TEST_MODULE_DIR}/zodiac_mod_corrupt${CMAKE_SHARED_LIBRARY_SUFFIX}" COPYONLY)
 zodiac_add_test(test_project_file SOURCES test_project_file.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_text SOURCES test_text.cpp LIBRARIES zodiac_core)
@@ -86,6 +87,15 @@ add_dependencies(test_process echo_args)
 zodiac_add_test(test_kit_layout SOURCES test_kit_layout.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_payload SOURCES test_payload.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_coff_object SOURCES test_coff_object.cpp LIBRARIES zodiac_core)
+# Portable: links the release stub's start-up path, not its Windows entry point (a separate archive member, see src/release/CMakeLists.txt).
+zodiac_add_test(test_release_stub SOURCES test_release_stub.cpp LIBRARIES zodiac_release_stub)
+target_compile_definitions(test_release_stub PRIVATE
+"ZODIAC_TEST_SCRIPT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/scripts\""
+"ZODIAC_TEST_MODULE_DIR=\"${CMAKE_BINARY_DIR}/modules\""
+"ZODIAC_TEST_FIXTURE_DIR=\"${ZODIAC_TEST_MODULE_DIR}\""
+"ZODIAC_TEST_MODULE_SUFFIX=\"${CMAKE_SHARED_LIBRARY_SUFFIX}\""
+)
+add_dependencies(test_release_stub zodiac_mod_example zodiac_mod_dep_child zodiac_mod_cwd_probe)
 # Compile-only check that the static ZODIAC_DEFINE_MODULE variant is valid C on every platform.
 add_library(test_plugin_header_c_static OBJECT test_plugin_header_c.c)
 set_target_properties(test_plugin_header_c_static PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
@@ -110,4 +120,4 @@ if(NOT Python3_FOUND)
 message(FATAL_ERROR "Python 3.9 or newer is required for the end-to-end tests: install Python 3.9+ and make it findable.")
 endif()
 add_test(NAME cli_e2e COMMAND ${Python3_EXECUTABLE} -I -m unittest discover -v -s ${CMAKE_CURRENT_SOURCE_DIR}/e2e -p "test_*.py")
-set_tests_properties(cli_e2e PROPERTIES ENVIRONMENT "ZODIAC_EXE=$<TARGET_FILE:zodiac>;ZODIAC_MODULE_DIR=${CMAKE_BINARY_DIR}/modules;ZODIAC_VERSION=${PROJECT_VERSION};PYTHONIOENCODING=utf-8")
+set_tests_properties(cli_e2e PROPERTIES ENVIRONMENT "ZODIAC_EXE=$<TARGET_FILE:zodiac>;ZODIAC_MODULE_DIR=${CMAKE_BINARY_DIR}/modules;ZODIAC_TEST_MODULE_DIR=${ZODIAC_TEST_MODULE_DIR};ZODIAC_VERSION=${PROJECT_VERSION};PYTHONIOENCODING=utf-8")

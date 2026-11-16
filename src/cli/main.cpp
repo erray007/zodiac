@@ -138,13 +138,9 @@ return exit_usage_error;
 if(options.log_file.empty()&&!project->diagnostics.file.empty()&&!diagnostics.add_file_sink(project->diagnostics.file))return exit_usage_error;
 ScriptRuntime runtime(diagnostics,ModuleSearchPaths{search_dirs(options)});
 if(const int code=runtime.build(*project);code!=0)return code;
-const int result=runtime.run();
-// A process status is 0-255 on every platform (POSIX masks it to 8 bits), so anything else would be silently changed.
-if(result<0||result>255){
-diagnostics.report(ZODIAC_LOG_WARNING,"warning: main() returned "+std::to_string(result)+"; exit codes must be 0-255, using 1");
-return 1;
-}
-return result;
+// After the build: relative --module-dir and --log-file values are relative to the directory zodiac was started in.
+if(const int code=enter_root(project->root,diagnostics);code!=0)return code;
+return exit_code_of(runtime.run(),diagnostics);
 }
 
 struct ModuleLine{

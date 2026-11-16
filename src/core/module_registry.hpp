@@ -32,6 +32,8 @@ constexpr uint32_t module_link_modes(const zodiac_module_info& info) noexcept
 const uint32_t modes=module_info_provides(info,module_info_link_modes_end)?info.link_modes:0u;
 return modes?modes:(ZODIAC_LINK_STATIC|ZODIAC_LINK_DYNAMIC);
 }
+// The shared library file name the registry looks for: "zodiac_mod_<name>" plus the platform's shared library extension.
+std::string module_file_name(std::string_view name);
 struct ModuleSearchPaths{
 std::vector<std::filesystem::path> dirs;
 // <exe_dir>/../modules, then <project_dir>/plugins.

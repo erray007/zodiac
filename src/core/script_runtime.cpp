@@ -231,20 +231,24 @@ const fs::path file=((root_/from_utf8(from)).parent_path()/from_utf8(requested))
 return add_section(file,section_name(file),builder,from,requested);
 }
 
-int ScriptRuntime::load_modules(const Project& project,std::span<const zodiac_module_info* const> linked)
+int ScriptRuntime::load_modules(const Project& project,std::span<const zodiac_module_info* const> linked,const ModuleCheck& check)
 {
 std::vector<std::string> names;
 names.reserve(project.static_modules.size()+project.dynamic_modules.size());
 names.insert(names.end(),project.static_modules.begin(),project.static_modules.end());
 for(const std::string& name:project.dynamic_modules)if(std::ranges::find(names,name)==names.end())names.push_back(name);
-if(names.empty())return 0;
+if(names.empty())return check?check(registry_.ordered()):0;
 ModuleSearchPaths search=search_paths_;
+#if !defined(ZODIAC_RELEASE)
+// Dev only: a release loads dynamic modules from the executable's folder (its search path) and nowhere else, so plugins/ is never searched there.
 fs::path plugins=project.root/"plugins";
 if(std::ranges::find(search.dirs,plugins)==search.dirs.end())search.dirs.push_back(std::move(plugins));
+#endif
 if(auto loaded=registry_.load(names,search,linked);!loaded){
 diagnostics_.report(ZODIAC_LOG_ERROR,loaded.error());
 return 2;
 }
+if(const int checked=check?check(registry_.ordered()):0)return checked;
 if(auto registered=registry_.register_all(host_);!registered){
 diagnostics_.report(ZODIAC_LOG_ERROR,registered.error());
 return 2;
@@ -252,13 +256,13 @@ return 2;
 return 0;
 }
 
-int ScriptRuntime::prepare(const Project& project,std::span<const zodiac_module_info* const> linked)
+int ScriptRuntime::prepare(const Project& project,std::span<const zodiac_module_info* const> linked,const ModuleCheck& check)
 {
 main_=nullptr;
 debug_info_stripped_=false;
 if(context_)context_->Unprepare();
 root_=project.root;
-if(const int modules=load_modules(project,linked))return modules;
+if(const int modules=load_modules(project,linked,check))return modules;
 main_section_=section_name(project.main_script);
 included_.clear();
 return 0;
@@ -266,7 +270,7 @@ return 0;
 
 int ScriptRuntime::build(const Project& project)
 {
-if(const int prepared=prepare(project,{}))return prepared;
+if(const int prepared=prepare(project,{},{}))return prepared;
 CScriptBuilder builder;
 builder.SetIncludeCallback(&RuntimeCallbacks::include,this);
 if(builder.StartNewModule(engine_,kModuleName)<0){
@@ -288,9 +292,9 @@ if(!module||module->SaveByteCode(&stream,strip_debug_info)<0)return std::unexpec
 return bytecode;
 }
 
-int ScriptRuntime::load_bytecode(const Project& project,std::string_view bytecode,std::span<const zodiac_module_info* const> linked)
+int ScriptRuntime::load_bytecode(const Project& project,std::string_view bytecode,std::span<const zodiac_module_info* const> linked,const ModuleCheck& check)
 {
-if(const int prepared=prepare(project,linked))return prepared;
+if(const int prepared=prepare(project,linked,check))return prepared;
 asIScriptModule* module=engine_->GetModule(kModuleName,asGM_ALWAYS_CREATE);
 if(!module){
 diagnostics_.report(ZODIAC_LOG_ERROR,"error: cannot create the script module");
@@ -409,5 +413,24 @@ diagnostics_.report(ZODIAC_LOG_ERROR,line);
 }
 context_->Unprepare();
 return result;
+}
+
+int enter_root(const fs::path& root,Diagnostics& diagnostics)
+{
+std::error_code error;
+fs::current_path(root,error);
+if(!error)return 0;
+diagnostics.report(ZODIAC_LOG_ERROR,"error: cannot use \""+path_to_utf8(root)+"\" as the working directory: "+error_text(error));
+return 2;
+}
+
+int exit_code_of(int result,Diagnostics& diagnostics)
+{
+if(result>=0&&result<=255)return result;
+std::string line="warning: main() returned ";
+append_number(line,result);
+line.append("; exit codes must be 0-255, using 1");
+diagnostics.report(ZODIAC_LOG_WARNING,line);
+return 1;
 }
 }

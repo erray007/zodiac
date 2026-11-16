@@ -44,6 +44,16 @@ host.set_current_module(module);
 };
 }
 
+std::string module_file_name(std::string_view name)
+{
+constexpr std::string_view prefix="zodiac_mod_";
+constexpr std::string_view suffix=ZODIAC_MODULE_SUFFIX;
+std::string file;
+file.reserve(prefix.size()+name.size()+suffix.size());
+file.append(prefix).append(name).append(suffix);
+return file;
+}
+
 ModuleSearchPaths ModuleSearchPaths::defaults(const std::filesystem::path& exe_dir,const std::filesystem::path& project_dir)
 {
 return ModuleSearchPaths{{(exe_dir/".."/"modules").lexically_normal(),project_dir/"plugins"}};
@@ -66,8 +76,7 @@ const auto match=std::find_if(linked.begin(),linked.end(),[name](const zodiac_mo
 if(match!=linked.end()){
 info=*match;
 }else{
-std::string file="zodiac_mod_";
-file.append(name).append(ZODIAC_MODULE_SUFFIX);
+const std::string file=module_file_name(name);
 std::filesystem::path found;
 for(const std::filesystem::path& dir:search.dirs){
 std::error_code error;

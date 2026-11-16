@@ -36,6 +36,9 @@ part->iov_len-=left;
 void disable_error_dialogs() noexcept
 {
 }
+void attach_parent_console() noexcept
+{
+}
 void setup_utf8_console() noexcept
 {
 }

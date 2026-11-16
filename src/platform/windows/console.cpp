@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 
 namespace zodiac::platform {
@@ -35,6 +36,29 @@ void disable_error_dialogs() noexcept
 SetErrorMode(GetErrorMode()|SEM_FAILCRITICALERRORS|SEM_NOOPENFILEERRORBOX);
 // abort() (also reached through std::terminate) must neither print a message box nor start Windows error reporting.
 _set_abort_behavior(0,_WRITE_ABORT_MSG|_CALL_REPORTFAULT);
+}
+namespace {
+bool usable(HANDLE handle) noexcept
+{
+return handle!=nullptr&&handle!=INVALID_HANDLE_VALUE&&GetFileType(handle)!=FILE_TYPE_UNKNOWN;
+}
+// Reopens stream on the console device when its standard handle is missing, then publishes the C runtime's new handle as the Win32 standard handle
+// (the runtime only does that itself in console-subsystem programs), so both write paths reach the console.
+void bind_to_console(std::FILE* stream,DWORD standard,const wchar_t* device,const wchar_t* mode) noexcept
+{
+if(usable(GetStdHandle(standard)))return;
+std::FILE* reopened=nullptr;
+if(_wfreopen_s(&reopened,device,mode,stream)!=0||reopened==nullptr)return;
+const std::intptr_t handle=_get_osfhandle(_fileno(reopened));
+if(handle!=-1&&handle!=-2)SetStdHandle(standard,reinterpret_cast<HANDLE>(handle));
+}
+}
+void attach_parent_console() noexcept
+{
+if(!AttachConsole(ATTACH_PARENT_PROCESS))return;
+bind_to_console(stdin,STD_INPUT_HANDLE,L"CONIN$",L"r");
+bind_to_console(stdout,STD_OUTPUT_HANDLE,L"CONOUT$",L"w");
+bind_to_console(stderr,STD_ERROR_HANDLE,L"CONOUT$",L"w");
 }
 void setup_utf8_console() noexcept
 {

@@ -4,25 +4,7 @@
 #include <windows.h>
 #include <cstddef>
 #include <string>
-#include <utility>
 #include <vector>
-
-namespace zodiac::platform {
-std::filesystem::path executable_path()
-{
-std::wstring buffer(MAX_PATH,L'\0');
-for(;;){
-const DWORD length=GetModuleFileNameW(nullptr,buffer.data(),static_cast<DWORD>(buffer.size()));
-if(length==0)return {};
-if(length<buffer.size()){
-buffer.resize(length);
-return std::filesystem::path(std::move(buffer));
-}
-if(buffer.size()>=32768)return {};
-buffer.resize(buffer.size()*2);
-}
-}
-}
 
 namespace {
 std::string to_utf8(const wchar_t* text)

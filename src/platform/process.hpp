@@ -1,4 +1,5 @@
-// Process-level facts and the program entry point. Implemented per platform in src/platform/<os>/process.cpp.
+// Process-level facts and the command line entry point, implemented per platform: executable_path in src/platform/<os>/executable_path.cpp
+// and run_process in src/platform/<os>/run_process.cpp (both linked into the core library), the entry point in src/platform/<os>/process.cpp (zodiac executable only).
 //
 // The platform layer owns the real entry point (wmain on Windows, main elsewhere): it converts the arguments to UTF-8 once
 // and calls zodiac::cli::run, which the command line front end defines.
