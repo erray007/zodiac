@@ -166,8 +166,11 @@ begin
   Others := PathWithout(Path, Dir, Found);
   if Found then
     Exit;
-  if (Others = '') or (Others[Length(Others)] = ';') then
-    WritePath(Others + Dir)
+  // Not found, so Others is Path unchanged. A Path ending in ';' keeps that empty last entry after Dir, so uninstall gives back exactly the old text.
+  if Others = '' then
+    WritePath(Dir)
+  else if Others[Length(Others)] = ';' then
+    WritePath(Others + Dir + ';')
   else
     WritePath(Others + ';' + Dir);
 end;
