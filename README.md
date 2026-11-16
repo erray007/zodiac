@@ -11,14 +11,17 @@ Download the kit from the project's GitHub releases page. There are two ways to 
   - open `.zs` files with Zodiac;
   - add "Build with Zodiac" to the right-click menu of `.zs` files;
   - Start menu shortcuts to the Zodiac manual and the examples.
-  Installing a newer version over an older one replaces the kit in place and keeps the options you chose. Uninstalling (Settings, Apps) removes the kit folder and everything the setup added, and nothing else.
+  Installing a newer version over an older one replaces the kit in place and keeps the options you chose. The upgrade deletes the kit's bin, lib, modules and include folders before it copies the new ones, so anything you added there yourself is lost: keep your own files and modules outside the kit folder. Uninstalling (Settings, Apps) removes the kit folder and everything the setup added, and nothing else.
 - The portable zip, `zodiac-<version>-windows-x86_64.zip`. Unzip the Zodiac folder anywhere; it changes nothing on your system. Its README.txt explains how to add its bin folder to your PATH yourself.
 
 The setup is not signed yet, so Windows SmartScreen may warn that it is from an unknown publisher. To run it anyway, choose "More info", then "Run anyway".
 
 ### Using the kit
 
-- `zodiac new mygame` creates a project folder, `zodiac run mygame` runs it while you work on it, and `zodiac build mygame` builds the finished game as `mygame\release\mygame.exe`, which runs on any Windows computer without the kit. Run `zodiac help` to see every command.
+- `zodiac new mygame` creates a project folder, `zodiac run mygame` runs it while you work on it, and `zodiac build mygame` builds the finished game into the `mygame\release` folder, which runs on any Windows computer without the kit. Run `zodiac help` to see every command.
+- Ship the whole release folder, not only `mygame.exe`: it also holds the DLLs of the modules your game lists as dynamic and the files your `[build] assets` patterns copy, and the game needs them next to the executable.
+- In a terminal, use `zodiac build --no-window mygame`: without it, the build also opens its result window when a desktop is available, and the command waits until you close it.
+- A build replaces the files it writes but never deletes anything else in the release folder, so files from earlier builds (an asset or a module you no longer use) stay there. Delete the release folder before building when you want a clean one.
 - Double-clicking a `.zs` file (with the association option) runs it, exactly like `zodiac run` on that file; the console closes when the program ends.
 - Right-clicking a `.zs` file and choosing "Build with Zodiac" (with the right-click option) builds the project that file belongs to, then shows the result in a window: whether the build succeeded, where the game was written, and every error, one per line. On Windows 11 the entry is under "Show more options" (Shift+F10 opens that menu directly).
 
