@@ -78,3 +78,20 @@
 - [ ] **Step 2:** Update the `.iss` and README.
 - [ ] **Step 3:** Local silent per-user install/uninstall check; push the branch; `kit-windows` and `kit-clean-machine` green.
 - [ ] **Step 4: Commit** `git commit -m "List the setup as Zodiac Game Toolkit"`
+
+### Task 4: Ship third-party DLLs of dynamic modules
+
+**Files:**
+- Create: `src/core/pe_imports.hpp`, `src/core/pe_imports.cpp`
+- Modify: `src/cli/build_command.cpp`, `src/core/CMakeLists.txt`, `README.md`
+- Test: `tests/test_pe_imports.cpp`, `tests/fixtures/modules/vendor_dep.cpp`, `tests/fixtures/modules/vendor_lib.cpp`, `tests/CMakeLists.txt`, `tests/e2e/test_build.py`
+
+**Interfaces:**
+- Produces: `std::expected<std::vector<std::string>,std::string> zodiac::pe_imported_dlls(const std::filesystem::path& file);` — names from the import and delay-import directories of a PE32+ file, in table order, without duplicates (case-insensitive); bounds-checked on every RVA/offset; a non-PE or damaged file returns `error: "<file>" is not a valid Windows DLL`. Portable code (plain byte parsing), tested on all hosts with a checked-in or generated PE.
+- Build (spec item 7): for every copied DLL, resolve imports against the DLL's own folder (case-insensitive name match), copy found ones next to the exe (recursive, each file once), skip names not found there that are system DLLs, and fail with the exact message otherwise. Decision for "system DLL": a name not present next to the module that `SearchPathW` finds in the Windows system directory (`GetSystemDirectoryW`) or that starts with `api-ms-win-` / `ext-ms-` is a system DLL. Copied files go through the same `.tmp` + sign + replace path as module DLLs.
+
+- [ ] **Step 1: Write the failing tests** — unit: `pe_imported_dlls` on a built fixture DLL lists `vendor_lib.dll` and `KERNEL32.dll`; on random bytes and on a truncated copy (every length up to the headers) returns the error without crashing. e2e: a dynamic fixture module `vendor_dep` linked against `vendor_lib.dll` sitting next to it → `release/` has both DLLs and the exe runs; deleting `vendor_lib.dll` from the module folder → build exit 2 with the exact message.
+- [ ] **Step 2: Run to verify they fail.**
+- [ ] **Step 3: Implement**; README gets one paragraph on third-party DLLs and their licences.
+- [ ] **Step 4: Run tests to verify they pass**, full suite once; push; CI green.
+- [ ] **Step 5: Commit** `git commit -m "Copy the third-party DLLs that dynamic modules import"`
