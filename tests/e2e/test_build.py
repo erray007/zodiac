@@ -22,7 +22,8 @@ FIXTURES_NEEDING_TEST_MODULES = {"holds_plugin_object"}
 # The fixtures that build; the identity test fails if this set changes, so a fixture can never drop out of it silently.
 BUILDABLE_FIXTURES = {"int_main", "non_ascii_include", "runtime_error", "uses_module", "void_main"}
 SIZE_LIMIT = 3145728
-LONE_FILE_WARNING = "warning: no zodiac.toml; every installed module was linked in (create a project file to choose modules)"
+LONE_FILE_WARNING = "warning: no zodiac.toml; only the core is available (create a project file to add modules)"
+LONE_FILE_NOTE = "note: no zodiac.toml; only the core is available, so module functions are not declared (create a project file to add modules)"
 
 
 def zodiac(*args, cwd=None, errors="strict", exe=None, env=None):
@@ -342,47 +343,55 @@ class BuildTest(unittest.TestCase):
         self.assertEqual((code, err.splitlines()), (2, ["error: zodiac.toml not found; create a project with zodiac new"]))
         self.assertFalse((alone / "release").exists())
 
-    def test_build_lone_script_links_every_installed_module(self):
+    def test_build_lone_script_links_only_the_core(self):
         folder = self.root / "tek klasör"
-        write(folder / "oyun.zs", 'int main()\n{\nexample_print("tek dosya");\nreturn 4;\n}\n')
+        write(folder / "oyun.zs", "int main()\n{\nreturn 4;\n}\n")
         exe = folder / "release" / "oyun.exe"
         code, out, err = self.build(str(folder / "oyun.zs"))
         self.assertEqual((code, err.splitlines()), (0, [LONE_FILE_WARNING]), out)
         self.assertEqual(out.splitlines()[-1], "Build succeeded: %s" % exe)
         self.assertFalse((folder / "zodiac.toml").exists())
-        code, out, err = run_exe(exe)
-        self.assertEqual((code, out.splitlines(), err), (4, ["tek dosya"], ""))
-        self.assertIn(b"example_echo", exe.read_bytes())
+        self.assertEqual(run_exe(exe), (4, "", ""))
+        # The kit's example module is installed but not linked in.
+        self.assertNotIn(b"example_echo", exe.read_bytes())
         self.assertEqual(sorted(p.name for p in exe.parent.iterdir()), ["oyun.exe"])
         # Without --no-window and with no desktop, the warning still reaches the console, before the summary.
         code, out, err = zodiac("build", str(folder / "oyun.zs"), "--module-dir", MODULE_DIR, env=no_desktop_env())
         self.assertEqual((code, err.splitlines()), (0, [LONE_FILE_WARNING]), out)
         self.assertEqual(out.splitlines()[-1], "Build succeeded: %s" % exe)
 
-    def test_build_lone_script_links_modules_without_static_linking_dynamically(self):
-        # Beside example (static library in the kit): lgpl_dynamic allows dynamic linking only, cwd_probe allows both but has no static library.
-        modules = self.root / "mods"
-        modules.mkdir()
-        for name in ("lgpl_dynamic", "cwd_probe"):
-            shutil.copyfile(Path(TEST_MODULE_DIR) / ("zodiac_mod_%s.dll" % name), modules / ("zodiac_mod_%s.dll" % name))
+    def test_build_lone_script_loads_no_installed_module(self):
+        # lgpl_dynamic logs "lgpl_dynamic register" when it loads and allows only dynamic linking; cwd_probe has no static library. Neither
+        # is loaded, linked or shipped for a lone script.
         folder = self.root / "lone"
-        write(folder / "oyun.zs", 'int main()\n{\nexample_print("tek");\nexample_print(cwd());\nreturn 3;\n}\n')
+        write(folder / "oyun.zs", "int main()\n{\nreturn 3;\n}\n")
         release = folder / "release"
         exe = release / "oyun.exe"
-        code, out, err = self.build(str(folder / "oyun.zs"), "--module-dir", str(modules))
-        # The fixture module logs "lgpl_dynamic register" and "lgpl_dynamic shutdown" at info level.
-        lines = [line for line in err.splitlines() if not line.startswith("lgpl_dynamic ")]
-        self.assertEqual((code, lines), (0, [LONE_FILE_WARNING]), out)
+        code, out, err = self.build(str(folder / "oyun.zs"), "--module-dir", TEST_MODULE_DIR)
+        self.assertEqual((code, err.splitlines()), (0, [LONE_FILE_WARNING]), out)
         self.assertEqual(out.splitlines()[-1], "Build succeeded: %s" % exe)
-        self.assertEqual(sorted(p.name for p in release.iterdir()), ["oyun.exe", "zodiac_mod_cwd_probe.dll", "zodiac_mod_lgpl_dynamic.dll"])
-        for name in ("lgpl_dynamic", "cwd_probe"):
-            self.assertEqual((release / ("zodiac_mod_%s.dll" % name)).read_bytes(), (modules / ("zodiac_mod_%s.dll" % name)).read_bytes())
-        self.assertIn(b"example_echo", exe.read_bytes())
-        code, out, err = run_exe(exe)
-        self.assertEqual(code, 3, err)
-        self.assertEqual(out.splitlines()[0], "tek")
-        self.assertEqual(os.path.normcase(os.path.realpath(out.splitlines()[1])), os.path.normcase(os.path.realpath(release)))
-        self.assertEqual([line for line in err.splitlines() if not line.startswith("lgpl_dynamic ")], [])
+        self.assertEqual(sorted(p.name for p in release.iterdir()), ["oyun.exe"])
+        self.assertEqual(run_exe(exe), (3, "", ""))
+
+    def test_build_lone_script_calling_a_module_function_fails_with_the_note(self):
+        folder = self.root / "lone"
+        write(folder / "oyun.zs", 'void main()\n{\nexample_print("tek");\n}\n')
+        code, out, err = self.build(str(folder / "oyun.zs"))
+        self.assertEqual(code, 1, err)
+        lines = err.splitlines()
+        self.assertEqual(lines[0], LONE_FILE_WARNING)
+        self.assertTrue(any("oyun.zs:3:" in line and "example_print" in line for line in lines), err)
+        # The note follows the compiler's errors and is no error itself.
+        self.assertEqual(lines[-1], LONE_FILE_NOTE)
+        self.assertEqual(lines.count(LONE_FILE_NOTE), 1)
+        self.assertEqual(out.splitlines()[-1], "Build failed: 1 error")
+        self.assertFalse((folder / "release" / "oyun.exe").exists())
+
+    def test_build_compile_error_in_a_project_has_no_note(self):
+        project = self.new_project(self.root / "game", script='void main()\n{\nexample_print("x");\n}\n')
+        code, out, err = self.build(str(project))
+        self.assertEqual(code, 1, err)
+        self.assertNotIn("note:", err)
 
     def test_build_missing_lone_script(self):
         missing = self.root / "yok.zs"

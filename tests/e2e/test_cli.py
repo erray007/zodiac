@@ -9,6 +9,7 @@ EXE = os.environ["ZODIAC_EXE"]
 MODULE_DIR = os.environ["ZODIAC_MODULE_DIR"]
 TEST_MODULE_DIR = os.environ["ZODIAC_TEST_MODULE_DIR"]
 VERSION = os.environ.get("ZODIAC_VERSION", "")
+LONE_FILE_NOTE = "note: no zodiac.toml; only the core is available, so module functions are not declared (create a project file to add modules)"
 
 
 def no_desktop_env():
@@ -100,30 +101,51 @@ class CliTest(unittest.TestCase):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out.splitlines(), ["menu", "shared"])
 
-    def test_run_lone_script_loads_installed_modules(self):
+    def test_run_lone_script_runs_with_the_core_only(self):
+        folder = self.root / "tek klasör"
+        folder.mkdir()
+        # An exit value no error path uses, so only the script's own main can produce it.
+        write(folder / "oyun.zs", "int main()\n{\nreturn 4;\n}\n")
+        code, out, err = zodiac("run", str(folder / "oyun.zs"), "--module-dir", MODULE_DIR, "--module-dir", TEST_MODULE_DIR)
+        # No installed module is loaded: the test module folder holds broken fixtures (abi_zero) whose loading would fail the run.
+        self.assertEqual((code, out, err), (4, "", ""))
+
+    def test_run_lone_script_calling_a_module_function_fails_with_the_note(self):
         folder = self.root / "lone"
         folder.mkdir()
         write(folder / "oyun.zs", 'void main()\n{\nexample_print("tek dosya");\n}\n')
         code, out, err = zodiac("run", str(folder / "oyun.zs"), "--module-dir", MODULE_DIR)
-        self.assertEqual((code, err), (0, ""))
-        self.assertEqual(out.splitlines(), ["tek dosya"])
+        self.assertEqual(code, 1, err)
+        lines = err.splitlines()
+        self.assertTrue(any("oyun.zs:3:" in line and "example_print" in line for line in lines), err)
+        # The note follows the compiler's errors and is no error itself.
+        self.assertEqual(lines[-1], LONE_FILE_NOTE)
+        self.assertEqual(lines.count(LONE_FILE_NOTE), 1)
+        self.assertEqual(out.splitlines(), ["Run failed: 1 error"])
+        code, out, err = zodiac("run", str(folder / "oyun.zs"), "--no-window", "--module-dir", MODULE_DIR)
+        self.assertEqual((code, out, err.splitlines()[-1]), (1, "", LONE_FILE_NOTE))
+
+    def test_run_compile_error_in_a_project_has_no_note(self):
+        project = self.root / "game"
+        self.make_project(project, [], 'void main()\n{\nexample_print("x");\n}\n')
+        code, out, err = zodiac("run", str(project / "main.zs"), "--module-dir", MODULE_DIR)
+        self.assertEqual(code, 1, err)
+        self.assertNotIn("note:", err)
 
     def test_run_script_extension_ignores_case(self):
         folder = self.root / "upper"
         folder.mkdir()
-        write(folder / "MAIN.ZS", 'void main()\n{\nexample_print("buyuk harf");\n}\n')
+        write(folder / "MAIN.ZS", "int main()\n{\nreturn 5;\n}\n")
         code, out, err = zodiac("run", str(folder / "MAIN.ZS"), "--module-dir", MODULE_DIR)
-        self.assertEqual((code, err), (0, ""))
-        self.assertEqual(out.splitlines(), ["buyuk harf"])
+        self.assertEqual((code, out, err), (5, "", ""))
 
     def test_run_lone_script_relative_include(self):
         folder = self.root / "lone"
         folder.mkdir()
-        write(folder / "yardimci.zs", 'void yardim()\n{\nexample_print("yardim");\n}\n')
-        write(folder / "oyun.zs", '#include "yardimci.zs"\nvoid main()\n{\nyardim();\n}\n')
+        write(folder / "yardimci.zs", "int yardim()\n{\nreturn 9;\n}\n")
+        write(folder / "oyun.zs", '#include "yardimci.zs"\nint main()\n{\nreturn yardim();\n}\n')
         code, out, err = zodiac("run", str(folder / "oyun.zs"), "--module-dir", MODULE_DIR)
-        self.assertEqual((code, err), (0, ""))
-        self.assertEqual(out.splitlines(), ["yardim"])
+        self.assertEqual((code, out, err), (9, "", ""))
 
     def test_run_config_file_relative_from_another_folder(self):
         project = self.root / "ayar klasörü"

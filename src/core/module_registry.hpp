@@ -42,10 +42,6 @@ std::string name;
 // Every regular file in dirs named "zodiac_mod_<name>" plus the platform's shared library extension, in search order; a file name already found in an
 // earlier folder is skipped, as it is when a game loads the module. Unreadable folders are skipped.
 std::vector<InstalledModule> find_installed_modules(std::span<const std::filesystem::path> dirs);
-// The entries of find_installed_modules whose name is a valid module name other than "core", in search order.
-std::vector<InstalledModule> installed_modules(std::span<const std::filesystem::path> dirs);
-// The names of installed_modules, in search order.
-std::vector<std::string> installed_module_names(std::span<const std::filesystem::path> dirs);
 struct ModuleSearchPaths{
 std::vector<std::filesystem::path> dirs;
 // <exe_dir>/../modules, then <project_dir>/plugins.

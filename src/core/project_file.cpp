@@ -385,7 +385,7 @@ dir=std::move(parent);
 }
 }
 
-std::expected<Project,std::string> load_project_for_script(const fs::path& script_file,std::span<const std::string> installed_modules)
+std::expected<Project,std::string> load_project_for_script(const fs::path& script_file)
 {
 std::error_code ec;
 fs::path file=fs::absolute(script_file,ec).lexically_normal();
@@ -400,9 +400,6 @@ Project project;
 project.root=file.parent_path();
 project.main_script=file;
 project.name=path_to_utf8(file.stem());
-project.static_modules.assign(installed_modules.begin(),installed_modules.end());
-std::ranges::sort(project.static_modules);
-project.static_modules.erase(std::ranges::unique(project.static_modules).begin(),project.static_modules.end());
 return project;
 }
 

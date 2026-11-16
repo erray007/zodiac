@@ -5,9 +5,9 @@
 //    script: "error: script "<target>" does not exist"). Without config, target is a project folder or a script file; a .zs target must exist
 //    ("error: script "<target>" does not exist"), and a script file belongs to the project find_project_root finds (whose own main stays the main
 //    script). A .zs script with no zodiac.toml in its folder or above builds alone, as zodiac run runs it (load_project_for_script: root its folder,
-//    name its stem, every installed module of module_dirs), after the warning "warning: no zodiac.toml; every installed module was linked in
-//    (create a project file to choose modules)". Each of those modules is linked statically when its link modes allow it and step 2 finds its
-//    static library, otherwise dynamically when its link modes allow that (a module allowing neither is checked as a static one in step 2).
+//    name its stem, no modules at all, only the core; nothing in module_dirs is loaded), after the warning "warning: no zodiac.toml; only the core
+//    is available (create a project file to add modules)". When its scripts then fail to compile (step 3, exit 1), lone_script_compile_note
+//    (cli/build_report.hpp) follows the compiler's errors at warning level.
 //    A folder (or another file) with no zodiac.toml: "error: zodiac.toml not found; create a project with zodiac new" (exit 2). Project file errors exit 2.
 // 2. The modules load as in zodiac run (module_dirs, then <root>/plugins). Before any registers, every static module is checked:
 //    a module whose link modes lack ZODIAC_LINK_STATIC is refused ("error: module "<name>" (<license>) cannot be linked statically; list it under dynamic");
@@ -50,7 +50,7 @@
 // opens, titled "Zodiac build - <game name>" (when no project loaded, the target's own name, or the config file's folder without a target),
 // labeled "Build output", holding ResultReport::text, with "Open output folder" for the executable's folder after a success, and, when a lone
 // script was built (step 1, success or failure), "Create project file": create_project_file (cli/build_report.hpp) for the script's folder with
-// the game name, the script's file name and the static and dynamic module lists step 1 chose. build_project returns once the window is closed.
+// the game name and the script's file name (empty module lists). build_project returns once the window is closed.
 // Without a desktop it ends as a --no-window build does.
 // Threads: main thread only; changes the working directory.
 #pragma once

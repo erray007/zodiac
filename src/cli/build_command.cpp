@@ -12,7 +12,6 @@
 #ifdef _WIN32
 #include <cli/linker.hpp>
 #include <core/coff_object.hpp>
-#include <core/dynamic_library.hpp>
 #include <core/kit_layout.hpp>
 #include <core/module_registry.hpp>
 #include <core/payload.hpp>
@@ -49,17 +48,14 @@ namespace {
 constexpr int exit_build_error=2;
 
 // What a build produced, also when it failed part way: the executable's path (empty until known) and the game's name (empty until the project loads).
-// used_lone_file, static_modules and dynamic_modules are set once the project loads: true when a lone script was built without a project file,
-// and the modules linked statically and dynamically (for a lone script, every installed module, split as split_lone_modules decides), so the
-// result window can offer a project file listing them; root and main_script (absolute) are where that file goes and the script it names.
+// used_lone_file is set once the project loads: true when a lone script was built without a project file (with the core only), so the result
+// window can offer the project file it could have had; root and main_script (absolute) are where that file goes and the script it names.
 struct BuildOutcome{
 std::filesystem::path exe;
 std::string game_name;
 std::filesystem::path root;
 std::filesystem::path main_script;
 bool used_lone_file=false;
-std::vector<std::string> static_modules;
-std::vector<std::string> dynamic_modules;
 };
 
 #ifdef _WIN32
@@ -244,37 +240,6 @@ continue;
 libraries.push_back({std::string(name),std::move(*archive)});
 }
 return result;
-}
-
-// The ZODIAC_LINK_* bits of the module library file, read without registering anything; nullopt when the file is no readable module
-// (zodiac run's loading reports why later).
-std::optional<uint32_t> link_modes_of(const fs::path& file)
-{
-auto library=DynamicLibrary::open(file);
-if(!library)return std::nullopt;
-using EntryFunction=const zodiac_module_info*(*)(void);
-void* symbol=library->symbol(ZODIAC_MODULE_ENTRY_NAME);
-if(!symbol)return std::nullopt;
-const zodiac_module_info* info=reinterpret_cast<EntryFunction>(symbol)();
-if(!info||!module_info_provides(*info,module_info_v1_size))return std::nullopt;
-return module_link_modes(*info);
-}
-
-// A lone script's modules: every installed one, static when it allows static linking and has a usable static library, otherwise dynamic when
-// it allows that. A module allowing neither, or one whose library cannot be read, stays static, so step 2 or the loading reports it as for a project.
-// The lists are final before anything loads, so the build registers the modules in the order the release will (static, then dynamic).
-void split_lone_modules(Project& project,std::span<const InstalledModule> installed,const KitLayout& kit)
-{
-StaticLibraries archives(kit,project.root);
-std::vector<std::string> kept;
-kept.reserve(project.static_modules.size());
-for(std::string& name:project.static_modules){
-const auto module=std::ranges::find(installed,name,&InstalledModule::name);
-const std::optional<uint32_t> modes=module==installed.end()?std::nullopt:link_modes_of(module->file);
-const bool dynamic=modes&&(*modes&ZODIAC_LINK_DYNAMIC)&&(!(*modes&ZODIAC_LINK_STATIC)||!archives.find(name));
-(dynamic?project.dynamic_modules:kept).push_back(std::move(name));
-}
-project.static_modules=std::move(kept);
 }
 
 GamePayload payload_of(const Project& project,const ScriptRuntime& runtime,std::string bytecode)
@@ -675,7 +640,7 @@ return exit_ok;
 }
 
 // Step 1: the project to build, as build_command.hpp describes it. Reports its own errors and the lone-file warning.
-std::expected<Project,int> project_of(const BuildOptions& options,const KitLayout& kit,Diagnostics& diagnostics)
+std::expected<Project,int> project_of(const BuildOptions& options,Diagnostics& diagnostics)
 {
 const auto failed=[&diagnostics](std::string_view message){return std::unexpected(fail(diagnostics,message));};
 std::error_code ec;
@@ -697,16 +662,11 @@ if(!project)return failed(project.error());
 return std::move(*project);
 }
 if(!script)return failed("error: zodiac.toml not found; create a project with zodiac new");
-const std::vector<InstalledModule> installed=installed_modules(options.module_dirs);
-std::vector<std::string> names;
-names.reserve(installed.size());
-for(const InstalledModule& module:installed)names.push_back(module.name);
-auto project=load_project_for_script(target,names);
+auto project=load_project_for_script(target);
 if(!project)return failed(project.error());
 // A zodiac.toml that appeared since the search is used by load_project_for_script, and then it is no lone file.
 if(!project->file.empty())return std::move(*project);
-split_lone_modules(*project,installed,kit);
-diagnostics.report(ZODIAC_LOG_WARNING,"warning: no zodiac.toml; every installed module was linked in (create a project file to choose modules)");
+diagnostics.report(ZODIAC_LOG_WARNING,"warning: no zodiac.toml; only the core is available (create a project file to add modules)");
 return std::move(*project);
 }
 
@@ -715,14 +675,12 @@ int build_release(const BuildOptions& options,Diagnostics& diagnostics,BuildOutc
 const fs::path kit_exe=platform::executable_path();
 if(kit_exe.empty())return fail(diagnostics,"error: cannot find the folder of the zodiac executable");
 const KitLayout kit=kit_layout(kit_exe);
-auto project=project_of(options,kit,diagnostics);
+auto project=project_of(options,diagnostics);
 if(!project)return project.error();
 outcome.game_name=project->name;
 outcome.root=project->root;
 outcome.main_script=project->main_script;
 outcome.used_lone_file=project->file.empty();
-outcome.static_modules=project->static_modules;
-outcome.dynamic_modules=project->dynamic_modules;
 if(!usable_file_name(project->name))return fail(diagnostics,"error: the game name "+in_quotes(project->name)+" cannot be used as a file name; "+(outcome.used_lone_file?std::string("rename the script"):"change [game] name in "+path_to_utf8(project->file.filename())));
 // Every path is absolute before the project root becomes the working directory.
 const fs::path output=options.output.empty()?project->root/"release":absolute_normal(options.output);
@@ -740,7 +698,11 @@ ScriptRuntime runtime(diagnostics,ModuleSearchPaths{options.module_dirs});
 if(const int code=enter_root(project->root,diagnostics))return code;
 std::vector<StaticLibrary> libraries;
 const ScriptRuntime::ModuleCheck check=[&project,&kit,&libraries,&diagnostics](std::span<const zodiac_module_info* const> loaded){return check_static_modules(*project,kit,loaded,libraries,diagnostics);};
-if(const int code=runtime.build(*project,check))return code;
+if(const int code=runtime.build(*project,check)){
+// As in zodiac run: a lone script has the core only, so a call into a module is the likely cause of its compile error.
+if(code==1&&outcome.used_lone_file)diagnostics.report(ZODIAC_LOG_WARNING,lone_script_compile_note);
+return code;
+}
 return write_release(*project,runtime,kit,libraries,module_dlls,output,exe,diagnostics);
 }
 #else
@@ -768,13 +730,13 @@ if(options.no_window||!platform::has_interactive_desktop())return code;
 const std::filesystem::path& named=options.target.empty()&&!options.config.empty()?options.config.parent_path():options.target;
 const std::string name=outcome.game_name.empty()?target_name(named):outcome.game_name;
 const std::filesystem::path folder=outcome.exe.parent_path();
-// A lone script's build offers the project file it could have had: that script as main, the modules as they were linked (decision 2).
+// A lone script's build offers the project file it could have had: that script as main, no modules yet (spec item 8).
 platform::ResultAction create;
 if(outcome.used_lone_file){
 create.label=L"Create &project file";
 create.run=[&outcome]{
 const std::string script=path_to_utf8(outcome.main_script.filename());
-return create_project_file(outcome.root,outcome.game_name,script,outcome.static_modules,outcome.dynamic_modules);
+return create_project_file(outcome.root,outcome.game_name,script);
 };
 }
 platform::show_result_window("Zodiac build - "+name,L"&Build output",report.text(succeeded,outcome.exe),succeeded,succeeded?&folder:nullptr,outcome.used_lone_file?&create:nullptr);

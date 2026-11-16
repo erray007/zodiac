@@ -527,8 +527,7 @@ TempProject project;
 project.main_script();
 project.write("includes/menu.zs","void menu(){}\n");
 project.toml("[game]\nmain = \"main.zs\"\n[modules]\nstatic = [\"example\"]\n");
-const std::vector<std::string> installed{"other"};
-const auto result=zodiac::load_project_for_script(project.dir()/"includes"/"menu.zs",installed);
+const auto result=zodiac::load_project_for_script(project.dir()/"includes"/"menu.zs");
 REQUIRE(result.has_value());
 const fs::path root=fs::absolute(project.dir()).lexically_normal();
 CHECK(result->root==root);
@@ -541,18 +540,16 @@ TEST_CASE("load_project_for_script reports a broken project file")
 TempProject project;
 project.toml("[game\n");
 project.write("menu.zs","");
-const std::vector<std::string> installed;
-const auto result=zodiac::load_project_for_script(project.dir()/"menu.zs",installed);
+const auto result=zodiac::load_project_for_script(project.dir()/"menu.zs");
 REQUIRE_FALSE(result.has_value());
 CHECK(result.error().starts_with("zodiac.toml"));
 }
 
-TEST_CASE("load_project_for_script without a project uses the file folder and the installed modules sorted")
+TEST_CASE("load_project_for_script without a project uses the file folder and only the core")
 {
 TempProject project(fs::path("lone"));
 project.write("tek dosya.zs","");
-const std::vector<std::string> installed{"zeta","example","beta"};
-const auto result=zodiac::load_project_for_script(project.dir()/"tek dosya.zs",installed);
+const auto result=zodiac::load_project_for_script(project.dir()/"tek dosya.zs");
 REQUIRE(result.has_value());
 // A zodiac.toml above the system temp folder is outside this test's control.
 if(zodiac::find_project_root(project.dir()/"tek dosya.zs"))return;
@@ -560,7 +557,8 @@ const fs::path root=fs::absolute(project.dir()).lexically_normal();
 CHECK(result->root==root);
 CHECK(result->main_script==root/"tek dosya.zs");
 CHECK(result->name=="tek dosya");
-CHECK(result->static_modules==std::vector<std::string>{"beta","example","zeta"});
+// Several installed modules may register the same names (audio engines), so a script without a project file gets none of them.
+CHECK(result->static_modules.empty());
 CHECK(result->dynamic_modules.empty());
 CHECK(result->core_exclude.empty());
 CHECK(result->workers.empty());

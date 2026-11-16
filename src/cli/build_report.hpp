@@ -15,7 +15,6 @@
 #include <deque>
 #include <filesystem>
 #include <mutex>
-#include <span>
 #include <string>
 #include <string_view>
 
@@ -41,11 +40,15 @@ std::size_t dropped_=0;
 std::size_t errors_=0;
 };
 
-// Writes folder/zodiac.toml holding project_file_text(name,main_relative,static_modules,dynamic_modules) (core/project_file.hpp) and returns the
-// one line the result window appends: "Created <path>", or "error: "<path>" already exists" when any file or folder of that name is there (also
-// one that appeared after the build: the file is opened for exclusive creation, so nothing is ever replaced), or "error: cannot create "<path>":
-// <reason>" / "error: cannot write "<path>"" (a partly written file is removed again). Paths are native, UTF-8. Never throws except std::bad_alloc.
-std::string create_project_file(const std::filesystem::path& folder,std::string_view name,std::string_view main_relative,std::span<const std::string> static_modules,std::span<const std::string> dynamic_modules);
+// Reported at ZODIAC_LOG_WARNING level (so ResultReport counts no error for it) by zodiac run and zodiac build right after the scripts of a lone
+// script, run or built without a project file and so with the core only, failed to compile (exit 1): a call into a module is the likely cause.
+inline constexpr std::string_view lone_script_compile_note="note: no zodiac.toml; only the core is available, so module functions are not declared (create a project file to add modules)";
+// Writes folder/zodiac.toml holding project_file_text(name,main_relative,{},{}) (core/project_file.hpp: empty static and dynamic lists, since a
+// lone script ran with the core only) and returns the one line the result window appends: "Created <path>", or "error: "<path>" already exists"
+// when any file or folder of that name is there (also one that appeared after the build: the file is opened for exclusive creation, so nothing
+// is ever replaced), or "error: cannot create "<path>": <reason>" / "error: cannot write "<path>"" (a partly written file is removed again).
+// Paths are native, UTF-8. Never throws except std::bad_alloc.
+std::string create_project_file(const std::filesystem::path& folder,std::string_view name,std::string_view main_relative);
 // The last element of the target's absolute, normalized path ("game" for "." in a folder game, "main.zs" for a script; "." when target is
 // empty): what a result window title names when no project loaded.
 std::string target_name(const std::filesystem::path& target);

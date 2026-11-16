@@ -81,10 +81,10 @@ result.append(line);
 return result;
 }
 
-std::string create_project_file(const std::filesystem::path& folder,std::string_view name,std::string_view main_relative,std::span<const std::string> static_modules,std::span<const std::string> dynamic_modules)
+std::string create_project_file(const std::filesystem::path& folder,std::string_view name,std::string_view main_relative)
 {
 const std::filesystem::path file=folder/"zodiac.toml";
-const std::string text=project_file_text(name,main_relative,static_modules,dynamic_modules);
+const std::string text=project_file_text(name,main_relative,{},{});
 errno=0;
 // noreplace: the open itself fails when the name exists, so a file created meanwhile (by an editor, another build) is never replaced.
 std::ofstream out(file,std::ios::out|std::ios::binary|std::ios::noreplace);

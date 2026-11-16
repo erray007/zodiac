@@ -109,15 +109,14 @@ report.write(ZODIAC_LOG_ERROR,"error: a line longer than the whole budget of thi
 CHECK(report.text(false,{})=="Run failed: 3 errors\n(5 earlier lines left out; the console shows every line)\nerror: a line longer than the whole budget of thirty bytes");
 }
 
-TEST_CASE("create_project_file writes the generated project file and never replaces one")
+TEST_CASE("create_project_file writes the generated project file with no modules and never replaces one")
 {
 const TempFolder folder;
-const std::vector<std::string> static_modules{"example"};
-const std::vector<std::string> dynamic_modules{"lgpl_dynamic"};
 const fs::path file=folder.path()/"zodiac.toml";
-const std::string expected=zodiac::project_file_text("oyun","oyun.zs",static_modules,dynamic_modules);
-CHECK(zodiac::cli::create_project_file(folder.path(),"oyun","oyun.zs",static_modules,dynamic_modules)=="Created "+zodiac::path_to_utf8(file));
+const std::string expected=zodiac::project_file_text("oyun","oyun.zs",{},{});
+CHECK(zodiac::cli::create_project_file(folder.path(),"oyun","oyun.zs")=="Created "+zodiac::path_to_utf8(file));
 CHECK(read_file(file)==expected);
+CHECK(expected.find("static = []\ndynamic = []\n")!=std::string::npos);
 // The written file is a project the script can be built from.
 {
 std::ofstream script(folder.path()/"oyun.zs",std::ios::binary);
@@ -126,14 +125,15 @@ script<<"void main()\n{\n}\n";
 const auto project=zodiac::load_project(folder.path());
 REQUIRE(project);
 CHECK(project->name=="oyun");
-CHECK(project->static_modules==static_modules);
-CHECK(project->dynamic_modules==dynamic_modules);
+CHECK(project->main_script==fs::absolute(folder.path()).lexically_normal()/"oyun.zs");
+CHECK(project->static_modules.empty());
+CHECK(project->dynamic_modules.empty());
 // A second press, or a file that appeared meanwhile, is refused and left as it is.
 {
 std::ofstream out(file,std::ios::binary|std::ios::trunc);
 out<<"# mine\n";
 }
-CHECK(zodiac::cli::create_project_file(folder.path(),"oyun","oyun.zs",static_modules,dynamic_modules)=="error: \""+zodiac::path_to_utf8(file)+"\" already exists");
+CHECK(zodiac::cli::create_project_file(folder.path(),"oyun","oyun.zs")=="error: \""+zodiac::path_to_utf8(file)+"\" already exists");
 CHECK(read_file(file)=="# mine\n");
 }
 
@@ -141,7 +141,7 @@ TEST_CASE("create_project_file reports a folder it cannot write to on one line")
 {
 const TempFolder folder;
 const fs::path missing=folder.path()/"gone";
-const std::string line=zodiac::cli::create_project_file(missing,"oyun","oyun.zs",{},{});
+const std::string line=zodiac::cli::create_project_file(missing,"oyun","oyun.zs");
 CHECK(line.starts_with("error: cannot create \""+zodiac::path_to_utf8(missing/"zodiac.toml")+"\""));
 CHECK(line.find('\n')==std::string::npos);
 CHECK_FALSE(fs::exists(missing));
