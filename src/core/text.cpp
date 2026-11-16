@@ -9,6 +9,62 @@ bool needs_escape(char c) noexcept
 const unsigned char byte=static_cast<unsigned char>(c);
 return byte<0x20||byte==0x7F;
 }
+// Matches one path segment (no '/') against one pattern segment with '*' and '?'.
+bool segment_match(std::string_view pattern,std::string_view text) noexcept
+{
+std::size_t p=0;
+std::size_t t=0;
+std::size_t star=std::string_view::npos;
+std::size_t mark=0;
+while(t<text.size())
+{
+if(p<pattern.size()&&pattern[p]=='*')
+{
+star=p++;
+mark=t;
+}
+else if(p<pattern.size()&&(pattern[p]=='?'||pattern[p]==text[t]))
+{
+++p;
+++t;
+}
+else if(star!=std::string_view::npos)
+{
+p=star+1;
+t=++mark;
+}
+else return false;
+}
+while(p<pattern.size()&&pattern[p]=='*')++p;
+return p==pattern.size();
+}
+}
+bool glob_match(std::string_view pattern,std::string_view path) noexcept
+{
+for(;;)
+{
+const std::size_t pattern_cut=pattern.find('/');
+const std::string_view segment=pattern.substr(0,pattern_cut);
+const bool more_pattern=pattern_cut!=std::string_view::npos;
+const std::string_view pattern_rest=more_pattern?pattern.substr(pattern_cut+1):std::string_view();
+if(segment=="**")
+{
+if(!more_pattern)return true;
+for(;;)
+{
+if(glob_match(pattern_rest,path))return true;
+const std::size_t cut=path.find('/');
+if(cut==std::string_view::npos)return false;
+path.remove_prefix(cut+1);
+}
+}
+const std::size_t path_cut=path.find('/');
+const bool more_path=path_cut!=std::string_view::npos;
+if(more_pattern!=more_path||!segment_match(segment,path.substr(0,path_cut)))return false;
+if(!more_pattern)return true;
+pattern=pattern_rest;
+path.remove_prefix(path_cut+1);
+}
 }
 std::string error_text(const std::error_code& code)
 {

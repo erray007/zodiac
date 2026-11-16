@@ -37,3 +37,14 @@ CHECK(zodiac::one_line("plain text")=="plain text");
 CHECK(zodiac::one_line("a\\b")=="a\\b");
 CHECK(zodiac::one_line("Kanka \xC5\x9F\xC3\xB6v")=="Kanka \xC5\x9F\xC3\xB6v");
 }
+
+TEST_CASE("glob_match")
+{
+CHECK(zodiac::glob_match("sounds/*.ogg","sounds/shot.ogg"));
+CHECK_FALSE(zodiac::glob_match("sounds/*.ogg","sounds/guns/shot.ogg"));
+CHECK(zodiac::glob_match("sounds/**/*.ogg","sounds/guns/rifle/shot.ogg"));
+CHECK(zodiac::glob_match("sounds/**/*.ogg","sounds/shot.ogg"));
+CHECK(zodiac::glob_match("maps/level?.map","maps/level1.map"));
+CHECK_FALSE(zodiac::glob_match("maps/level?.map","maps/level10.map"));
+CHECK(zodiac::glob_match("**","a/b/c.txt"));
+}

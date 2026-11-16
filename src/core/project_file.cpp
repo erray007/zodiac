@@ -148,6 +148,16 @@ const toml::node* main_node=*game?(*game)->get("main"):nullptr;
 if(!main_node)return fail_line("[game] main is required");
 const toml::value<std::string>* main_value=main_node->as_string();
 if(!main_value)return fail_line("[game] main must be a string");
+project.name=path_to_utf8(project.root.filename());
+if(*game)
+{
+if(const toml::node* name_node=(*game)->get("name"))
+{
+const toml::value<std::string>* name_value=name_node->as_string();
+if(!name_value)return fail_line("[game] name must be a string");
+project.name=name_value->get();
+}
+}
 const auto modules=section(root,"modules");
 if(!modules)return fail(std::move(modules.error()));
 if(auto result=string_array(*modules,"modules","static",project.static_modules);!result)return fail(std::move(result.error()));
@@ -192,11 +202,77 @@ if(!file)return fail("zodiac.toml: error: [diagnostics] file \""+one_line(file_v
 project.diagnostics.file=std::move(*file);
 }
 }
+const auto build=section(root,"build");
+if(!build)return fail(std::move(build.error()));
+if(auto result=string_array(*build,"build","assets",project.build.assets);!result)return fail(std::move(result.error()));
+if(*build)
+{
+if(const toml::node* strip_node=(*build)->get("strip_debug_info"))
+{
+const toml::value<bool>* strip_value=strip_node->as_boolean();
+if(!strip_value)return fail_line("[build] strip_debug_info must be a boolean");
+project.build.strip_debug_info=strip_value->get();
+}
+const toml::node* sign_node=(*build)->get("sign");
+if(sign_node)
+{
+const toml::table* sign=sign_node->as_table();
+if(!sign)return fail_line("[build.sign] must be a table");
+if(auto result=string_array(sign,"build.sign","command",project.build.sign_command);!result)return fail(std::move(result.error()));
+const bool has_placeholder=std::ranges::any_of(project.build.sign_command,[](const std::string& argument){return argument.find("{file}")!=std::string::npos;});
+if(!project.build.sign_command.empty()&&!has_placeholder)return fail_line("[build.sign] command must contain {file}");
+}
+}
+const auto workers=section(root,"workers");
+if(!workers)return fail(std::move(workers.error()));
+std::vector<std::string> worker_names;
+if(auto result=string_array(*workers,"workers","scripts",worker_names);!result)return fail(std::move(result.error()));
+for(const std::string& worker_name:worker_names)
+{
+auto worker=inside_root(project.root,worker_name);
+if(!worker)return fail("zodiac.toml: error: worker script \""+one_line(worker_name)+"\" must be inside the project");
+const bool worker_is_file=fs::is_regular_file(*worker,ec);
+if(ec||!worker_is_file)return fail("zodiac.toml: error: worker script \""+one_line(worker_name)+"\" does not exist");
+if(worker->extension()!=fs::path(".zs"))return fail("zodiac.toml: error: worker script \""+one_line(worker_name)+"\" must be a .zs file");
+if(std::ranges::find(project.workers,*worker)==project.workers.end())project.workers.push_back(std::move(*worker));
+}
 auto main_script=inside_root(project.root,main_value->get());
 if(!main_script)return fail("zodiac.toml: error: main script \""+one_line(main_value->get())+"\" must be inside the project");
 const bool is_file=fs::is_regular_file(*main_script,ec);
 if(ec||!is_file)return fail("zodiac.toml: error: main script \""+one_line(main_value->get())+"\" does not exist");
 project.main_script=std::move(*main_script);
 return project;
+}
+
+std::expected<std::vector<fs::path>,std::string> expand_assets(const Project& project)
+{
+std::vector<fs::path> files;
+if(project.build.assets.empty())return files;
+const fs::path release_dir=project.root/"release";
+const fs::path manifest=project.root/"zodiac.toml";
+std::error_code ec;
+fs::recursive_directory_iterator it(project.root,fs::directory_options::skip_permission_denied,ec);
+if(ec)return fail("zodiac.toml: error: cannot list \""+one_line(path_to_utf8(project.root))+"\": "+one_line(error_text(ec)));
+for(const fs::recursive_directory_iterator end;it!=end;it.increment(ec))
+{
+if(ec)return fail("zodiac.toml: error: cannot list \""+one_line(path_to_utf8(project.root))+"\": "+one_line(error_text(ec)));
+const fs::path& path=it->path();
+if(path==release_dir)
+{
+it.disable_recursion_pending();
+continue;
+}
+if(path==manifest||!it->is_regular_file(ec))
+{
+ec.clear();
+continue;
+}
+const std::u8string relative=path.lexically_relative(project.root).generic_u8string();
+const std::string_view text(reinterpret_cast<const char*>(relative.data()),relative.size());
+if(std::ranges::any_of(project.build.assets,[text](const std::string& pattern){return glob_match(pattern,text);}))files.push_back(path);
+}
+std::ranges::sort(files);
+files.erase(std::ranges::unique(files).begin(),files.end());
+return files;
 }
 }

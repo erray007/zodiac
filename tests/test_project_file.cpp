@@ -248,6 +248,125 @@ project.toml("[game]\nmain = \"main.zs\"\n[diagnostics]\nfile = \"/zodiac.log\"\
 CHECK(error_of(project)=="zodiac.toml: error: [diagnostics] file \"/zodiac.log\" must be inside the project");
 }
 
+TEST_CASE("build section loads assets, strip_debug_info and sign command")
+{
+TempProject project;
+project.main_script();
+project.toml("[game]\nmain = \"main.zs\"\n[build]\nassets = [\"sounds/**/*.ogg\"]\nstrip_debug_info = true\n[build.sign]\ncommand = [\"signtool\", \"sign\", \"{file}\"]\n");
+const auto result=zodiac::load_project(project.dir());
+REQUIRE(result.has_value());
+CHECK(result->build.assets==std::vector<std::string>{"sounds/**/*.ogg"});
+CHECK(result->build.strip_debug_info);
+CHECK(result->build.sign_command==std::vector<std::string>{"signtool","sign","{file}"});
+}
+
+TEST_CASE("build section defaults")
+{
+TempProject project;
+project.main_script();
+project.toml(minimal);
+const auto result=zodiac::load_project(project.dir());
+REQUIRE(result.has_value());
+CHECK(result->build.assets.empty());
+CHECK_FALSE(result->build.strip_debug_info);
+CHECK(result->build.sign_command.empty());
+CHECK(result->workers.empty());
+}
+
+TEST_CASE("sign command must contain {file}")
+{
+TempProject project;
+project.main_script();
+project.toml("[game]\nmain = \"main.zs\"\n[build.sign]\ncommand = [\"signtool\"]\n");
+CHECK(error_of(project)=="zodiac.toml: error: [build.sign] command must contain {file}");
+}
+
+TEST_CASE("build section type errors")
+{
+TempProject project;
+project.main_script();
+project.toml("[game]\nmain = \"main.zs\"\n[build]\nassets = \"x\"\n");
+CHECK(error_of(project)=="zodiac.toml: error: [build] assets must be an array of strings");
+project.toml("[game]\nmain = \"main.zs\"\n[build]\nstrip_debug_info = \"yes\"\n");
+CHECK(error_of(project)=="zodiac.toml: error: [build] strip_debug_info must be a boolean");
+project.toml("[game]\nmain = \"main.zs\"\n[build.sign]\ncommand = 3\n");
+CHECK(error_of(project)=="zodiac.toml: error: [build.sign] command must be an array of strings");
+project.toml("build = 1\n[game]\nmain = \"main.zs\"\n");
+CHECK(error_of(project)=="zodiac.toml: error: [build] must be a table");
+project.toml("[game]\nmain = \"main.zs\"\n[build]\nsign = 1\n");
+CHECK(error_of(project)=="zodiac.toml: error: [build.sign] must be a table");
+}
+
+TEST_CASE("worker scripts")
+{
+TempProject project;
+project.main_script();
+project.write("bots.zs","");
+project.toml("[game]\nmain = \"main.zs\"\n[workers]\nscripts = [\"bots.zs\", \"./bots.zs\"]\n");
+const auto result=zodiac::load_project(project.dir());
+REQUIRE(result.has_value());
+REQUIRE(result->workers.size()==1);
+CHECK(result->workers[0]==result->root/"bots.zs");
+CHECK(result->workers[0].is_absolute());
+project.toml("[game]\nmain = \"main.zs\"\n[workers]\nscripts = [\"missing.zs\"]\n");
+CHECK(error_of(project)=="zodiac.toml: error: worker script \"missing.zs\" does not exist");
+project.toml("[game]\nmain = \"main.zs\"\n[workers]\nscripts = [\"../x.zs\"]\n");
+CHECK(error_of(project)=="zodiac.toml: error: worker script \"../x.zs\" must be inside the project");
+project.toml("[game]\nmain = \"main.zs\"\n[workers]\nscripts = [5]\n");
+CHECK(error_of(project)=="zodiac.toml: error: [workers] scripts must be an array of strings");
+}
+
+TEST_CASE("project name comes from [game] name or the folder")
+{
+TempProject project{fs::path(u8"Kanka oyunu")};
+project.main_script();
+project.toml(minimal);
+auto result=zodiac::load_project(project.dir());
+REQUIRE(result.has_value());
+CHECK(result->name=="Kanka oyunu");
+project.toml("[game]\nname = \"My Game\"\nmain = \"main.zs\"\n");
+result=zodiac::load_project(project.dir());
+REQUIRE(result.has_value());
+CHECK(result->name=="My Game");
+project.toml("[game]\nname = 4\nmain = \"main.zs\"\n");
+CHECK(error_of(project)=="zodiac.toml: error: [game] name must be a string");
+}
+
+TEST_CASE("expand_assets selects matching files under the root")
+{
+TempProject project;
+project.main_script();
+project.write("sounds/a.ogg","");
+project.write("sounds/guns/b.ogg","");
+project.write("sounds/c.wav","");
+project.write("release/sounds/d.ogg","");
+project.toml("[game]\nmain = \"main.zs\"\n[build]\nassets = [\"sounds/**/*.ogg\", \"sounds/a.ogg\"]\n");
+const auto loaded=zodiac::load_project(project.dir());
+REQUIRE(loaded.has_value());
+const auto files=zodiac::expand_assets(*loaded);
+REQUIRE(files.has_value());
+CHECK(*files==std::vector<fs::path>{loaded->root/"sounds"/"a.ogg",loaded->root/"sounds"/"guns"/"b.ogg"});
+}
+
+TEST_CASE("expand_assets never returns zodiac.toml or release files and allows no matches")
+{
+TempProject project;
+project.main_script();
+project.write("release/x.txt","");
+project.toml("[game]\nmain = \"main.zs\"\n[build]\nassets = [\"**\", \"nothing/*.xyz\"]\n");
+const auto loaded=zodiac::load_project(project.dir());
+REQUIRE(loaded.has_value());
+const auto files=zodiac::expand_assets(*loaded);
+REQUIRE(files.has_value());
+CHECK(*files==std::vector<fs::path>{loaded->root/"main.zs"});
+project.toml("[game]\nmain = \"main.zs\"\n[build]\nassets = [\"nothing/*.xyz\"]\n");
+const auto none=zodiac::load_project(project.dir());
+REQUIRE(none.has_value());
+const auto empty=zodiac::expand_assets(*none);
+REQUIRE(empty.has_value());
+CHECK(empty->empty());
+}
+
 TEST_CASE("echoed user text stays on one line")
 {
 TempProject project;
