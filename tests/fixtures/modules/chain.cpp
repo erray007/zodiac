@@ -53,10 +53,10 @@ struct larger_info{
 zodiac_module_info info;
 unsigned char appended[ZODIAC_FIXTURE_EXTRA_BYTES];
 };
-const larger_info g_larger_info={{ZODIAC_FIXTURE_ABI,ZODIAC_FIXTURE_STRUCT_SIZE,ZODIAC_FIXTURE_REPORTED,"0.0.1","Zlib",g_dependency_list,g_dependency_count,&register_module,&shutdown_module},{}};
+const larger_info g_larger_info={{ZODIAC_FIXTURE_ABI,ZODIAC_FIXTURE_STRUCT_SIZE,ZODIAC_FIXTURE_REPORTED,"0.0.1","Zlib",g_dependency_list,g_dependency_count,&register_module,&shutdown_module,0},{}};
 const zodiac_module_info& g_info=g_larger_info.info;
 #else
-const zodiac_module_info g_info={ZODIAC_FIXTURE_ABI,ZODIAC_FIXTURE_STRUCT_SIZE,ZODIAC_FIXTURE_REPORTED,"0.0.1","Zlib",g_dependency_list,g_dependency_count,&register_module,&shutdown_module};
+const zodiac_module_info g_info={ZODIAC_FIXTURE_ABI,ZODIAC_FIXTURE_STRUCT_SIZE,ZODIAC_FIXTURE_REPORTED,"0.0.1","Zlib",g_dependency_list,g_dependency_count,&register_module,&shutdown_module,0};
 #endif
 }
 

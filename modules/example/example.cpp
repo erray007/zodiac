@@ -36,5 +36,5 @@ return zodiac::plugin::function<&print>(host,"void example_print(const string &i
 }
 
 // External linkage so a static build can reference it; the shared build exports only zodiac_module_get_info.
-extern "C" const zodiac_module_info zodiac_module_info_example={ZODIAC_ABI_VERSION,sizeof(zodiac_module_info),"example","0.1.0","Zlib",nullptr,0,&register_module,nullptr};
+extern "C" const zodiac_module_info zodiac_module_info_example={ZODIAC_ABI_VERSION,sizeof(zodiac_module_info),"example","0.1.0","Zlib",nullptr,0,&register_module,nullptr,ZODIAC_LINK_STATIC|ZODIAC_LINK_DYNAMIC};
 ZODIAC_DEFINE_MODULE(zodiac_module_info_example)

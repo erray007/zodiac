@@ -41,7 +41,7 @@ void shutdown_module(void)
 g_shut_down=true;
 if(g_host)g_host->log(g_host,ZODIAC_LOG_INFO,"ref_object shutdown");
 }
-const zodiac_module_info g_info={ZODIAC_ABI_VERSION,sizeof(zodiac_module_info),"ref_object","0.0.1","Zlib",nullptr,0,&register_module,&shutdown_module};
+const zodiac_module_info g_info={ZODIAC_ABI_VERSION,sizeof(zodiac_module_info),"ref_object","0.0.1","Zlib",nullptr,0,&register_module,&shutdown_module,0};
 }
 
 ZODIAC_DEFINE_MODULE(g_info)

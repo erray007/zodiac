@@ -2,7 +2,8 @@
 #
 # Creates zodiac_mod_<name>: a SHARED library whose file is zodiac_mod_<name><shared suffix> (no "lib" prefix, so the
 # name is identical on every platform apart from the extension), written to ${CMAKE_BINARY_DIR}/modules by default.
-# Also creates zodiac_mod_<name>_static (STATIC, compiled with ZODIAC_MODULE_STATIC) for hosts that link modules in.
+# Also creates zodiac_mod_<name>_static (STATIC, compiled with ZODIAC_MODULE_STATIC and ZODIAC_MODULE_ID=<name>) for hosts that link modules in:
+# its ZODIAC_DEFINE_MODULE emits the record zodiac_static_module_<name>, which the final link must force in with -u zodiac_static_module_<name>.
 # DEPENDS names other zodiac modules: it only orders the builds, the runtime dependency comes from the module info.
 include_guard(GLOBAL)
 function(zodiac_add_module name)
@@ -36,7 +37,7 @@ if(NOT ZM_NO_STATIC)
 set(static ${shared}_static)
 add_library(${static} STATIC ${ZM_SOURCES})
 set_target_properties(${static} PROPERTIES POSITION_INDEPENDENT_CODE ON ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/module_import_libs")
-target_compile_definitions(${static} PRIVATE ZODIAC_MODULE_STATIC ${ZM_DEFINITIONS})
+target_compile_definitions(${static} PRIVATE ZODIAC_MODULE_STATIC ZODIAC_MODULE_ID=${name} ${ZM_DEFINITIONS})
 target_link_libraries(${static} PUBLIC zodiac_plugin_abi)
 zodiac_target_warnings(${static})
 foreach(dependency IN LISTS ZM_DEPENDS)

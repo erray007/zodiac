@@ -7,6 +7,15 @@ ABI rules:
 - Only C types cross the boundary. No AngelScript types, no C++ classes, no std:: types, no exceptions. Errors are reported through return codes or set_exception.
 - A module declares in abi_version the minimum host ABI it needs (1 or greater). The host refuses any module whose abi_version is 0 or newer than the host's ZODIAC_ABI_VERSION.
 - A module sets zodiac_module_info.struct_size to sizeof(zodiac_module_info). The host refuses a module whose struct_size is smaller than the ABI v1 size, and reads members appended after v1 only when struct_size covers them.
+- The ABI v1 size of zodiac_module_info is 64 bytes on 64-bit targets (it ends after shutdown_module). ZODIAC_ABI_VERSION stays 1: appending a member does not change it.
+- zodiac_module_info.link_modes (appended after v1): ZODIAC_LINK_STATIC and/or ZODIAC_LINK_DYNAMIC, the ways the module may be linked into a game. 0, or a struct_size too small to contain it (a v1 module), means both are allowed.
+
+Build rules (ZODIAC_DEFINE_MODULE):
+- Shared builds (ZODIAC_MODULE_STATIC not defined) export zodiac_module_get_info, which returns &info_variable.
+- Static builds define ZODIAC_MODULE_STATIC and ZODIAC_MODULE_ID=<module name>; ZODIAC_MODULE_ID is required (#error otherwise), and zodiac_add_module passes both to the _static target.
+- A static build exports nothing. ZODIAC_DEFINE_MODULE defines one record instead: const zodiac_module_info* const zodiac_static_module_<ZODIAC_MODULE_ID>, with C linkage, kept by the compiler (used), pointing at info_variable, in the linker section ZODIAC_STATIC_MODULE_SECTION (".zodmod$m" on Windows, "zodiac_modules" elsewhere).
+- Nothing references the record, so the final link forces it in by name (-u zodiac_static_module_<name>) and the engine finds it by walking that section.
+- info_variable must have static storage duration so the record has a constant initializer. Static builds need a GCC-compatible compiler (clang or gcc) for the section attribute.
 
 Lifetime rules:
 - register_module is called once, after every dependency has registered.
@@ -33,6 +42,8 @@ extern "C" {
 #define ZODIAC_E_NOT_PRIMITIVE -3
 #define ZODIAC_E_ALREADY_REGISTERED -4
 #define ZODIAC_E_UNKNOWN_TYPE -5
+#define ZODIAC_LINK_STATIC 1u
+#define ZODIAC_LINK_DYNAMIC 2u
 typedef struct zodiac_host zodiac_host;
 typedef struct zodiac_call zodiac_call;
 typedef struct zodiac_array zodiac_array;
@@ -48,6 +59,8 @@ const char* const* dependencies;
 uint32_t dependency_count;
 int (*register_module)(zodiac_host* host);   /* ZODIAC_OK or negative code */
 void (*shutdown_module)(void);               /* may be NULL; see the lifetime rules above */
+/* end of ABI v1 (64 bytes on 64-bit targets); members below are read only when struct_size covers them */
+uint32_t link_modes;           /* ZODIAC_LINK_STATIC|ZODIAC_LINK_DYNAMIC; 0 means both */
 }zodiac_module_info;
 struct zodiac_host{
 uint32_t abi_version;
@@ -98,10 +111,23 @@ void (*log)(zodiac_host*,zodiac_log_level level,const char* message);
 #else
 #define ZODIAC_LINKAGE_C
 #endif
-/* ZODIAC_DEFINE_MODULE(info_variable) defines the exported entry returning &info_variable (shared builds) */
+/* ZODIAC_DEFINE_MODULE(info_variable): the exported entry returning &info_variable (shared builds) or the static registration record (static builds); see the build rules above */
 #if defined(ZODIAC_MODULE_STATIC)
-/* Static registration is not implemented yet (a later plan adds it), so this expands to nothing for now. */
-#define ZODIAC_DEFINE_MODULE(info_variable)
+#ifndef ZODIAC_MODULE_ID
+#error ZODIAC_MODULE_ID (the module name) must be defined when ZODIAC_MODULE_STATIC is defined
+#endif
+#if !defined(__GNUC__) && !defined(__clang__)
+#error static Zodiac module builds need a GCC-compatible compiler (clang or gcc) for the record section attribute
+#endif
+#if defined(_WIN32)
+#define ZODIAC_STATIC_MODULE_SECTION ".zodmod$m"
+#else
+#define ZODIAC_STATIC_MODULE_SECTION "zodiac_modules"
+#endif
+#define ZODIAC_STATIC_MODULE_RECORD_JOIN(id) zodiac_static_module_##id
+#define ZODIAC_STATIC_MODULE_RECORD(id) ZODIAC_STATIC_MODULE_RECORD_JOIN(id)
+#define ZODIAC_DEFINE_MODULE(info_variable) \
+ZODIAC_LINKAGE_C __attribute__((used,section(ZODIAC_STATIC_MODULE_SECTION))) const zodiac_module_info* const ZODIAC_STATIC_MODULE_RECORD(ZODIAC_MODULE_ID)=&(info_variable);
 #else
 #define ZODIAC_DEFINE_MODULE(info_variable) \
 ZODIAC_LINKAGE_C ZODIAC_EXPORT const zodiac_module_info* zodiac_module_get_info(void) \
