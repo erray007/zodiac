@@ -21,8 +21,9 @@ def quiet(function, *args):
 class GenUnicodeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # Downloads the pinned UCD files once into the shared cache (.tools/unicode/<version>) when they are missing.
-        cls.sources = quiet(gen_unicode.fetch_all, gen_unicode.DEFAULT_DATA_DIR)
+        # Downloads the pinned UCD files once into the shared cache (.tools/unicode/<version>) when they are missing. Not quiet:
+        # its "Downloading" or "Using cached" lines show in CI whether the UCD cache was hit.
+        cls.sources = gen_unicode.fetch_all(gen_unicode.DEFAULT_DATA_DIR)
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
