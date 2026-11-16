@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - All Global Constraints of `docs/superpowers/plans/2026-11-16-zodiac-release-kit.md` still apply (style without indentation in C++/CMake, English identifiers, one-line diagnostics, exit codes 0/1/2, identity rule, paths with spaces and non-ASCII, Linux CI green, Windows-only release builds).
-- Exact texts: warning `warning: no zodiac.toml; every installed module was linked in (create a project file to choose modules)`; button `Create project file`; window outcome lines `Created <path>` or the error line; run window title `Zodiac run - <game name>`; run summary `Run failed: <N> errors` (`1 error`); config error `error: config file "<path>" does not exist`; setup display name `Zodiac Game Toolkit`.
+- Exact texts: warning `warning: no zodiac.toml; only the core is available (create a project file to add modules)` (Task 5; superseded the earlier "every installed module was linked in" text); button `Create project file`; window outcome lines `Created <path>` or the error line; run window title `Zodiac run - <game name>`; run summary `Run failed: <N> errors` (`1 error`); config error `error: config file "<path>" does not exist`; setup display name `Zodiac Game Toolkit`.
 - The result window stays standard Win32 controls only, labeled, keyboard-operable, no word wrap (plan 3 Task 9 rules).
 - Never use heredocs or shell redirection to create or edit files (owner's rule).
 
