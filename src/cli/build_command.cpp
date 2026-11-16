@@ -16,6 +16,7 @@
 #include <core/kit_layout.hpp>
 #include <core/module_registry.hpp>
 #include <core/payload.hpp>
+#include <core/pe_imports.hpp>
 #include <core/project_file.hpp>
 #include <core/script_runtime.hpp>
 #include <core/text.hpp>
@@ -31,6 +32,7 @@
 #include <optional>
 #include <span>
 #include <system_error>
+#include <vector>
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -304,6 +306,107 @@ if(fs::is_regular_file(plugin,ec))return plugin;
 return std::nullopt;
 }
 
+// True when text starts with prefix (lower-case ASCII), compared ASCII case-insensitively.
+bool starts_with_ascii_ci(std::string_view text,std::string_view prefix) noexcept
+{
+if(text.size()<prefix.size())return false;
+for(std::size_t i=0;i<prefix.size();++i){
+char c=text[i];
+if(c>='A'&&c<='Z')c=static_cast<char>(c-'A'+'a');
+if(c!=prefix[i])return false;
+}
+return true;
+}
+
+// Decides whether an imported DLL name not found next to a module is a Windows system DLL (spec item 7): an API set name, or a file
+// SearchPathW finds in the system folder. The folder is asked for once, on the first name that needs it.
+class SystemDlls{
+public:
+// name is printable ASCII (pe_imported_dlls guarantees it).
+bool contains(std::string_view name)
+{
+if(starts_with_ascii_ci(name,"api-ms-win-")||starts_with_ascii_ci(name,"ext-ms-"))return true;
+// A name with a path is never a system DLL; SearchPathW would look outside the system folder for it.
+if(name.find_first_of("/\\:")!=std::string_view::npos)return false;
+if(!folder_)folder_=system_folder();
+if(folder_->empty())return false;
+const std::wstring wide(name.begin(),name.end());
+return SearchPathW(folder_->c_str(),wide.c_str(),L".dll",0,nullptr,nullptr)!=0;
+}
+private:
+static std::wstring system_folder()
+{
+std::wstring folder(MAX_PATH,L'\0');
+for(int attempt=0;attempt<2;++attempt){
+const UINT length=GetSystemDirectoryW(folder.data(),static_cast<UINT>(folder.size()));
+if(length==0)break;
+if(length<folder.size()){
+folder.resize(length);
+return folder;
+}
+// Too small: length is the size needed, including the terminating NUL.
+folder.assign(length,L'\0');
+}
+return {};
+}
+std::optional<std::wstring> folder_;
+};
+
+// The regular files directly inside each folder a module DLL lives in, listed once per build.
+class FolderFiles{
+public:
+const std::vector<fs::path>& of(const fs::path& folder)
+{
+for(const auto& [listed,files]:folders_)if(same_path_text(listed,folder))return files;
+std::vector<fs::path> files;
+std::error_code ec;
+for(fs::directory_iterator entry(folder,ec),end;!ec&&entry!=end;entry.increment(ec)){
+std::error_code type_error;
+if(entry->is_regular_file(type_error))files.push_back(entry->path());
+}
+return folders_.emplace_back(folder,std::move(files)).second;
+}
+private:
+std::deque<std::pair<fs::path,std::vector<fs::path>>> folders_;
+};
+
+// The file the loader looks for when a DLL imports name: a name without a dot gets ".dll".
+fs::path loader_file_name(std::string_view name)
+{
+fs::path file=path_from_utf8(name);
+if(name.find('.')==std::string_view::npos)file+=".dll";
+return file;
+}
+
+// The files that ship for the dynamic module module whose DLL is library (spec item 7): library, then the DLLs it imports that sit in its
+// folder, recursively, breadth first, each once. Reports why and returns nullopt when a DLL cannot be read or an import is neither there
+// nor a system DLL.
+std::optional<std::vector<fs::path>> module_files(std::string_view module,const fs::path& library,FolderFiles& folders,SystemDlls& system_dlls,Diagnostics& diagnostics)
+{
+const std::vector<fs::path>& neighbours=folders.of(library.parent_path());
+std::vector<fs::path> files{library};
+const auto listed=[&files](const fs::path& file){return std::ranges::any_of(files,[&file](const fs::path& known){return same_path_text(known.filename(),file.filename());});};
+for(std::size_t next=0;next<files.size();++next){
+const auto imports=pe_imported_dlls(files[next]);
+if(!imports){
+fail(diagnostics,imports.error());
+return std::nullopt;
+}
+for(const std::string& name:*imports){
+const fs::path wanted=loader_file_name(name);
+const auto found=std::ranges::find_if(neighbours,[&wanted](const fs::path& file){return same_path_text(file.filename(),wanted);});
+if(found!=neighbours.end()){
+if(!listed(*found))files.push_back(*found);
+continue;
+}
+if(system_dlls.contains(name))continue;
+fail(diagnostics,"error: module "+in_quotes(module)+" needs "+in_quotes(name)+", which is not next to "+quoted_path(library));
+return std::nullopt;
+}
+}
+return files;
+}
+
 bool copy_into(const fs::path& from,const fs::path& to,Diagnostics& diagnostics)
 {
 std::error_code ec;
@@ -414,8 +517,8 @@ report_indented(diagnostics,!program?program.error():!ran?ran.error():ran->outpu
 return exit_build_error;
 }
 
-// Everything after the compile: the payload object, the link and the signing of the executable and the DLL copies under
-// temporary names, the renames, then the assets. Returns 0 or 2.
+// Everything after the compile: the payload object, the link and the signing of the executable and the DLL copies (dynamic modules and
+// the third-party DLLs they import) under temporary names, the renames, then the assets. Returns 0 or 2.
 int write_release(const Project& project,const ScriptRuntime& runtime,const KitLayout& kit,const std::vector<StaticLibrary>& libraries,const std::vector<fs::path>& module_dirs,const fs::path& output,const fs::path& exe,Diagnostics& diagnostics)
 {
 auto bytecode=runtime.save_bytecode(project.build.strip_debug_info);
@@ -454,17 +557,25 @@ TemporaryFile copy;
 };
 // A deque never moves its elements, which TemporaryFile cannot do.
 std::deque<Library> copies;
+FolderFiles folders;
+SystemDlls system_dlls;
 for(const PayloadModule& module:payload.modules){
 if(module.link!=LinkMode::dynamic_link)continue;
 const std::optional<fs::path> library=find_module_library(module.name,module_dirs,project.root);
 if(!library)return fail(diagnostics,"error: cannot find the library of module "+in_quotes(module.name)+" to copy it");
-fs::path target=output/library->filename();
+// The module DLL and the third-party DLLs it needs; a file another module already shipped is not copied again.
+const std::optional<std::vector<fs::path>> files=module_files(module.name,*library,folders,system_dlls,diagnostics);
+if(!files)return exit_build_error;
+for(const fs::path& file:*files){
+fs::path target=output/file.filename();
+if(std::ranges::any_of(copies,[&target](const Library& shipped){return same_path_text(shipped.target,target);}))continue;
 fs::path copy_path=target;
 copy_path+=".tmp";
 const Library& copy=copies.emplace_back(std::move(target),std::move(copy_path),diagnostics);
-if(!copy_into(*library,copy.copy.path(),diagnostics))return exit_build_error;
+if(!copy_into(file,copy.copy.path(),diagnostics))return exit_build_error;
 if(signing){
 if(const int code=sign(project.build.sign_command,copy.copy.path(),copy.target,project.root,diagnostics))return code;
+}
 }
 }
 if(const int code=replace_file(tmp.path(),exe,diagnostics))return code;

@@ -1,5 +1,6 @@
 """End-to-end tests for zodiac build. Windows only: release builds link with the kit's ld.lld and llvm-mingw CRT subset.
-Needs ZODIAC_EXE, ZODIACW_EXE (the GUI-subsystem twin), ZODIAC_MODULE_DIR, ZODIAC_TEST_MODULE_DIR and ZODIAC_ECHO_ARGS in the environment (CTest sets them, see tests/CMakeLists.txt)."""
+Needs ZODIAC_EXE, ZODIACW_EXE (the GUI-subsystem twin), ZODIAC_MODULE_DIR, ZODIAC_TEST_MODULE_DIR, ZODIAC_ECHO_ARGS and ZODIAC_VENDOR_MODULE_DIR
+(vendor_dep with its third-party DLLs) in the environment (CTest sets them, see tests/CMakeLists.txt)."""
 import os
 import shutil
 import struct
@@ -13,6 +14,7 @@ GUI_EXE = os.environ.get("ZODIACW_EXE", "")
 MODULE_DIR = os.environ.get("ZODIAC_MODULE_DIR", "")
 TEST_MODULE_DIR = os.environ.get("ZODIAC_TEST_MODULE_DIR", "")
 ECHO_ARGS = os.environ.get("ZODIAC_ECHO_ARGS", "")
+VENDOR_MODULE_DIR = os.environ.get("ZODIAC_VENDOR_MODULE_DIR", "")
 SCRIPT_FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "scripts"
 # Fixtures that need test-only modules from ZODIAC_TEST_MODULE_DIR: a release loads its modules from the kit (static) or its own folder (dynamic),
 # and the kit ships no test modules, so these cannot be built. Every other fixture takes part in the identity test.
@@ -483,6 +485,67 @@ class BuildTest(unittest.TestCase):
         release = project / "release"
         self.assertTrue((release / "game.exe").is_file())
         self.assertEqual((release / "zodiac_mod_lgpl_dynamic.dll").read_bytes(), (Path(TEST_MODULE_DIR) / "zodiac_mod_lgpl_dynamic.dll").read_bytes())
+
+    def vendor_folder(self, folder):
+        """A copy of vendor_dep and its third-party DLLs: vendor_lib.dll spelled Vendor_Lib.DLL (imports match names case-insensitively),
+        vendor_base.dll, and a DLL nothing imports."""
+        self.assertTrue(VENDOR_MODULE_DIR and Path(VENDOR_MODULE_DIR).is_dir(), VENDOR_MODULE_DIR)
+        folder.mkdir(parents=True)
+        source = Path(VENDOR_MODULE_DIR)
+        shutil.copyfile(source / "zodiac_mod_vendor_dep.dll", folder / "zodiac_mod_vendor_dep.dll")
+        shutil.copyfile(source / "vendor_lib.dll", folder / "Vendor_Lib.DLL")
+        shutil.copyfile(source / "vendor_base.dll", folder / "vendor_base.dll")
+        shutil.copyfile(source / "vendor_base.dll", folder / "unused.dll")
+        return folder
+
+    VENDOR_SCRIPT = "int main()\n{\nreturn vendor_value(3);\n}\n"
+    VENDOR_RELEASE = ["Vendor_Lib.DLL", "game.exe", "vendor_base.dll", "zodiac_mod_vendor_dep.dll"]
+
+    def assert_vendor_release(self, release, folder):
+        self.assertEqual(sorted(p.name for p in release.iterdir()), self.VENDOR_RELEASE)
+        for name in self.VENDOR_RELEASE[:1] + self.VENDOR_RELEASE[2:]:
+            self.assertEqual((release / name).read_bytes(), (folder / name).read_bytes(), name)
+        # vendor_dep delay-imports vendor_lib.dll, which imports vendor_base.dll: the release runs only with both next to it.
+        self.assertEqual(run_exe(release / "game.exe"), (21, "", ""))
+
+    def test_build_ships_third_party_dlls_of_dynamic_modules(self):
+        self.assertIn("vendor_lib.dll", pe_imports(Path(VENDOR_MODULE_DIR) / "zodiac_mod_vendor_dep.dll"))
+        self.assertIn("vendor_base.dll", pe_imports(Path(VENDOR_MODULE_DIR) / "vendor_lib.dll"))
+        mods = self.vendor_folder(self.root / "mods")
+        project = self.new_project(self.root / "game", dynamic=["vendor_dep"], script=self.VENDOR_SCRIPT)
+        marker = self.root / "signed.txt"
+        self.append_toml(project, "\n[build.sign]\ncommand = [%s, \"--marker\", %s, \"{file}\"]\n" % (toml_literal(ECHO_ARGS), toml_literal(str(marker))))
+        release = project / "release"
+        self.assert_built(self.build(str(project), "--module-dir", str(mods)), release / "game.exe")
+        self.assert_vendor_release(release, mods)
+        # The third-party DLLs are signed like the module, under their temporary names, in the order they were found.
+        signed = marker.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(signed, [str(release / name) for name in ("game.exe.tmp", "zodiac_mod_vendor_dep.dll.tmp", "Vendor_Lib.DLL.tmp", "vendor_base.dll.tmp")])
+
+    def test_build_ships_third_party_dlls_of_plugins(self):
+        project = self.new_project(self.root / "game", dynamic=["vendor_dep"], script=self.VENDOR_SCRIPT)
+        plugins = self.vendor_folder(project / "plugins")
+        release = project / "release"
+        self.assert_built(self.build(str(project)), release / "game.exe")
+        self.assert_vendor_release(release, plugins)
+
+    def test_build_refuses_a_module_whose_third_party_dll_is_missing(self):
+        mods = self.vendor_folder(self.root / "mods")
+        project = self.new_project(self.root / "game", dynamic=["vendor_dep"], script=self.VENDOR_SCRIPT)
+        release = project / "release"
+        self.assert_built(self.build(str(project), "--module-dir", str(mods)), release / "game.exe")
+        before = {p.name: p.read_bytes() for p in release.iterdir()}
+        module = mods / "zodiac_mod_vendor_dep.dll"
+        # A missing DLL the module imports, then one that DLL imports (found recursively): the build stops and keeps the earlier release.
+        for missing, needed in (("Vendor_Lib.DLL", "vendor_lib.dll"), ("vendor_base.dll", "vendor_base.dll")):
+            with self.subTest(missing=missing):
+                held = self.root / missing
+                (mods / missing).rename(held)
+                code, out, err = self.build(str(project), "--module-dir", str(mods))
+                held.rename(mods / missing)
+                self.assertEqual((code, err.splitlines()), (2, ['error: module "vendor_dep" needs "%s", which is not next to "%s"' % (needed, module)]), out)
+                self.assertEqual(out.splitlines()[-1], "Build failed: 1 error")
+                self.assertEqual({p.name: p.read_bytes() for p in release.iterdir()}, before)
 
     def test_build_static_plugin_needs_library_and_toolchain_stamp(self):
         project = self.new_project(self.root / "game", static=["gpl_static"])

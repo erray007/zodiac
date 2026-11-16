@@ -69,6 +69,21 @@ zodiac_add_module(no_entry SOURCES fixtures/modules/no_entry.cpp NO_STATIC OUTPU
 zodiac_add_module(ref_object SOURCES fixtures/modules/ref_object.cpp NO_STATIC OUTPUT_DIRECTORY "${ZODIAC_TEST_MODULE_DIR}")
 zodiac_add_module(cwd_probe SOURCES fixtures/modules/cwd_probe.cpp NO_STATIC OUTPUT_DIRECTORY "${ZODIAC_TEST_MODULE_DIR}")
 configure_file(fixtures/modules/corrupt_module.txt "${ZODIAC_TEST_MODULE_DIR}/zodiac_mod_corrupt${CMAKE_SHARED_LIBRARY_SUFFIX}" COPYONLY)
+if(WIN32)
+# Third-party DLLs of a dynamic module, in a folder of their own (zodiac build ships what sits next to a module DLL):
+# vendor_dep delay-imports vendor_lib.dll, which imports vendor_base.dll; neither of those two is a Zodiac module.
+set(ZODIAC_VENDOR_MODULE_DIR "${CMAKE_BINARY_DIR}/vendor_modules")
+foreach(vendor IN ITEMS vendor_base vendor_lib)
+add_library(${vendor} SHARED fixtures/modules/vendor_lib.cpp)
+set_target_properties(${vendor} PROPERTIES PREFIX "" OUTPUT_NAME ${vendor} RUNTIME_OUTPUT_DIRECTORY "${ZODIAC_VENDOR_MODULE_DIR}" ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/module_import_libs")
+zodiac_target_warnings(${vendor})
+endforeach()
+target_compile_definitions(vendor_base PRIVATE VENDOR_BASE)
+target_link_libraries(vendor_lib PRIVATE vendor_base)
+zodiac_add_module(vendor_dep SOURCES fixtures/modules/vendor_dep.cpp NO_STATIC OUTPUT_DIRECTORY "${ZODIAC_VENDOR_MODULE_DIR}")
+target_link_libraries(zodiac_mod_vendor_dep PRIVATE vendor_lib)
+target_link_options(zodiac_mod_vendor_dep PRIVATE -Wl,--delayload=vendor_lib.dll)
+endif()
 zodiac_add_test(test_project_file SOURCES test_project_file.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_text SOURCES test_text.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_module_registry SOURCES test_module_registry.cpp script_fixture.hpp LIBRARIES zodiac_core)
@@ -105,6 +120,12 @@ zodiac_add_test(test_build_report SOURCES test_build_report.cpp LIBRARIES zodiac
 zodiac_add_test(test_kit_layout SOURCES test_kit_layout.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_payload SOURCES test_payload.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_coff_object SOURCES test_coff_object.cpp LIBRARIES zodiac_core)
+# Portable: generates its PE images; on Windows it also reads the vendor_dep fixture module.
+zodiac_add_test(test_pe_imports SOURCES test_pe_imports.cpp LIBRARIES zodiac_core)
+if(WIN32)
+target_compile_definitions(test_pe_imports PRIVATE "ZODIAC_TEST_VENDOR_DEP=\"$<TARGET_FILE:zodiac_mod_vendor_dep>\"")
+add_dependencies(test_pe_imports zodiac_mod_vendor_dep)
+endif()
 # Portable: links the release stub's start-up path, not its Windows entry point (a separate archive member, see src/release/CMakeLists.txt).
 zodiac_add_test(test_release_stub SOURCES test_release_stub.cpp LIBRARIES zodiac_release_stub)
 target_compile_definitions(test_release_stub PRIVATE
@@ -160,7 +181,7 @@ set_tests_properties(cli_e2e PROPERTIES ENVIRONMENT "ZODIAC_EXE=$<TARGET_FILE:zo
 if(WIN32)
 # Builds real releases with the build tree's kit layout (zodiac_kit_stage); echo_args stands in for a signing tool.
 add_test(NAME build_e2e COMMAND ${Python3_EXECUTABLE} -I -m unittest discover -v -s ${CMAKE_CURRENT_SOURCE_DIR}/e2e -p "test_build.py")
-set_tests_properties(build_e2e PROPERTIES ENVIRONMENT "ZODIAC_EXE=$<TARGET_FILE:zodiac>;ZODIACW_EXE=$<TARGET_FILE:zodiacw>;ZODIAC_MODULE_DIR=${CMAKE_BINARY_DIR}/modules;ZODIAC_TEST_MODULE_DIR=${ZODIAC_TEST_MODULE_DIR};ZODIAC_VERSION=${PROJECT_VERSION};ZODIAC_ECHO_ARGS=$<TARGET_FILE:echo_args>;PYTHONIOENCODING=utf-8")
+set_tests_properties(build_e2e PROPERTIES ENVIRONMENT "ZODIAC_EXE=$<TARGET_FILE:zodiac>;ZODIACW_EXE=$<TARGET_FILE:zodiacw>;ZODIAC_MODULE_DIR=${CMAKE_BINARY_DIR}/modules;ZODIAC_TEST_MODULE_DIR=${ZODIAC_TEST_MODULE_DIR};ZODIAC_VERSION=${PROJECT_VERSION};ZODIAC_ECHO_ARGS=$<TARGET_FILE:echo_args>;ZODIAC_VENDOR_MODULE_DIR=${ZODIAC_VENDOR_MODULE_DIR};PYTHONIOENCODING=utf-8")
 # The installed kit: a fresh "cmake --install" into build/<preset>/kit-test/Zodiac (the folder is emptied first, so nothing stale survives),
 # then kit_e2e checks the layout and builds games with a copy of it in a folder of its own, with only the Windows system folders on PATH.
 set(ZODIAC_KIT_TEST_DIR "${CMAKE_BINARY_DIR}/kit-test/Zodiac")

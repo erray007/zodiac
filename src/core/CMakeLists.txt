@@ -20,6 +20,7 @@ target_link_libraries(${name} PUBLIC angelscript zodiac_plugin_abi ${CMAKE_DL_LI
 target_link_libraries(${name} PRIVATE tomlplusplus::tomlplusplus)
 zodiac_target_warnings(${name})
 endfunction()
-zodiac_core_target(zodiac_core ${ZODIAC_CORE_SOURCES})
+# pe_imports is for zodiac build only (shipping the DLLs dynamic modules import), so release executables' core leaves it out.
+zodiac_core_target(zodiac_core ${ZODIAC_CORE_SOURCES} pe_imports.cpp pe_imports.hpp)
 zodiac_core_target(zodiac_core_release ${ZODIAC_CORE_SOURCES} static_modules.cpp)
 target_compile_definitions(zodiac_core_release PUBLIC ZODIAC_RELEASE=1)
