@@ -268,8 +268,9 @@ included_.clear();
 return 0;
 }
 
-int ScriptRuntime::build(const Project& project,const ModuleCheck& check)
+int ScriptRuntime::build(const Project& project,const ModuleCheck& check,bool* compile_failed)
 {
+if(compile_failed)*compile_failed=false;
 if(const int prepared=prepare(project,{},check))return prepared;
 CScriptBuilder builder;
 builder.SetIncludeCallback(&RuntimeCallbacks::include,this);
@@ -277,8 +278,15 @@ if(builder.StartNewModule(engine_,kModuleName)<0){
 diagnostics_.report(ZODIAC_LOG_ERROR,"error: cannot create the script module");
 return 1;
 }
-if(add_section(project.main_script,main_section_,builder,main_section_,{})<0)return 1;
-if(builder.BuildModule()<0)return 1;
+if(add_section(project.main_script,main_section_,builder,main_section_,{})<0){
+if(compile_failed)*compile_failed=true;
+return 1;
+}
+if(const int built=builder.BuildModule();built<0){
+// A global initializer that failed at run time is no compile error; the engine has described it.
+if(compile_failed)*compile_failed=built!=asINIT_GLOBAL_VARS_FAILED;
+return 1;
+}
 return find_main();
 }
 

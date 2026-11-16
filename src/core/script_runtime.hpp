@@ -48,7 +48,9 @@ ScriptRuntime& operator=(const ScriptRuntime&)=delete;
 Host& host() noexcept{return host_;}
 using ModuleCheck=std::function<int(std::span<const zodiac_module_info* const> loaded)>;
 // check, when given, runs as in load_bytecode: after the modules are loaded and before any of them registers (zodiac build's static link checks).
-int build(const Project& project,const ModuleCheck& check={});
+// compile_failed, when given, is set false at the start and true only when the exit is 1 because the scripts did not compile (a section could not be added
+// or the build failed); it stays false for a missing or misdeclared main(), a failed global initializer, exit 0 and exit 2.
+int build(const Project& project,const ModuleCheck& check={},bool* compile_failed=nullptr);
 std::expected<std::string,std::string> save_bytecode(bool strip_debug_info) const;
 int load_bytecode(const Project& project,std::string_view bytecode,std::span<const zodiac_module_info* const> linked,const ModuleCheck& check={});
 // The loaded module names in registration order; invalidated by the next build or load_bytecode.

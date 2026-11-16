@@ -698,9 +698,10 @@ ScriptRuntime runtime(diagnostics,ModuleSearchPaths{options.module_dirs});
 if(const int code=enter_root(project->root,diagnostics))return code;
 std::vector<StaticLibrary> libraries;
 const ScriptRuntime::ModuleCheck check=[&project,&kit,&libraries,&diagnostics](std::span<const zodiac_module_info* const> loaded){return check_static_modules(*project,kit,loaded,libraries,diagnostics);};
-if(const int code=runtime.build(*project,check)){
+bool compile_failed=false;
+if(const int code=runtime.build(*project,check,&compile_failed)){
 // As in zodiac run: a lone script has the core only, so a call into a module is the likely cause of its compile error.
-if(code==1&&outcome.used_lone_file)diagnostics.report(ZODIAC_LOG_WARNING,lone_script_compile_note);
+if(compile_failed&&outcome.used_lone_file)diagnostics.report(ZODIAC_LOG_WARNING,lone_script_compile_note);
 return code;
 }
 return write_release(*project,runtime,kit,libraries,module_dlls,output,exe,diagnostics);

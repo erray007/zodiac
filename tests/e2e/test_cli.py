@@ -125,6 +125,15 @@ class CliTest(unittest.TestCase):
         code, out, err = zodiac("run", str(folder / "oyun.zs"), "--no-window", "--module-dir", MODULE_DIR)
         self.assertEqual((code, out, err.splitlines()[-1]), (1, "", LONE_FILE_NOTE))
 
+    def test_run_lone_script_without_main_fails_without_the_note(self):
+        folder = self.root / "lone_no_main"
+        folder.mkdir()
+        write(folder / "oyun.zs", "void other()\n{\n}\n")
+        code, out, err = zodiac("run", str(folder / "oyun.zs"), "--no-window", "--module-dir", MODULE_DIR)
+        self.assertEqual(code, 1, err)
+        self.assertIn("no main() function", err)
+        self.assertNotIn("note: no zodiac.toml", err)
+
     def test_run_compile_error_in_a_project_has_no_note(self):
         project = self.root / "game"
         self.make_project(project, [], 'void main()\n{\nexample_print("x");\n}\n')

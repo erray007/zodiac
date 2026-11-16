@@ -185,7 +185,7 @@ return false;
 
 // Loads, builds and runs the game; game_name is set once the project loads. The caller has checked the command line and opened --log-file.
 // A script without a project file (and without --config) runs with the core only; when its scripts fail to compile (exit 1), the warning-level
-// line lone_script_compile_note follows the compiler's errors.
+// line lone_script_compile_note follows the compiler's errors (not for a missing main() or a failing global initializer).
 int run_game(const Options& options,Diagnostics& diagnostics,std::string& game_name)
 {
 const fs::path directory=options.positional.empty()?fs::path("."):path_from_utf8(options.positional.front());
@@ -216,9 +216,10 @@ if(options.log_file.empty()&&!project->diagnostics.file.empty()&&!diagnostics.ad
 // before the project root becomes the working directory, which happens before any module registers or script code runs, exactly as in a release.
 ScriptRuntime runtime(diagnostics,ModuleSearchPaths{dirs});
 if(const int code=enter_root(project->root,diagnostics);code!=0)return code;
-if(const int code=runtime.build(*project);code!=0){
+bool compile_failed=false;
+if(const int code=runtime.build(*project,{},&compile_failed);code!=0){
 // A lone script has the core only (load_project_for_script), so a call into a module is the likely cause of its compile error.
-if(code==1&&project->file.empty())diagnostics.report(ZODIAC_LOG_WARNING,lone_script_compile_note);
+if(compile_failed&&project->file.empty())diagnostics.report(ZODIAC_LOG_WARNING,lone_script_compile_note);
 return code;
 }
 return exit_code_of(runtime.run(),diagnostics);

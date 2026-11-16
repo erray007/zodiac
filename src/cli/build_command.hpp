@@ -7,7 +7,7 @@
 //    script). A .zs script with no zodiac.toml in its folder or above builds alone, as zodiac run runs it (load_project_for_script: root its folder,
 //    name its stem, no modules at all, only the core; nothing in module_dirs is loaded), after the warning "warning: no zodiac.toml; only the core
 //    is available (create a project file to add modules)". When its scripts then fail to compile (step 3, exit 1), lone_script_compile_note
-//    (cli/build_report.hpp) follows the compiler's errors at warning level.
+//    (cli/build_report.hpp) follows the compiler's errors at warning level; a missing main() or a failing global initializer draws no note.
 //    A folder (or another file) with no zodiac.toml: "error: zodiac.toml not found; create a project with zodiac new" (exit 2). Project file errors exit 2.
 // 2. The modules load as in zodiac run (module_dirs, then <root>/plugins). Before any registers, every static module is checked:
 //    a module whose link modes lack ZODIAC_LINK_STATIC is refused ("error: module "<name>" (<license>) cannot be linked statically; list it under dynamic");
