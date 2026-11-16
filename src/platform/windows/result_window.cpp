@@ -304,7 +304,8 @@ SendMessageW(hwnd,WM_SETICON,ICON_BIG,reinterpret_cast<LPARAM>(icon));
 SendMessageW(hwnd,WM_SETICON,ICON_SMALL,reinterpret_cast<LPARAM>(icon));
 // Creation order is z-order and tab order: the label comes right before the edit it names.
 window.label=create_control(hwnd,L"STATIC",L"&Build output",SS_LEFT,0,id_label);
-window.output=create_control(hwnd,L"EDIT",L"",ES_MULTILINE|ES_READONLY|WS_VSCROLL|WS_TABSTOP,WS_EX_CLIENTEDGE,id_output);
+// No word wrap (ES_AUTOHSCROLL|WS_HSCROLL): every diagnostic stays one line, so each arrow press reads one whole message.
+window.output=create_control(hwnd,L"EDIT",L"",ES_MULTILINE|ES_READONLY|ES_AUTOHSCROLL|WS_VSCROLL|WS_HSCROLL|WS_TABSTOP,WS_EX_CLIENTEDGE,id_output);
 window.copy=create_control(hwnd,L"BUTTON",L"&Copy all",BS_PUSHBUTTON|WS_TABSTOP,0,id_copy);
 if(window.folder)window.open=create_control(hwnd,L"BUTTON",L"&Open output folder",BS_PUSHBUTTON|WS_TABSTOP,0,id_open);
 // DM_SETDEFID below makes Close the default button (BS_DEFPUSHBUTTON, which screen readers report as "default").
@@ -413,7 +414,7 @@ private:
 bool initialized_;
 };
 
-void run_window(Window& window)
+void run_window(Window& window,bool succeeded)
 {
 DialogTemplate dialog_template{};
 dialog_template.header.style=WS_POPUP|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_CLIPCHILDREN;
@@ -427,7 +428,16 @@ return;
 ShowWindow(dialog,SW_SHOWNORMAL);
 // The first ShowWindow of a process may take the starter's show state; a window that would block unseen is shown anyway.
 if(!IsWindowVisible(dialog))ShowWindow(dialog,SW_SHOWNORMAL);
-SetForegroundWindow(dialog);
+// The foreground lock can refuse (the user kept working in another program during the build): a sound and a flashing taskbar
+// button then make the window discoverable.
+if(!SetForegroundWindow(dialog)||GetForegroundWindow()!=dialog){
+MessageBeep(succeeded?MB_OK:MB_ICONERROR);
+FLASHWINFO flash{};
+flash.cbSize=sizeof flash;
+flash.hwnd=dialog;
+flash.dwFlags=FLASHW_ALL|FLASHW_TIMERNOFG;
+FlashWindowEx(&flash);
+}
 SendMessageW(dialog,WM_NEXTDLGCTL,reinterpret_cast<WPARAM>(window.output),TRUE);
 SendMessageW(window.output,EM_SETSEL,0,0);
 SendMessageW(window.output,EM_SCROLLCARET,0,0);
@@ -460,7 +470,7 @@ if(!GetUserObjectInformationW(station,UOI_FLAGS,&flags,sizeof flags,nullptr))ret
 return (flags.dwFlags&WSF_VISIBLE)!=0;
 }
 
-void show_result_window(std::string_view title,std::string_view text,const std::filesystem::path* output_folder)
+void show_result_window(std::string_view title,std::string_view text,bool succeeded,const std::filesystem::path* output_folder)
 {
 Window window;
 window.title=widen(title);
@@ -470,7 +480,7 @@ window.api=load_dpi_api();
 const ComScope com;
 {
 const ThreadDpiScope dpi(window.api);
-run_window(window);
+run_window(window,succeeded);
 }
 free_font(window);
 }

@@ -474,7 +474,7 @@ if(options.no_window||!platform::has_interactive_desktop())return code;
 // A project that did not load leaves the cwd as it was, so the target still resolves as given.
 const std::string name=outcome.game_name.empty()?target_name(options.target):outcome.game_name;
 const std::filesystem::path folder=outcome.exe.parent_path();
-platform::show_result_window("Zodiac build - "+name,report.text(succeeded,outcome.exe),succeeded?&folder:nullptr);
+platform::show_result_window("Zodiac build - "+name,report.text(succeeded,outcome.exe),succeeded,succeeded?&folder:nullptr);
 return code;
 }
 }

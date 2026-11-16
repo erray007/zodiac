@@ -7,7 +7,7 @@ bool has_interactive_desktop() noexcept
 return false;
 }
 
-void show_result_window(std::string_view,std::string_view,const std::filesystem::path*)
+void show_result_window(std::string_view,std::string_view,bool,const std::filesystem::path*)
 {
 }
 }

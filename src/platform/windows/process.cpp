@@ -1,6 +1,7 @@
 // The Windows entry points of the command line (see platform/process.hpp): wmain for zodiac.exe (console subsystem) and, when compiled with
 // ZODIAC_GUI_ENTRY, wWinMain for zodiacw.exe (GUI subsystem, linked with -mwindows -municode), which attaches to the starter's console when it
 // has one, so a zodiacw started from a terminal still reports there; started from Explorer it has none, and every console write is dropped.
+// Terminals do not wait for a GUI-subsystem program, so zodiacw's console output appears after the prompt has returned (use zodiac.exe there).
 // Both convert the arguments (without the program name) to UTF-8 and call zodiac::cli::run.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
