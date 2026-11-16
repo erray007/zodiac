@@ -138,7 +138,8 @@ jobs:
           ZODIAC_SIGNING_PASSWORD: ${{ secrets.ZODIAC_SIGNING_PASSWORD }}
         run: .tools/cmake/bin/cmake --build --preset windows-release --target zodiac_installer
       - name: Show package sizes
-        run: Get-ChildItem dist -File | ForEach-Object { "$($_.Name): $($_.Length) bytes" }
+        run: |
+          Get-ChildItem dist -File | ForEach-Object { "$($_.Name): $($_.Length) bytes" }
       - name: Upload the kit
         uses: actions/upload-artifact@v4
         with:
