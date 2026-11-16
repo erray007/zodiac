@@ -53,10 +53,11 @@ Name: "shortcuts"; Description: "Add Start menu shortcuts to the Zodiac manual a
 
 [InstallDelete]
 ; An upgrade replaces the kit's own folders, so no file of an older version (an old module, library or DLL) survives in them.
-Type: filesandordirs; Name: "{app}\bin"
-Type: filesandordirs; Name: "{app}\lib"
-Type: filesandordirs; Name: "{app}\modules"
-Type: filesandordirs; Name: "{app}\include"
+; Only over an earlier Zodiac install in the same folder: a first install into an existing folder never deletes anything.
+Type: filesandordirs; Name: "{app}\bin"; Check: IsUpgradeInPlace
+Type: filesandordirs; Name: "{app}\lib"; Check: IsUpgradeInPlace
+Type: filesandordirs; Name: "{app}\modules"; Check: IsUpgradeInPlace
+Type: filesandordirs; Name: "{app}\include"; Check: IsUpgradeInPlace
 
 [Files]
 Source: "{#KitDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -102,6 +103,12 @@ end;
 function SamePathEntry(const A, B: String): Boolean;
 begin
   Result := CompareText(RemoveBackslashUnlessRoot(Trim(A)), RemoveBackslashUnlessRoot(Trim(B))) = 0;
+end;
+
+// True when this setup upgrades an earlier Zodiac install (same AppId) in the folder being installed to.
+function IsUpgradeInPlace: Boolean;
+begin
+  Result := (WizardForm.PrevAppDir <> '') and SamePathEntry(WizardForm.PrevAppDir, ExpandConstant('{app}'));
 end;
 
 // Rebuilds Path without every entry equal to Dir, keeping every other entry (even an empty one) exactly as it was, in order.
