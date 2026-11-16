@@ -58,7 +58,7 @@ class KitTest(unittest.TestCase):
         self.assertTrue((KIT / "docs").is_dir())
         self.assertTrue((KIT / "LICENSE").is_file())
         licenses = (KIT / "THIRD_PARTY_LICENSES").read_text(encoding="utf-8")
-        for text in ("AngelCode Scripting Library", "Mark Gillard", "Apache License", "LLVM Exceptions", "mingw-w64 project", "Henry Spencer", "Todd C. Miller", "Yann Collet", "UNICODE, INC. LICENSE AGREEMENT", "Copyright © 1991-2015 Unicode, Inc."):
+        for text in ("AngelCode Scripting Library", "Mark Gillard", "Apache License", "LLVM Exceptions", "mingw-w64 project", "Henry Spencer", "Todd C. Miller", "Yann Collet", "UNICODE, INC. LICENSE AGREEMENT", "Copyright © 1991-2015 Unicode, Inc.", "UNICODE LICENSE V3", "Unicode Character Database 16.0.0"):
             self.assertIn(text, licenses)
 
     def test_modules_are_the_shipped_ones(self):

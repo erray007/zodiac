@@ -26,7 +26,7 @@ jobs:
           path: .deps
           key: deps-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake') }}
       - name: Bootstrap unit tests
-        run: python -I -m unittest discover -v -s tools -p "test_*.py"
+        run: python -I -m unittest discover -v -s tools -p "test_*.py" && python -I tools/gen_unicode.py --check
       - name: Bootstrap
         run: python bootstrap.py
       - name: Build and test
@@ -67,7 +67,7 @@ jobs:
       - name: Show compiler version
         run: clang-18 --version
       - name: Bootstrap unit tests
-        run: python -I -m unittest discover -v -s tools -p "test_*.py"
+        run: python -I -m unittest discover -v -s tools -p "test_*.py" && python -I tools/gen_unicode.py --check
       - name: Bootstrap
         run: python bootstrap.py
       - name: Build and test

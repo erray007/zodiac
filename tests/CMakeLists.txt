@@ -88,6 +88,9 @@ target_link_libraries(zodiac_mod_vendor_direct PRIVATE vendor_lib)
 endif()
 zodiac_add_test(test_project_file SOURCES test_project_file.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_text SOURCES test_text.cpp LIBRARIES zodiac_core)
+# NFC vectors are generated from the pinned NormalizationTest.txt by tools/gen_unicode.py and committed.
+zodiac_add_test(test_unicode SOURCES test_unicode.cpp LIBRARIES zodiac_core)
+target_compile_definitions(test_unicode PRIVATE "ZODIAC_TEST_UNICODE_VECTORS=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/unicode/nfc_vectors.txt\"")
 zodiac_add_test(test_module_registry SOURCES test_module_registry.cpp script_fixture.hpp LIBRARIES zodiac_core)
 target_compile_definitions(test_module_registry PRIVATE
 "ZODIAC_TEST_MODULE_DIR=\"${CMAKE_BINARY_DIR}/modules\""
