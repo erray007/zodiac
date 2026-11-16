@@ -1,14 +1,17 @@
-# zodiac_add_module(<name> SOURCES <files...> [DEPENDS <module names...>] [DEFINITIONS <defs...>] [OUTPUT_DIRECTORY <dir>] [NO_STATIC])
+# zodiac_add_module(<name> SOURCES <files...> [DEPENDS <module names...>] [DEFINITIONS <defs...>] [OUTPUT_DIRECTORY <dir>] [NO_STATIC] [NO_KIT])
 #
 # Creates zodiac_mod_<name>: a SHARED library whose file is zodiac_mod_<name><shared suffix> (no "lib" prefix, so the
 # name is identical on every platform apart from the extension), written to ${CMAKE_BINARY_DIR}/modules by default.
-# Also creates zodiac_mod_<name>_static (STATIC, compiled with ZODIAC_MODULE_STATIC and ZODIAC_MODULE_ID=<name>) for hosts that link modules in:
-# its ZODIAC_DEFINE_MODULE emits the record zodiac_static_module_<name>, which the final link must force in with -u zodiac_static_module_<name>.
-# Every static variant's name is appended to the global property ZODIAC_STATIC_MODULES; zodiac_kit_stage stages them as modules/static/zodiac_mod_<name>.a.
+# Also creates zodiac_mod_<name>_static (STATIC, compiled with ZODIAC_MODULE_STATIC, ZODIAC_MODULE_ID=<name> and
+# ZODIAC_MODULE_RECORD=zodiac_static_module_<name>) for hosts that link modules in: its ZODIAC_DEFINE_MODULE emits the record
+# zodiac_static_module_<name> (named by ZODIAC_MODULE_RECORD, so a <name> that is also a macro, like windows.h's near, keeps
+# its name), which the final link must force in with -u zodiac_static_module_<name>.
+# Every static variant's name is appended to the global property ZODIAC_STATIC_MODULES unless NO_KIT is given (test
+# fixtures); zodiac_kit_stage stages them as modules/static/zodiac_mod_<name>.a.
 # DEPENDS names other zodiac modules: it only orders the builds, the runtime dependency comes from the module info.
 include_guard(GLOBAL)
 function(zodiac_add_module name)
-cmake_parse_arguments(ZM "NO_STATIC" "OUTPUT_DIRECTORY" "SOURCES;DEPENDS;DEFINITIONS" ${ARGN})
+cmake_parse_arguments(ZM "NO_STATIC;NO_KIT" "OUTPUT_DIRECTORY" "SOURCES;DEPENDS;DEFINITIONS" ${ARGN})
 if(NOT ZM_SOURCES)
 message(FATAL_ERROR "zodiac_add_module(${name}): SOURCES is required")
 endif()
@@ -38,12 +41,14 @@ if(NOT ZM_NO_STATIC)
 set(static ${shared}_static)
 add_library(${static} STATIC ${ZM_SOURCES})
 set_target_properties(${static} PROPERTIES POSITION_INDEPENDENT_CODE ON ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/module_import_libs")
-target_compile_definitions(${static} PRIVATE ZODIAC_MODULE_STATIC ZODIAC_MODULE_ID=${name} ${ZM_DEFINITIONS})
+target_compile_definitions(${static} PRIVATE ZODIAC_MODULE_STATIC ZODIAC_MODULE_ID=${name} ZODIAC_MODULE_RECORD=zodiac_static_module_${name} ${ZM_DEFINITIONS})
 target_link_libraries(${static} PUBLIC zodiac_plugin_abi)
 zodiac_target_warnings(${static})
 foreach(dependency IN LISTS ZM_DEPENDS)
 add_dependencies(${static} zodiac_mod_${dependency}_static)
 endforeach()
+if(NOT ZM_NO_KIT)
 set_property(GLOBAL APPEND PROPERTY ZODIAC_STATIC_MODULES ${name})
+endif()
 endif()
 endfunction()

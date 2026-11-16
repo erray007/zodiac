@@ -14,6 +14,7 @@ Build rules (ZODIAC_DEFINE_MODULE):
 - Shared builds (ZODIAC_MODULE_STATIC not defined) export zodiac_module_get_info, which returns &info_variable.
 - Static builds define ZODIAC_MODULE_STATIC and ZODIAC_MODULE_ID=<module name>; ZODIAC_MODULE_ID is required (#error otherwise), and zodiac_add_module passes both to the _static target.
 - A static build exports nothing. ZODIAC_DEFINE_MODULE defines one record instead: const zodiac_module_info* const zodiac_static_module_<ZODIAC_MODULE_ID>, with C linkage, kept by the compiler (used), pointing at info_variable, in the linker section ZODIAC_STATIC_MODULE_SECTION (".zodmod$m" on Windows, "zodiac_modules" elsewhere).
+- The record's name is pasted from ZODIAC_MODULE_ID after macro expansion, so a module named like a macro of a header the source includes first (windows.h defines near, far and interface, and with some SDKs small) would get the wrong name. zodiac_add_module therefore also passes ZODIAC_MODULE_RECORD=zodiac_static_module_<name>, the finished name as one identifier, and ZODIAC_DEFINE_MODULE uses it when it is defined. Plugin authors who build a static module without zodiac_add_module should define it the same way.
 - Nothing references the record, so the final link forces it in by name (-u zodiac_static_module_<name>) and the engine finds it by walking that section.
 - info_variable must have static storage duration so the record has a constant initializer. Static builds need a GCC-compatible compiler (clang or gcc) for the section attribute.
 
@@ -126,8 +127,14 @@ void (*log)(zodiac_host*,zodiac_log_level level,const char* message);
 #endif
 #define ZODIAC_STATIC_MODULE_RECORD_JOIN(id) zodiac_static_module_##id
 #define ZODIAC_STATIC_MODULE_RECORD(id) ZODIAC_STATIC_MODULE_RECORD_JOIN(id)
+/* The record's name: ZODIAC_MODULE_RECORD when defined (one finished identifier, safe from macros), otherwise built from ZODIAC_MODULE_ID */
+#if defined(ZODIAC_MODULE_RECORD)
+#define ZODIAC_STATIC_MODULE_RECORD_NAME ZODIAC_MODULE_RECORD
+#else
+#define ZODIAC_STATIC_MODULE_RECORD_NAME ZODIAC_STATIC_MODULE_RECORD(ZODIAC_MODULE_ID)
+#endif
 #define ZODIAC_DEFINE_MODULE(info_variable) \
-ZODIAC_LINKAGE_C __attribute__((used,section(ZODIAC_STATIC_MODULE_SECTION))) const zodiac_module_info* const ZODIAC_STATIC_MODULE_RECORD(ZODIAC_MODULE_ID)=&(info_variable);
+ZODIAC_LINKAGE_C __attribute__((used,section(ZODIAC_STATIC_MODULE_SECTION))) const zodiac_module_info* const ZODIAC_STATIC_MODULE_RECORD_NAME=&(info_variable);
 #else
 #define ZODIAC_DEFINE_MODULE(info_variable) \
 ZODIAC_LINKAGE_C ZODIAC_EXPORT const zodiac_module_info* zodiac_module_get_info(void) \

@@ -129,9 +129,11 @@ target_compile_definitions(test_plugin_header_c_static PRIVATE ZODIAC_MODULE_STA
 target_link_libraries(test_plugin_header_c_static PRIVATE zodiac_plugin_abi)
 if(WIN32)
 # The record walk relies on COFF grouped sections (.zodmod$a/$m/$z); ELF support comes with the Linux release core.
-zodiac_add_test(test_static_modules SOURCES test_static_modules.cpp ${PROJECT_SOURCE_DIR}/src/core/static_modules.cpp ${PROJECT_SOURCE_DIR}/src/core/static_modules.hpp LIBRARIES zodiac_mod_example_static)
+# "near" is a windows.h macro: the fixture proves its record keeps the name zodiac_static_module_near. NO_KIT keeps it out of the kit.
+zodiac_add_module(near SOURCES fixtures/modules/near.cpp NO_KIT OUTPUT_DIRECTORY "${ZODIAC_TEST_MODULE_DIR}")
+zodiac_add_test(test_static_modules SOURCES test_static_modules.cpp ${PROJECT_SOURCE_DIR}/src/core/static_modules.cpp ${PROJECT_SOURCE_DIR}/src/core/static_modules.hpp LIBRARIES zodiac_mod_example_static zodiac_mod_near_static)
 target_include_directories(test_static_modules PRIVATE ${PROJECT_SOURCE_DIR}/src)
-target_link_options(test_static_modules PRIVATE -Wl,-u,zodiac_static_module_example)
+target_link_options(test_static_modules PRIVATE -Wl,-u,zodiac_static_module_example -Wl,-u,zodiac_static_module_near)
 else()
 # Compile-only: keeps static_modules.cpp building on non-Windows until its record walk exists there.
 add_library(test_static_modules_compile OBJECT ${PROJECT_SOURCE_DIR}/src/core/static_modules.cpp)
