@@ -95,3 +95,22 @@
 - [ ] **Step 3: Implement**; README gets one paragraph on third-party DLLs and their licences.
 - [ ] **Step 4: Run tests to verify they pass**, full suite once; push; CI green.
 - [ ] **Step 5: Commit** `git commit -m "Copy the third-party DLLs that dynamic modules import"`
+
+### Task 5: No project file means core only
+
+**Files:**
+- Modify: `src/core/project_file.hpp`, `src/core/project_file.cpp`, `src/cli/main.cpp`, `src/cli/build_command.cpp`, `src/cli/build_command.hpp`, `README.md`, `docs/superpowers/specs/2026-11-16-zodiac-release-and-kit-design.md` (one line in 8.5 pointing at the usability spec item 8)
+- Test: `tests/test_project_file.cpp`, `tests/e2e/test_cli.py`, `tests/e2e/test_build.py`
+
+**Interfaces:**
+- `load_project_for_script` without a root returns a Project with empty `static_modules` and `dynamic_modules` (its `installed_modules` parameter is removed; callers updated).
+- Lone build: no module split, no installed-module scan; BuildOutcome module lists are empty; exact warning `warning: no zodiac.toml; only the core is available (create a project file to add modules)`.
+- After a failed compile in lone mode (run or build), report one extra line at warning level so it is not counted as an error: `note: no zodiac.toml; only the core is available, so module functions are not declared (create a project file to add modules)`.
+- The create action writes `project_file_text(<stem>, <script>, {}, {})`.
+- Remove the lone-only code paths that became dead (link-mode probing of installed modules, `split_lone_modules`, `installed_module_names` if nothing else uses it — keep `zodiac modules` listing intact).
+
+- [ ] **Step 1: Write the failing tests** — unit: lone Project has empty module lists. e2e: lone `run` of a core-only script works; lone `run` calling `example_print` fails with the compile error followed by the exact note line, exit 1; lone `build` of a core-only script succeeds with the exact warning and the exe contains no `example_echo`; lone `build` calling an example function fails with the note; the Create action writes empty lists (unit). Replace the Task 1 lone-build tests that expected installed modules.
+- [ ] **Step 2: Run to verify they fail.**
+- [ ] **Step 3: Implement**, removing the dead code.
+- [ ] **Step 4: Run tests to verify they pass**, full suite once; push; CI green.
+- [ ] **Step 5: Commit** `git commit -m "Load only the core when there is no project file"`

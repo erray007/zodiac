@@ -20,6 +20,13 @@ The owner tried the kit: right-click "Build with Zodiac" on a lone `.zs` file st
 6. **Modules that cannot be linked statically in a lone build** (approved after the first review). A lone build links a module dynamically when its link modes lack static or it has no static library; the generated `zodiac.toml` lists those under `dynamic`.
 7. **Third-party DLLs of dynamic modules ship automatically** (approved). Closed libraries such as BASS or FMOD exist only as DLLs. For every DLL `zodiac build` copies (dynamic modules and plugins), it reads the DLL's import table (and delay-import table) and copies each imported DLL found in the same folder as that module DLL, recursively for those DLLs too. Windows system DLLs (anything not next to the module, e.g. `KERNEL32.dll`, `api-ms-win-*`) are never copied. An imported DLL that is neither next to the module nor a system DLL stops the build: `error: module "<name>" needs "<dll>", which is not next to "<module dll path>"` (exit 2). Copied third-party DLLs are signed like the module DLLs when signing is configured. Licensing of such libraries (e.g. BASS/FMOD commercial terms) stays the game developer's responsibility; the README says so.
 
+8. **No project file means core only (supersedes items 1 and 6, and plan 3 spec 8.5's "every installed module").** The owner found the flaw: Zodiac will ship several audio engines that register the same names, so loading every installed module would make them collide. Without a `zodiac.toml` (and without `--config`), `zodiac run <file.zs>` and `zodiac build <file.zs>` load no modules at all, only the core.
+   - The build warning becomes `warning: no zodiac.toml; only the core is available (create a project file to add modules)`.
+   - When the compile fails in this mode, one extra line follows the compiler errors: `note: no zodiac.toml; only the core is available, so module functions are not declared (create a project file to add modules)`. In `run` and `build` alike.
+   - `Create project file` writes a `zodiac.toml` with empty `static` and `dynamic` lists.
+   - The lone-build static/dynamic split of item 6 is removed.
+   - Design note for the audio plan: audio engine modules share one API so a game switches engine by changing one line of `zodiac.toml`.
+
 ## Left to the builder
 
 - Where the window code is shared between build and run (one function for both).
