@@ -160,10 +160,21 @@ std::unordered_set<char32_t> part1;
 std::size_t rows=0;
 std::size_t failures=0;
 int part=-1;
-const auto expect=[&](std::u32string_view source,const std::u32string& wanted){
+// Each vector row is also checked behind NFC prefixes, so nfc() takes its prefix-copy and restart path: nfc(P+source)==P+wanted.
+// Both prefixes end in U+4E2D, which composes with nothing. The second adds two U+0334 (ccc 1, the lowest class, NFC_QC=Yes):
+// no mark of a row reorders before them and none composes across them, but a row failing the quick check makes nfc() back up over
+// both marks to U+4E2D, copying only the "x" before it.
+const std::u32string_view prefixes[]={U"x中",U"x中̴̴"};
+for(const std::u32string_view prefix:prefixes)REQUIRE(zodiac::unicode::quick_check_nfc(prefix));
+const auto check=[&](const std::u32string& source,const std::u32string& wanted){
 const std::u32string got=zodiac::unicode::nfc(source);
 if(got==wanted)return;
 if(++failures<=10)MESSAGE(doctest::String(("nfc("+hex(source)+") is "+hex(got)+", expected "+hex(wanted)).c_str()));
+};
+const auto expect=[&](std::u32string_view source,const std::u32string& wanted,bool with_prefixes=true){
+check(std::u32string(source),wanted);
+if(!with_prefixes)return;
+for(const std::u32string_view prefix:prefixes)check(std::u32string(prefix)+std::u32string(source),std::u32string(prefix)+wanted);
 };
 std::string line;
 while(std::getline(file,line)){
@@ -209,7 +220,7 @@ CHECK(rows==19965);
 for(char32_t c=0;c<=0x10FFFF;++c){
 if((c>=0xD800&&c<=0xDFFF)||part1.contains(c))continue;
 const std::u32string single(1,c);
-expect(single,single);
+expect(single,single,false);
 }
 CHECK(failures==0);
 }

@@ -1,4 +1,5 @@
 import contextlib
+import http.client
 import io
 import shutil
 import sys
@@ -95,6 +96,25 @@ class GenUnicodeTests(unittest.TestCase):
             self.assertEqual(downloaded.call_args_list[0].args[0], gen_unicode.BASE_URL + next(iter(gen_unicode.PINNED)))
             quiet(gen_unicode.fetch_all, data)
             self.assertEqual(downloaded.call_count, len(gen_unicode.PINNED))
+
+    def test_download_retries_truncated_responses(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.side_effect = [b"data", b""]
+        attempts = [http.client.IncompleteRead(b"partial"), ConnectionResetError("reset"), response]
+        dest = self.tmp / "file.txt"
+        with mock.patch.object(gen_unicode.urllib.request, "urlopen", side_effect=attempts) as opened, mock.patch.object(gen_unicode.time, "sleep"):
+            gen_unicode.download("https://example.invalid/file.txt", dest)
+        self.assertEqual(opened.call_count, 3)
+        self.assertEqual(dest.read_bytes(), b"data")
+
+    def test_a_download_failing_every_attempt_exits_2(self):
+        failures = [http.client.IncompleteRead(b"partial")] * gen_unicode.DOWNLOAD_ATTEMPTS
+        with mock.patch.object(gen_unicode.urllib.request, "urlopen", side_effect=failures) as opened, mock.patch.object(gen_unicode.time, "sleep"):
+            code = quiet(gen_unicode.main, ["--data", str(self.tmp / "data"), "--root", str(self.tmp / "out")])
+        self.assertEqual(code, 2)
+        self.assertEqual(opened.call_count, gen_unicode.DOWNLOAD_ATTEMPTS)
+        self.assertFalse((self.tmp / "out").exists())
+        self.assertEqual(list((self.tmp / "data").iterdir()), [])
 
     def test_two_level_tables_round_trip(self):
         values = [0] * 300 + [5, 6, 7] * 100 + [0] * 1000 + [70000]

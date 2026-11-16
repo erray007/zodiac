@@ -25,6 +25,12 @@ jobs:
         with:
           path: .deps
           key: deps-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake') }}
+      # The .tools cache is only saved on a key miss, so the UCD files get a cache of their own; gen_unicode.py still verifies each SHA-256.
+      - name: Cache Unicode data
+        uses: actions/cache@v4
+        with:
+          path: .tools/unicode
+          key: ucd-16.0.0-${{ hashFiles('tools/gen_unicode.py') }}
       - name: Bootstrap unit tests
         run: python -I -m unittest discover -v -s tools -p "test_*.py" && python -I tools/gen_unicode.py --check
       - name: Bootstrap
@@ -66,6 +72,12 @@ jobs:
           echo "CXX=clang++-18" >> "$GITHUB_ENV"
       - name: Show compiler version
         run: clang-18 --version
+      # The .tools cache is only saved on a key miss, so the UCD files get a cache of their own; gen_unicode.py still verifies each SHA-256.
+      - name: Cache Unicode data
+        uses: actions/cache@v4
+        with:
+          path: .tools/unicode
+          key: ucd-16.0.0-${{ hashFiles('tools/gen_unicode.py') }}
       - name: Bootstrap unit tests
         run: python -I -m unittest discover -v -s tools -p "test_*.py" && python -I tools/gen_unicode.py --check
       - name: Bootstrap

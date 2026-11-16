@@ -3,6 +3,7 @@
 #include <core/types/unicode_tables.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 
 namespace zodiac::unicode {
 namespace {
@@ -165,6 +166,8 @@ return c+static_cast<char32_t>(case_delta(c).upper);
 }
 bool is_whitespace_table(char32_t c) noexcept
 {
+// One comparison for everything above the last range (U+3000): most CJK, Hangul and supplementary text.
+if(c>t::whitespace_ranges[std::size(t::whitespace_ranges)-1].last)return false;
 for(const t::CodePointRange& range:t::whitespace_ranges){
 if(c<range.first)return false;
 if(c<=range.last)return true;

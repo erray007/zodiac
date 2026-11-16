@@ -14,6 +14,7 @@ Exit codes: 0 success, 1 --check found a difference, 2 a download failed or did 
 
 import argparse
 import hashlib
+import http.client
 import sys
 import time
 import urllib.request
@@ -87,7 +88,8 @@ def download(url: str, dest: Path) -> None:
                     if not chunk:
                         return
                     out.write(chunk)
-        except OSError as error:
+        except (OSError, http.client.HTTPException) as error:
+            # HTTPException covers truncated responses (IncompleteRead); a truncation that raises nothing fails the pin instead.
             if attempt == DOWNLOAD_ATTEMPTS:
                 raise DownloadError(f"Could not download {url}: {error}") from error
             time.sleep(attempt)
@@ -98,6 +100,7 @@ def fetch(name: str, data_dir: Path) -> Path:
     path = data_dir / name
     expected = PINNED[name].lower()
     if path.is_file() and sha256_of(path) == expected:
+        say(f"Using cached {path}")
         return path
     data_dir.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(name + ".part")
@@ -301,6 +304,8 @@ def build_normalization(unicode_data: dict, exclusions_text: str, derived_text: 
             offset = len(composition_seconds)
             composition_seconds.extend(second for second, _ in pairs)
             composition_results.extend(result for _, result in pairs)
+            # composition is a uint16: 6 bits of count leave 10 bits of offset, so at most 1024 composition pairs in all
+            # (Unicode 16 has 961). Widen NormMapping::composition, or move bits from the count, when this fires.
             assert len(pairs) < (1 << COMPOSITION_COUNT_BITS) and offset < (1 << (16 - COMPOSITION_COUNT_BITS))
             composition = offset << COMPOSITION_COUNT_BITS | len(pairs)
         indices[code_point] = records.setdefault((decomposition, composition), len(records))
