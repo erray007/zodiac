@@ -26,7 +26,7 @@ jobs:
           path: .deps
           key: deps-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake') }}
       - name: Bootstrap unit tests
-        run: python -I -m unittest discover -v -s tools -p "test_bootstrap.py"
+        run: python -I -m unittest discover -v -s tools -p "test_*.py"
       - name: Bootstrap
         run: python bootstrap.py
       - name: Build and test
@@ -67,7 +67,7 @@ jobs:
       - name: Show compiler version
         run: clang-18 --version
       - name: Bootstrap unit tests
-        run: python -I -m unittest discover -v -s tools -p "test_bootstrap.py"
+        run: python -I -m unittest discover -v -s tools -p "test_*.py"
       - name: Bootstrap
         run: python bootstrap.py
       - name: Build and test
@@ -81,3 +81,184 @@ jobs:
             build/**/Testing/**/*.log
             build/**/Testing/**/*.xml
           if-no-files-found: ignore
+
+  # The kit as users get it: an optimized (windows-release) build, tested, packaged as the portable zip and the setup wizard.
+  kit-windows:
+    needs: windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache toolchain
+        uses: actions/cache@v4
+        with:
+          path: .tools
+          key: tools-windows-${{ hashFiles('tools/toolchain.json') }}
+      - name: Cache dependency downloads
+        uses: actions/cache@v4
+        with:
+          path: .deps
+          key: deps-${{ runner.os }}-release-${{ hashFiles('cmake/Dependencies.cmake') }}
+      - name: Bootstrap
+        run: python bootstrap.py
+      - name: Build and test the release preset
+        run: .tools/cmake/bin/cmake --workflow --preset windows-release
+      # Secrets cannot be used in "if:", so this step turns "the certificate secret is set" into an environment flag.
+      - name: Check for a signing certificate
+        env:
+          ZODIAC_SIGNING_CERT: ${{ secrets.ZODIAC_SIGNING_CERT }}
+        run: |
+          if ($env:ZODIAC_SIGNING_CERT) {
+            "ZODIAC_SIGNING=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            "A signing certificate is set: the setup will be signed."
+          } else {
+            "No signing certificate is set: the setup will be unsigned."
+          }
+      # ZODIAC_SIGNING_CERT is a base64 PFX file, ZODIAC_SIGNING_PASSWORD its password. The password stays in the packaging step's environment;
+      # the sign command Inno Setup runs (ZODIAC_SIGN_TOOL, see tools/build_installer.py) is a script that reads it from there.
+      - name: Prepare signing
+        if: env.ZODIAC_SIGNING == '1'
+        env:
+          ZODIAC_SIGNING_CERT: ${{ secrets.ZODIAC_SIGNING_CERT }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'zodiac-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:ZODIAC_SIGNING_CERT))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
+          if (-not $signtool) { throw "signtool.exe was not found" }
+          $script = Join-Path $env:RUNNER_TEMP 'zodiac-sign.cmd'
+          "@`"$($signtool.FullName)`" sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f `"$pfx`" /p `"%ZODIAC_SIGNING_PASSWORD%`" %*" | Out-File -FilePath $script -Encoding ascii
+          "ZODIAC_SIGN_TOOL=cmd.exe /d /s /c `"`"$script`" `$f`"" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Package the zip and the setup
+        env:
+          ZODIAC_SIGNING_PASSWORD: ${{ secrets.ZODIAC_SIGNING_PASSWORD }}
+        run: .tools/cmake/bin/cmake --build --preset windows-release --target zodiac_installer
+      - name: Show package sizes
+        run: Get-ChildItem dist -File | ForEach-Object { "$($_.Name): $($_.Length) bytes" }
+      - name: Upload the kit
+        uses: actions/upload-artifact@v4
+        with:
+          name: zodiac-kit
+          path: |
+            dist/zodiac-*-windows-x86_64.zip
+            dist/zodiac-setup-*.exe
+          if-no-files-found: error
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-kit-windows
+          path: |
+            build/**/Testing/**/*.log
+            build/**/Testing/**/*.xml
+          if-no-files-found: ignore
+
+  # A fresh Windows machine with nothing but the kit: no checkout, no Python, no toolchain, and only the Windows system folders on PATH.
+  kit-clean-machine:
+    needs: kit-windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Download the kit
+        uses: actions/download-artifact@v4
+        with:
+          name: zodiac-kit
+          path: ${{ runner.temp }}/zodiac-kit
+      - name: Portable zip in a folder with a space and a non-English letter
+        run: |
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\Wbem;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+          $root = 'C:\Users\runneradmin\Zodiac Kit ş'
+          $zip = Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\zodiac-kit" -Filter 'zodiac-*-windows-x86_64.zip' | Select-Object -First 1
+          if (-not $zip) { throw "The zip is missing from the artifact" }
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $root
+          $zodiac = Join-Path $root 'Zodiac\bin\zodiac.exe'
+          Set-Location -LiteralPath $root
+          & $zodiac new hello
+          if ($LASTEXITCODE -ne 0) { throw "zodiac new hello failed with exit code $LASTEXITCODE" }
+          & $zodiac build hello --no-window
+          if ($LASTEXITCODE -ne 0) { throw "zodiac build hello failed with exit code $LASTEXITCODE" }
+          $hello = Join-Path $root 'hello\release\hello.exe'
+          & $hello
+          if ($LASTEXITCODE -ne 0) { throw "hello.exe failed with exit code $LASTEXITCODE" }
+          $size = (Get-Item -LiteralPath $hello).Length
+          "hello.exe ran and exited with 0. Size: $size bytes."
+          # Size gate (spec 8.9): a core-only hello world release is at most 3 MB.
+          if ($size -gt 3MB) { throw "hello.exe is $size bytes, more than the 3 MB limit" }
+      - name: Setup wizard, silent install and uninstall
+        run: |
+          $setup = Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\zodiac-kit" -Filter 'zodiac-setup-*.exe' | Select-Object -First 1
+          if (-not $setup) { throw "The setup is missing from the artifact" }
+          "Setup size: $($setup.Length) bytes."
+          $version = $setup.BaseName -replace '^zodiac-setup-', ''
+          $log = Join-Path $env:RUNNER_TEMP 'zodiac-setup.log'
+          $pathBefore = (Get-Item -LiteralPath 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+          $process = Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', '/TASKS="addtopath,associate,buildmenu"', "/LOG=`"$log`"" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { Get-Content -LiteralPath $log; throw "The setup failed with exit code $($process.ExitCode)" }
+          $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{98CB20B5-1340-41F1-80E7-8FD0E99FA8BC}_is1'
+          $app = (Get-ItemProperty -LiteralPath $uninstallKey).InstallLocation.TrimEnd('\')
+          $bin = Join-Path $app 'bin'
+          "Installed into $app"
+          if (-not (Test-Path -LiteralPath (Join-Path $bin 'zodiac.exe'))) { throw "$bin\zodiac.exe is missing" }
+          # A new shell gets PATH from the registry, not from this process: run zodiac with the user PATH the setup wrote and the system folder only.
+          $userPath = (Get-ItemProperty -LiteralPath 'HKCU:\Environment').Path
+          if (-not (($userPath -split ';') -contains $bin)) { throw "The user PATH does not hold $bin" }
+          $env:PATH = "$userPath;$env:SystemRoot\System32"
+          $reported = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command 'zodiac --version'
+          if ($LASTEXITCODE -ne 0 -or $reported -ne "zodiac $version") { throw "zodiac --version in a new shell said '$reported' (exit code $LASTEXITCODE)" }
+          "zodiac --version in a new shell: $reported"
+          $progId = (Get-Item -LiteralPath 'HKCU:\Software\Classes\.zs').GetValue('')
+          if ($progId -ne 'Zodiac.Script') { throw "HKCU\Software\Classes\.zs is '$progId', not Zodiac.Script" }
+          $open = (Get-Item -LiteralPath 'HKCU:\Software\Classes\Zodiac.Script\shell\open\command').GetValue('')
+          if ($open -ne "`"$bin\zodiac.exe`" run `"%1`"") { throw "The open command is '$open'" }
+          $verb = Get-Item -LiteralPath 'HKCU:\Software\Classes\SystemFileAssociations\.zs\shell\zodiacbuild'
+          $build = (Get-Item -LiteralPath 'HKCU:\Software\Classes\SystemFileAssociations\.zs\shell\zodiacbuild\command').GetValue('')
+          if ($verb.GetValue('') -ne 'Build with Zodiac' -or $build -ne "`"$bin\zodiacw.exe`" build `"%1`"") { throw "The build verb is '$($verb.GetValue(''))' running '$build'" }
+          "Association and right-click verb are registered."
+          $process = Start-Process -FilePath (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "The uninstaller failed with exit code $($process.ExitCode)" }
+          # The uninstaller finishes from a copy of itself in the temp folder, so wait for the install folder to go.
+          $deadline = (Get-Date).AddMinutes(2)
+          while ((Test-Path -LiteralPath $app) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          if (Test-Path -LiteralPath $app) { Get-ChildItem -LiteralPath $app -Recurse | ForEach-Object FullName; throw "$app is still there after uninstall" }
+          $pathAfter = (Get-Item -LiteralPath 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+          if ($pathAfter -ne $pathBefore) { throw "The user PATH is '$pathAfter' after uninstall, but was '$pathBefore' before install" }
+          foreach ($key in 'HKCU:\Software\Classes\.zs', 'HKCU:\Software\Classes\Zodiac.Script', 'HKCU:\Software\Classes\SystemFileAssociations\.zs', $uninstallKey) {
+            if (Test-Path -LiteralPath $key) { throw "$key is still there after uninstall" }
+          }
+          "Uninstall removed the folder, the PATH entry, the ProgID and the verb."
+
+  # Tags v* publish the tested packages as a GitHub release.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [kit-clean-machine, linux]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Download the kit
+        uses: actions/download-artifact@v4
+        with:
+          name: zodiac-kit
+          path: kit
+      - name: Write SHA256SUMS
+        run: |
+          $lines = Get-ChildItem -LiteralPath kit -File | Sort-Object Name | ForEach-Object { "$((Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant())  $($_.Name)" }
+          [IO.File]::WriteAllText((Join-Path (Resolve-Path kit) 'SHA256SUMS'), ($lines -join "`n") + "`n")
+          Get-Content -LiteralPath kit/SHA256SUMS
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $files = Get-ChildItem -LiteralPath kit -File | ForEach-Object FullName
+          gh release create $env:GITHUB_REF_NAME @files --title "Zodiac $($env:GITHUB_REF_NAME.TrimStart('v'))" --notes "The Zodiac kit: the setup wizard (zodiac-setup-<version>.exe) or the portable zip. SHA256SUMS lists the SHA-256 of both."
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }

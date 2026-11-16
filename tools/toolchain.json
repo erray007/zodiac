@@ -18,6 +18,12 @@
 "url": "https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/llvm-mingw-20261104-ucrt-x86_64.zip",
 "sha256": "552191b5754c49a5a20723276a6fc56541ea1922c4c50b7b669022333fc1b40f",
 "strip_prefix": "llvm-mingw-20261104-ucrt-x86_64"
+},
+"innosetup": {
+"version": "6.7.4",
+"url": "https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe",
+"sha256": "a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c",
+"kind": "installer"
 }
 },
 "linux-x86_64": {

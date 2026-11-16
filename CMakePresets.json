@@ -52,6 +52,14 @@
 ]
 },
 {
+"name": "windows-release",
+"steps": [
+{ "type": "configure", "name": "windows-release" },
+{ "type": "build", "name": "windows-release" },
+{ "type": "test", "name": "windows-release" }
+]
+},
+{
 "name": "linux",
 "steps": [
 { "type": "configure", "name": "linux-debug" },
