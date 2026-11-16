@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.ogg -text
+*.wav -text
+*.dll -text
+*.exe -text
+*.zip -text
+*.dat -text
+*.png -text

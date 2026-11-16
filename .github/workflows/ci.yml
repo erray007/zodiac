@@ -1,0 +1,83 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache toolchain
+        uses: actions/cache@v4
+        with:
+          path: .tools
+          key: tools-windows-${{ hashFiles('tools/toolchain.json') }}
+      - name: Cache dependency downloads
+        uses: actions/cache@v4
+        with:
+          path: .deps
+          key: deps-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake') }}
+      - name: Bootstrap unit tests
+        run: python -I -m unittest discover -v -s tools -p "test_bootstrap.py"
+      - name: Bootstrap
+        run: python bootstrap.py
+      - name: Build and test
+        run: .tools/cmake/bin/cmake --workflow --preset windows
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-windows
+          path: |
+            build/**/Testing/**/*.log
+            build/**/Testing/**/*.xml
+          if-no-files-found: ignore
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache toolchain
+        uses: actions/cache@v4
+        with:
+          path: .tools
+          key: tools-linux-${{ hashFiles('tools/toolchain.json') }}
+      - name: Cache dependency downloads
+        uses: actions/cache@v4
+        with:
+          path: .deps
+          key: deps-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake') }}
+      - name: Install and select clang 18 with libc++
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev
+          echo "CC=clang-18" >> "$GITHUB_ENV"
+          echo "CXX=clang++-18" >> "$GITHUB_ENV"
+      - name: Show compiler version
+        run: clang-18 --version
+      - name: Bootstrap unit tests
+        run: python -I -m unittest discover -v -s tools -p "test_bootstrap.py"
+      - name: Bootstrap
+        run: python bootstrap.py
+      - name: Build and test
+        run: .tools/cmake/bin/cmake --workflow --preset linux
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-linux
+          path: |
+            build/**/Testing/**/*.log
+            build/**/Testing/**/*.xml
+          if-no-files-found: ignore

@@ -1,0 +1,1 @@
+This is plain text, not a shared library. Loading it must fail with a readable one-line reason.
