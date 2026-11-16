@@ -1,5 +1,6 @@
 .tools/
 build/
+dist/
 Blood bath source/
 *.log
 .superpowers/

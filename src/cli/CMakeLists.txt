@@ -33,4 +33,6 @@ target_link_libraries(zodiacw PRIVATE zodiac_cli)
 target_link_options(zodiacw PRIVATE -mwindows -municode)
 zodiac_target_warnings(zodiacw)
 add_dependencies(zodiacw zodiac)
+# The kit installs both tools into bin/ (the toolchain files that go beside them come from zodiac_kit_stage).
+install(TARGETS zodiac zodiacw RUNTIME DESTINATION bin)
 endif()
