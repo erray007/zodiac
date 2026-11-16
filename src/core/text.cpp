@@ -1,9 +1,34 @@
 #include <core/text.hpp>
 #include <algorithm>
 #include <cstddef>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <memory>
+#endif
 
 namespace zodiac {
 namespace {
+#ifdef _WIN32
+struct LocalFreeDeleter {
+void operator()(wchar_t* buffer) const noexcept{LocalFree(buffer);}
+};
+// The system's text for a Win32 error code in the user's language, as UTF-8. std::system_category goes through the ANSI
+// code page here, which is not UTF-8 on most systems (Turkish Windows uses 1254). Empty when the system has no text.
+std::string windows_error_text(DWORD code)
+{
+wchar_t* raw=nullptr;
+const DWORD length=FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER|FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS,nullptr,code,0,reinterpret_cast<LPWSTR>(&raw),0,nullptr);
+const std::unique_ptr<wchar_t,LocalFreeDeleter> buffer(raw);
+if(length==0||raw==nullptr)return {};
+const int size=WideCharToMultiByte(CP_UTF8,0,raw,static_cast<int>(length),nullptr,0,nullptr,nullptr);
+if(size<=0)return {};
+std::string text(static_cast<std::size_t>(size),'\0');
+if(WideCharToMultiByte(CP_UTF8,0,raw,static_cast<int>(length),text.data(),size,nullptr,nullptr)!=size)return {};
+return text;
+}
+#endif
 bool needs_escape(char c) noexcept
 {
 const unsigned char byte=static_cast<unsigned char>(c);
@@ -81,7 +106,11 @@ path.remove_prefix(path_cut+1);
 }
 std::string error_text(const std::error_code& code)
 {
+#ifdef _WIN32
+std::string text=code.category()==std::system_category()?windows_error_text(static_cast<DWORD>(code.value())):code.message();
+#else
 std::string text=code.message();
+#endif
 const std::size_t end=text.find_last_not_of(" \t\r\n.");
 text.resize(end==std::string::npos?0:end+1);
 if(text.empty())text="error "+std::to_string(code.value());

@@ -5,9 +5,11 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <platform/process.hpp>
+#include <core/text.hpp>
 #include <windows.h>
 #include <cstddef>
 #include <string>
+#include <system_error>
 #include <utility>
 
 namespace {
@@ -73,9 +75,10 @@ line.append(backslashes*2,L'\\');
 line+=L'"';
 }
 
+// The system's UTF-8 description of a GetLastError code, through the one helper every message uses.
 std::string last_error_text(DWORD code)
 {
-return "error code "+std::to_string(static_cast<unsigned long>(code));
+return zodiac::error_text(std::error_code(static_cast<int>(code),std::system_category()));
 }
 
 std::string normalize_line_breaks(std::string&& text)

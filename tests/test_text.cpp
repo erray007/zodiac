@@ -2,6 +2,12 @@
 #include <doctest/doctest.h>
 #include <string>
 #include <string_view>
+#include <system_error>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 TEST_CASE("is_one_line tells whether one_line would change the text")
 {
@@ -20,6 +26,32 @@ CHECK(zodiac::is_one_line(text));
 CHECK_FALSE(text.ends_with('.'));
 CHECK_FALSE(text.ends_with(' '));
 }
+
+#ifdef _WIN32
+TEST_CASE("error_text names a Win32 code the system has no text for")
+{
+CHECK(zodiac::error_text(std::error_code(0x2FFFFFFF,std::system_category()))=="error 805306367");
+}
+
+TEST_CASE("error_text describes a Win32 error with the system's own text in UTF-8")
+{
+// ERROR_ACCESS_DENIED: the same text FormatMessageW gives, converted to UTF-8 (on Turkish Windows "Erişim engellendi").
+const std::string text=zodiac::error_text(std::error_code(ERROR_ACCESS_DENIED,std::system_category()));
+CHECK_FALSE(text.empty());
+CHECK(zodiac::is_one_line(text));
+CHECK_FALSE(text.ends_with('.'));
+CHECK(MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text.data(),static_cast<int>(text.size()),nullptr,0)>0);
+wchar_t* raw=nullptr;
+const DWORD length=FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER|FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS,nullptr,ERROR_ACCESS_DENIED,0,reinterpret_cast<LPWSTR>(&raw),0,nullptr);
+REQUIRE(length>0);
+std::wstring wide(raw,length);
+LocalFree(raw);
+while(!wide.empty()&&(wide.back()==L'\r'||wide.back()==L'\n'||wide.back()==L' '||wide.back()==L'\t'||wide.back()==L'.'))wide.pop_back();
+std::string expected(static_cast<std::size_t>(WideCharToMultiByte(CP_UTF8,0,wide.data(),static_cast<int>(wide.size()),nullptr,0,nullptr,nullptr)),'\0');
+WideCharToMultiByte(CP_UTF8,0,wide.data(),static_cast<int>(wide.size()),expected.data(),static_cast<int>(expected.size()),nullptr,nullptr);
+CHECK(text==expected);
+}
+#endif
 
 TEST_CASE("one_line escapes control characters")
 {

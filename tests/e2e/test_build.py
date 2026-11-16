@@ -186,10 +186,10 @@ class BuildTest(unittest.TestCase):
             if fixture.name in FIXTURES_NEEDING_TEST_MODULES:
                 continue
             with self.subTest(fixture=fixture.name):
-                # The system's reason in some messages (missing_include) is not always UTF-8 yet; both sides get the same bytes, so compare them escaped.
-                run_code, run_out, run_err = zodiac("run", str(fixture), "--module-dir", MODULE_DIR, errors="backslashreplace")
+                # The system's reason in some messages (missing_include) is UTF-8 like the rest, so both sides decode strictly.
+                run_code, run_out, run_err = zodiac("run", str(fixture), "--module-dir", MODULE_DIR)
                 output = self.root / fixture.name
-                build_code, build_out, build_err = zodiac("build", str(fixture), "--no-window", "--module-dir", MODULE_DIR, "--output", str(output), errors="backslashreplace")
+                build_code, build_out, build_err = zodiac("build", str(fixture), "--no-window", "--module-dir", MODULE_DIR, "--output", str(output))
                 if build_code != 0:
                     # A fixture run refuses (compile, include, main or module errors) fails the build the same way.
                     self.assertEqual(build_code, run_code, build_err)
@@ -197,7 +197,7 @@ class BuildTest(unittest.TestCase):
                     self.assertFalse((output / (fixture.name + ".exe")).exists())
                     continue
                 built.add(fixture.name)
-                exe_code, exe_out, exe_err = run_exe(output / (fixture.name + ".exe"), errors="backslashreplace")
+                exe_code, exe_out, exe_err = run_exe(output / (fixture.name + ".exe"))
                 self.assertEqual(exe_code, run_code)
                 self.assertEqual(exe_err.splitlines(), run_err.splitlines())
                 self.assertEqual(exe_out, run_out)
@@ -349,8 +349,8 @@ class BuildTest(unittest.TestCase):
         before = exe.read_bytes()
         os.chmod(exe, stat.S_IREAD)
         self.addCleanup(os.chmod, exe, stat.S_IREAD | stat.S_IWRITE)
-        # The system's reason is not always UTF-8 yet (see test_identity_with_run).
-        code, out, err = self.build(str(exe.parent.parent), errors="backslashreplace")
+        # The system's reason is decoded strictly: it is UTF-8 whatever the system's language.
+        code, out, err = self.build(str(exe.parent.parent))
         self.assertEqual(code, 2, err)
         prefix = 'error: cannot replace "%s": ' % exe
         lines = [line for line in err.splitlines() if line.startswith(prefix)]
@@ -361,7 +361,7 @@ class BuildTest(unittest.TestCase):
         # A folder in the executable's place is not "in use" either.
         project = self.new_project(self.root / "folder")
         (project / "release" / "folder.exe").mkdir(parents=True)
-        code, out, err = self.build(str(project), errors="backslashreplace")
+        code, out, err = self.build(str(project))
         self.assertEqual(code, 2, err)
         prefix = 'error: cannot replace "%s": ' % (project / "release" / "folder.exe")
         lines = [line for line in err.splitlines() if line.startswith(prefix)]

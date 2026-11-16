@@ -1,6 +1,7 @@
 // zodiac::cli::link_release (see cli/linker.hpp): expands the kit's captured link line into a response file and runs the kit's ld.lld on it.
 #include <cli/linker.hpp>
 #include <core/path_utf8.hpp>
+#include <core/text.hpp>
 #include <platform/process.hpp>
 #include <zodiac/plugin.h>
 #include <cstddef>
@@ -113,7 +114,7 @@ ResponseFile(fs::path path,Diagnostics& diagnostics):path_(std::move(path)),diag
 {
 std::error_code ec;
 fs::remove(path_,ec);
-if(ec)diagnostics_.report(ZODIAC_LOG_WARNING,"warning: cannot remove "+in_quotes(path_to_utf8(path_))+": "+ec.message());
+if(ec)diagnostics_.report(ZODIAC_LOG_WARNING,"warning: cannot remove "+in_quotes(path_to_utf8(path_))+": "+error_text(ec));
 }
 ResponseFile(const ResponseFile&)=delete;
 ResponseFile& operator=(const ResponseFile&)=delete;

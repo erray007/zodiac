@@ -3,10 +3,11 @@
 // The child is started with posix_spawn (no shell, arguments verbatim). Standard output and standard error are duplicated
 // onto one pipe that is read until EOF; standard input is /dev/null.
 #include <platform/process.hpp>
+#include <core/text.hpp>
 #include <cerrno>
 #include <cstddef>
-#include <cstring>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 #include <fcntl.h>
@@ -40,7 +41,7 @@ FileActions& operator=(const FileActions&)=delete;
 
 std::string errno_text(int code)
 {
-return std::strerror(code);
+return zodiac::error_text(std::error_code(code,std::generic_category()));
 }
 }
 

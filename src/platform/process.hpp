@@ -21,8 +21,8 @@ std::string output;
 // Runs a child process to completion and captures its output. argv[0] is the absolute path of the program; the other
 // arguments are UTF-8 and reach the child verbatim (no shell, no globbing, no re-quoting surprises). Implemented in
 // src/platform/<os>/run_process.cpp so that it can be linked into the core library and tests.
-// Returns an error message when the program cannot be started (or argv is empty); a started program that fails is a result
-// with its non-zero exit_code.
+// Returns a UTF-8 error message when the program cannot be started (or argv is empty), ending in the system's reason as
+// zodiac::error_text gives it; a started program that fails is a result with its non-zero exit_code.
 std::expected<ProcessResult,std::string> run_process(std::span<const std::string> argv);
 }
 
