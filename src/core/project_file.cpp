@@ -337,14 +337,15 @@ dir=std::move(parent);
 return fail("error: script \""+one_line(path_to_utf8(file))+"\" is outside the project folder \""+one_line(path_to_utf8(project.root))+"\"");
 }
 
-std::string project_file_text(std::string_view name,std::string_view main_relative,std::span<const std::string> static_modules)
+std::string project_file_text(std::string_view name,std::string_view main_relative,std::span<const std::string> static_modules,std::span<const std::string> dynamic_modules)
 {
 constexpr std::string_view head="# Zodiac project file.\n[game]\nname = \"";
 constexpr std::string_view after_name="\"\nmain = \"";
 constexpr std::string_view after_main="\"\n\n[modules]\n# Modules this game uses, for example \"example\". Both lists are searched as shared libraries.\nstatic = [";
-constexpr std::string_view tail="]\ndynamic = []\n";
-std::size_t size=head.size()+after_name.size()+after_main.size()+tail.size()+name.size()+main_relative.size();
-for(const std::string& module:static_modules)size+=module.size()+4;
+constexpr std::string_view between="]\ndynamic = [";
+constexpr std::string_view tail="]\n";
+std::size_t size=head.size()+after_name.size()+after_main.size()+between.size()+tail.size()+name.size()+main_relative.size();
+for(const auto list:{static_modules,dynamic_modules})for(const std::string& module:list)size+=module.size()+4;
 std::string text;
 text.reserve(size);
 text.append(head);
@@ -352,12 +353,17 @@ append_toml_escaped(text,name);
 text.append(after_name);
 append_toml_escaped(text,main_relative);
 text.append(after_main);
-for(std::size_t i=0;i<static_modules.size();++i){
+const auto append_list=[&text](std::span<const std::string> list){
+for(std::size_t i=0;i<list.size();++i){
 if(i)text.append(", ");
 text.push_back('"');
-append_toml_escaped(text,static_modules[i]);
+append_toml_escaped(text,list[i]);
 text.push_back('"');
 }
+};
+append_list(static_modules);
+text.append(between);
+append_list(dynamic_modules);
 text.append(tail);
 return text;
 }
@@ -412,12 +418,13 @@ if(ec)return fail("zodiac.toml: error: cannot read directory \""+one_line(path_t
 for(const fs::recursive_directory_iterator end;it!=end;it.increment(ec))
 {
 const fs::path& path=it->path();
-if(path==release_dir)
+// Compared as the file system compares names (case-insensitively on Windows): "--config AYAR.TXT" names the same file as ayar.txt on disk.
+if(same_path_text(path,release_dir))
 {
 it.disable_recursion_pending();
 continue;
 }
-if(path==manifest||path==project.file)continue;
+if(same_path_text(path,manifest)||(!project.file.empty()&&same_path_text(path,project.file)))continue;
 fs::file_status status=it->status(ec);
 // The entry's cached type does not follow every kind of link (a Windows junction is cached as a folder, even when its
 // target is gone), so a folder is asked again through the filesystem before the walk enters it.

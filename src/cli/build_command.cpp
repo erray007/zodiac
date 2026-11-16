@@ -12,6 +12,7 @@
 #ifdef _WIN32
 #include <cli/linker.hpp>
 #include <core/coff_object.hpp>
+#include <core/dynamic_library.hpp>
 #include <core/kit_layout.hpp>
 #include <core/module_registry.hpp>
 #include <core/payload.hpp>
@@ -44,13 +45,15 @@ namespace {
 constexpr int exit_build_error=2;
 
 // What a build produced, also when it failed part way: the executable's path (empty until known) and the game's name (empty until the project loads).
-// used_lone_file and static_modules are set once the project loads: true when a lone script was built without a project file, and the modules
-// linked statically (for a lone script, every installed module), so the result window can offer a project file listing them.
+// used_lone_file, static_modules and dynamic_modules are set once the project loads: true when a lone script was built without a project file,
+// and the modules linked statically and dynamically (for a lone script, every installed module, split as split_lone_modules decides), so the
+// result window can offer a project file listing them.
 struct BuildOutcome{
 std::filesystem::path exe;
 std::string game_name;
 bool used_lone_file=false;
 std::vector<std::string> static_modules;
+std::vector<std::string> dynamic_modules;
 };
 
 #ifdef _WIN32
@@ -140,20 +143,12 @@ if(!result.has_filename()&&result.has_relative_path())result=result.parent_path(
 return result;
 }
 
-// Windows file names compare case-insensitively with the file system's own (ordinal, upper-case table) rule.
-bool same_name(const fs::path& a,const fs::path& b) noexcept
-{
-const std::wstring& left=a.native();
-const std::wstring& right=b.native();
-return CompareStringOrdinal(left.c_str(),static_cast<int>(left.size()),right.c_str(),static_cast<int>(right.size()),TRUE)==CSTR_EQUAL;
-}
-
 // True when path lies below dir; both absolute and normalized. Each element is compared as the file system does, so "D:\Game\Release" is inside "d:\game".
 bool is_inside(const fs::path& path,const fs::path& dir)
 {
 auto element=path.begin();
 for(const fs::path& part:dir){
-if(element==path.end()||!same_name(*element,part))return false;
+if(element==path.end()||!same_path_text(*element,part))return false;
 ++element;
 }
 return element!=path.end();
@@ -194,11 +189,37 @@ fs::path archive;
 
 constexpr std::array<std::string_view,9> permissive_licenses{"Zlib","MIT","BSD-2-Clause","BSD-3-Clause","Apache-2.0","BSL-1.0","ISC","Unlicense","CC0-1.0"};
 
+// Finds the static library of a module (step 2): the kit's modules/static/zodiac_mod_<name>.a, else <root>/plugins/static/zodiac_mod_<name>.a
+// whose .stamp equals the kit's toolchain.txt. The kit's toolchain identity is read once per build and kept in toolchain.
+class StaticLibraries{
+public:
+StaticLibraries(const KitLayout& kit,fs::path root):kit_(kit),plugin_dir_(std::move(root)/"plugins"/"static"){}
+// The archive, or the full error line that refuses the module.
+std::expected<fs::path,std::string> find(std::string_view name)
+{
+const std::string stem="zodiac_mod_"+std::string(name);
+std::error_code ec;
+fs::path archive=kit_.static_modules/(stem+".a");
+if(fs::is_regular_file(archive,ec))return archive;
+archive=plugin_dir_/(stem+".a");
+if(!fs::is_regular_file(archive,ec))return std::unexpected("error: module "+in_quotes(name)+" has no static library in the kit or in plugins/static; list it under dynamic");
+if(!toolchain_)toolchain_=read_text(kit_.release_lib/"toolchain.txt");
+if(!*toolchain_)return std::unexpected("error: cannot read the kit's toolchain identity "+quoted_path(kit_.release_lib/"toolchain.txt"));
+const std::optional<std::string> stamp=read_text(plugin_dir_/(stem+".stamp"));
+if(!stamp||without_trailing_space(*stamp)!=without_trailing_space(**toolchain_))return std::unexpected("error: plugin "+in_quotes(name)+" was not built with this kit's toolchain; list it under dynamic");
+return archive;
+}
+private:
+const KitLayout& kit_;
+fs::path plugin_dir_;
+std::optional<std::optional<std::string>> toolchain_;
+};
+
 // Step 2 of the build: runs while the modules are loaded and none is registered yet. Fills libraries in registration order. Returns 0 or 2.
 int check_static_modules(const Project& project,const KitLayout& kit,std::span<const zodiac_module_info* const> loaded,std::vector<StaticLibrary>& libraries,Diagnostics& diagnostics)
 {
 int result=exit_ok;
-std::optional<std::optional<std::string>> toolchain;
+StaticLibraries archives(kit,project.root);
 for(const zodiac_module_info* info:loaded){
 const std::string_view name=or_empty(info->name);
 if(!contains(project.static_modules,name))continue;
@@ -209,32 +230,45 @@ result=fail(diagnostics,"error: module "+quoted_name+" ("+std::string(license)+"
 continue;
 }
 if(std::ranges::find(permissive_licenses,license)==permissive_licenses.end())diagnostics.report(ZODIAC_LOG_WARNING,"warning: module "+quoted_name+" is linked statically under license "+std::string(license)+"; check its terms");
-const std::string stem="zodiac_mod_"+std::string(name);
-std::error_code ec;
-fs::path archive=kit.static_modules/(stem+".a");
-if(fs::is_regular_file(archive,ec)){
-libraries.push_back({std::string(name),std::move(archive)});
+auto archive=archives.find(name);
+if(!archive){
+result=fail(diagnostics,archive.error());
 continue;
 }
-const fs::path plugin_dir=project.root/"plugins"/"static";
-archive=plugin_dir/(stem+".a");
-if(!fs::is_regular_file(archive,ec)){
-result=fail(diagnostics,"error: module "+quoted_name+" has no static library in the kit or in plugins/static; list it under dynamic");
-continue;
-}
-if(!toolchain)toolchain=read_text(kit.release_lib/"toolchain.txt");
-if(!*toolchain){
-result=fail(diagnostics,"error: cannot read the kit's toolchain identity "+quoted_path(kit.release_lib/"toolchain.txt"));
-continue;
-}
-const std::optional<std::string> stamp=read_text(plugin_dir/(stem+".stamp"));
-if(!stamp||without_trailing_space(*stamp)!=without_trailing_space(**toolchain)){
-result=fail(diagnostics,"error: plugin "+quoted_name+" was not built with this kit's toolchain; list it under dynamic");
-continue;
-}
-libraries.push_back({std::string(name),std::move(archive)});
+libraries.push_back({std::string(name),std::move(*archive)});
 }
 return result;
+}
+
+// The ZODIAC_LINK_* bits of the module library file, read without registering anything; nullopt when the file is no readable module
+// (zodiac run's loading reports why later).
+std::optional<uint32_t> link_modes_of(const fs::path& file)
+{
+auto library=DynamicLibrary::open(file);
+if(!library)return std::nullopt;
+using EntryFunction=const zodiac_module_info*(*)(void);
+void* symbol=library->symbol(ZODIAC_MODULE_ENTRY_NAME);
+if(!symbol)return std::nullopt;
+const zodiac_module_info* info=reinterpret_cast<EntryFunction>(symbol)();
+if(!info||!module_info_provides(*info,module_info_v1_size))return std::nullopt;
+return module_link_modes(*info);
+}
+
+// A lone script's modules: every installed one, static when it allows static linking and has a usable static library, otherwise dynamic when
+// it allows that. A module allowing neither, or one whose library cannot be read, stays static, so step 2 or the loading reports it as for a project.
+// The lists are final before anything loads, so the build registers the modules in the order the release will (static, then dynamic).
+void split_lone_modules(Project& project,std::span<const InstalledModule> installed,const KitLayout& kit)
+{
+StaticLibraries archives(kit,project.root);
+std::vector<std::string> kept;
+kept.reserve(project.static_modules.size());
+for(std::string& name:project.static_modules){
+const auto module=std::ranges::find(installed,name,&InstalledModule::name);
+const std::optional<uint32_t> modes=module==installed.end()?std::nullopt:link_modes_of(module->file);
+const bool dynamic=modes&&(*modes&ZODIAC_LINK_DYNAMIC)&&(!(*modes&ZODIAC_LINK_STATIC)||!archives.find(name));
+(dynamic?project.dynamic_modules:kept).push_back(std::move(name));
+}
+project.static_modules=std::move(kept);
 }
 
 GamePayload payload_of(const Project& project,const ScriptRuntime& runtime,std::string bytecode)
@@ -444,7 +478,7 @@ return exit_ok;
 }
 
 // Step 1: the project to build, as build_command.hpp describes it. Reports its own errors and the lone-file warning.
-std::expected<Project,int> project_of(const BuildOptions& options,Diagnostics& diagnostics)
+std::expected<Project,int> project_of(const BuildOptions& options,const KitLayout& kit,Diagnostics& diagnostics)
 {
 const auto failed=[&diagnostics](std::string_view message){return std::unexpected(fail(diagnostics,message));};
 std::error_code ec;
@@ -457,30 +491,40 @@ if(auto replaced=set_main_script(*project,options.target);!replaced)return faile
 return std::move(*project);
 }
 const fs::path target=options.target.empty()?fs::path("."):options.target;
+// As in zodiac run, a script argument must exist, also inside a project.
+const bool script=has_extension(target,".zs");
+if(script&&!fs::is_regular_file(target,ec))return failed("error: script "+quoted_path(target)+" does not exist");
 if(const std::optional<fs::path> root=project_root_of(target)){
 auto project=load_project(*root);
 if(!project)return failed(project.error());
 return std::move(*project);
 }
-if(!has_extension(target,".zs")||!fs::is_regular_file(target,ec))return failed("error: zodiac.toml not found; create a project with zodiac new");
-auto project=load_project_for_script(target,installed_module_names(options.module_dirs));
+if(!script)return failed("error: zodiac.toml not found; create a project with zodiac new");
+const std::vector<InstalledModule> installed=installed_modules(options.module_dirs);
+std::vector<std::string> names;
+names.reserve(installed.size());
+for(const InstalledModule& module:installed)names.push_back(module.name);
+auto project=load_project_for_script(target,names);
 if(!project)return failed(project.error());
 // A zodiac.toml that appeared since the search is used by load_project_for_script, and then it is no lone file.
-if(project->file.empty())diagnostics.report(ZODIAC_LOG_WARNING,"warning: no zodiac.toml; every installed module was linked in (create a project file to choose modules)");
+if(!project->file.empty())return std::move(*project);
+split_lone_modules(*project,installed,kit);
+diagnostics.report(ZODIAC_LOG_WARNING,"warning: no zodiac.toml; every installed module was linked in (create a project file to choose modules)");
 return std::move(*project);
 }
 
 int build_release(const BuildOptions& options,Diagnostics& diagnostics,BuildOutcome& outcome)
 {
-auto project=project_of(options,diagnostics);
+const fs::path kit_exe=platform::executable_path();
+if(kit_exe.empty())return fail(diagnostics,"error: cannot find the folder of the zodiac executable");
+const KitLayout kit=kit_layout(kit_exe);
+auto project=project_of(options,kit,diagnostics);
 if(!project)return project.error();
 outcome.game_name=project->name;
 outcome.used_lone_file=project->file.empty();
 outcome.static_modules=project->static_modules;
+outcome.dynamic_modules=project->dynamic_modules;
 if(!usable_file_name(project->name))return fail(diagnostics,"error: the game name "+in_quotes(project->name)+" cannot be used as a file name; "+(outcome.used_lone_file?std::string("rename the script"):"change [game] name in "+path_to_utf8(project->file.filename())));
-const fs::path kit_exe=platform::executable_path();
-if(kit_exe.empty())return fail(diagnostics,"error: cannot find the folder of the zodiac executable");
-const KitLayout kit=kit_layout(kit_exe);
 // Every path is absolute before the project root becomes the working directory.
 const fs::path output=options.output.empty()?project->root/"release":absolute_normal(options.output);
 outcome.exe=output/path_from_utf8(project->name+".exe");

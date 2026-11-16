@@ -90,10 +90,15 @@ options.no_window=true;
 continue;
 }
 if(arg=="--config"||arg.starts_with("--config=")){
+if(!options.config.empty()){
+options.error="error: --config given twice";
+return options;
+}
 std::string_view value;
 if(arg.size()>8)value=std::string_view(arg).substr(9);
-else if(i+1<args.size())value=args[++i];
-if(value.empty()){
+else if(i+1<args.size()&&!args[i+1].starts_with("--"))value=args[++i];
+// A value starting with "--" is the next option, not a file name.
+if(value.empty()||value.starts_with("--")){
 options.error="error: --config needs a value";
 return options;
 }
@@ -338,7 +343,7 @@ return exit_usage_error;
 fs::path absolute=fs::absolute(directory,error).lexically_normal();
 if(!absolute.has_filename())absolute=absolute.parent_path();
 const std::string name=path_to_utf8(absolute.filename());
-if(!write_file(directory/"zodiac.toml",project_file_text(name.empty()?std::string_view("game"):std::string_view(name),"main.zs",{}),diagnostics))return exit_usage_error;
+if(!write_file(directory/"zodiac.toml",project_file_text(name.empty()?std::string_view("game"):std::string_view(name),"main.zs",{},{}),diagnostics))return exit_usage_error;
 if(!write_file(directory/"main.zs",main_script,diagnostics))return exit_usage_error;
 platform::write_stdout_line("created project "+in_quotes(shown));
 return exit_ok;

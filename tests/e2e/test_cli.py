@@ -134,13 +134,14 @@ class CliTest(unittest.TestCase):
     def test_run_config_with_script_overrides_main(self):
         project = self.root / "game"
         project.mkdir()
-        write(project / "main.zs", "int main()\n{\nreturn 1;\n}\n")
-        write(project / "two.zs", "int main()\n{\nreturn 2;\n}\n")
+        # Exit values no error path uses, so only the chosen main can produce them.
+        write(project / "main.zs", "int main()\n{\nreturn 5;\n}\n")
+        write(project / "two.zs", "int main()\n{\nreturn 6;\n}\n")
         write(project / "settings.toml", '[game]\nmain = "main.zs"\n')
         code, out, err = zodiac("run", str(project / "two.zs"), "--config", str(project / "settings.toml"), "--module-dir", MODULE_DIR)
-        self.assertEqual((code, out, err), (2, "", ""))
+        self.assertEqual((code, out, err), (6, "", ""))
         code, out, err = zodiac("run", "--config", str(project / "settings.toml"), "--module-dir", MODULE_DIR)
-        self.assertEqual((code, out, err), (1, "", ""))
+        self.assertEqual((code, out, err), (5, "", ""))
 
     def test_run_config_errors(self):
         project = self.root / "game"
@@ -157,6 +158,10 @@ class CliTest(unittest.TestCase):
         self.assertTrue(err.startswith("bozuk.txt:1:"), err)
         code, out, err = zodiac("run", "--config")
         self.assertEqual((code, err.splitlines()), (2, ["error: --config needs a value"]))
+        code, out, err = zodiac("run", "--config", "--log-file", "x.log")
+        self.assertEqual((code, err.splitlines()), (2, ["error: --config needs a value"]))
+        code, out, err = zodiac("run", "--config=a.toml", "--config", "b.toml")
+        self.assertEqual((code, out, err.splitlines()), (2, "", ["error: --config given twice"]))
         code, out, err = zodiac("modules", "--config", str(project / "ayar.txt"))
         self.assertEqual((code, err.splitlines()), (2, ["error: --config applies to run and build only; run zodiac help"]))
 

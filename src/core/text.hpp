@@ -18,6 +18,10 @@ bool glob_match(std::string_view pattern,std::string_view path) noexcept;
 // True when path's extension (as std::filesystem::path::extension gives it) equals extension (".zs"), compared ASCII
 // case-insensitively: Windows file names ignore case, so "MAIN.ZS" is a script too. extension must be ASCII.
 bool has_extension(const std::filesystem::path& path,std::string_view extension);
+// True when a and b are spelled alike as the file system compares names: on Windows their native text compares equal ordinally ignoring case
+// (CompareStringOrdinal, the file system's own upper-case table), elsewhere byte for byte. Pure text: nothing is touched on disk, and
+// separators or "." / ".." segments are not normalized, so callers pass paths built the same way (both absolute and normalized, or two names).
+bool same_path_text(const std::filesystem::path& a,const std::filesystem::path& b) noexcept;
 // The system's description of code as UTF-8 without trailing line breaks, spaces or full stop, for use after "...: " in a message
 // ("error N" when the system has none). On Windows a std::system_category code (a Win32 error, as std::filesystem and
 // GetLastError report them) is described by FormatMessageW in the user's language and converted to UTF-8, never through

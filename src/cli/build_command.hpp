@@ -2,11 +2,13 @@
 //
 // Steps (release-and-kit spec 8.2), each failure reported as one line through Diagnostics:
 // 1. With config, the project is load_project_file(config), and a target (a .zs script) becomes its main script through set_main_script (a missing
-//    script: "error: script "<target>" does not exist"). Without config, target is a project folder or a script file; a script file belongs to the
-//    project find_project_root finds (whose own main stays the main script). A .zs script with no zodiac.toml in its folder or above builds alone,
-//    as zodiac run runs it (load_project_for_script: root its folder, name its stem, every installed module of module_dirs static), after the
-//    warning "warning: no zodiac.toml; every installed module was linked in (create a project file to choose modules)". A folder (or another
-//    file) with no zodiac.toml: "error: zodiac.toml not found; create a project with zodiac new" (exit 2). Project file errors exit 2.
+//    script: "error: script "<target>" does not exist"). Without config, target is a project folder or a script file; a .zs target must exist
+//    ("error: script "<target>" does not exist"), and a script file belongs to the project find_project_root finds (whose own main stays the main
+//    script). A .zs script with no zodiac.toml in its folder or above builds alone, as zodiac run runs it (load_project_for_script: root its folder,
+//    name its stem, every installed module of module_dirs), after the warning "warning: no zodiac.toml; every installed module was linked in
+//    (create a project file to choose modules)". Each of those modules is linked statically when its link modes allow it and step 2 finds its
+//    static library, otherwise dynamically when its link modes allow that (a module allowing neither is checked as a static one in step 2).
+//    A folder (or another file) with no zodiac.toml: "error: zodiac.toml not found; create a project with zodiac new" (exit 2). Project file errors exit 2.
 // 2. The modules load as in zodiac run (module_dirs, then <root>/plugins). Before any registers, every static module is checked:
 //    a module whose link modes lack ZODIAC_LINK_STATIC is refused ("error: module "<name>" (<license>) cannot be linked statically; list it under dynamic");
 //    a license outside Zlib MIT BSD-2-Clause BSD-3-Clause Apache-2.0 BSL-1.0 ISC Unlicense CC0-1.0 draws

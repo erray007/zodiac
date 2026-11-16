@@ -82,12 +82,17 @@ found.push_back({file,std::move(name)});
 return found;
 }
 
+std::vector<InstalledModule> installed_modules(std::span<const std::filesystem::path> dirs)
+{
+std::vector<InstalledModule> modules=find_installed_modules(dirs);
+std::erase_if(modules,[](const InstalledModule& module){return module.name=="core"||!valid_module_name(module.name);});
+return modules;
+}
+
 std::vector<std::string> installed_module_names(std::span<const std::filesystem::path> dirs)
 {
 std::vector<std::string> names;
-for(InstalledModule& module:find_installed_modules(dirs)){
-if(module.name!="core"&&valid_module_name(module.name))names.push_back(std::move(module.name));
-}
+for(InstalledModule& module:installed_modules(dirs))names.push_back(std::move(module.name));
 return names;
 }
 

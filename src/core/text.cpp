@@ -117,6 +117,16 @@ if(lower(static_cast<std::make_unsigned_t<std::filesystem::path::value_type>>(te
 }
 return true;
 }
+bool same_path_text(const std::filesystem::path& a,const std::filesystem::path& b) noexcept
+{
+#ifdef _WIN32
+const std::wstring& left=a.native();
+const std::wstring& right=b.native();
+return CompareStringOrdinal(left.c_str(),static_cast<int>(left.size()),right.c_str(),static_cast<int>(right.size()),TRUE)==CSTR_EQUAL;
+#else
+return a.native()==b.native();
+#endif
+}
 std::string error_text(const std::error_code& code)
 {
 #ifdef _WIN32

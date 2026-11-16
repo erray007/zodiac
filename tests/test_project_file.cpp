@@ -649,6 +649,35 @@ REQUIRE(files.has_value());
 CHECK(*files==std::vector<fs::path>{loaded->root/"main.zs"});
 }
 
+#ifdef _WIN32
+TEST_CASE("expand_assets compares the project file and release folder ignoring case on Windows")
+{
+TempProject project;
+project.main_script();
+project.write("ayar.txt","[game]\nmain = \"main.zs\"\n[build]\nassets = [\"**\"]\n");
+project.write("Release/old.txt","");
+project.write("Zodiac.TOML","");
+// The file is named in another case than on disk, as a user may type it after --config.
+const auto loaded=zodiac::load_project_file(project.dir()/"AYAR.TXT");
+REQUIRE(loaded.has_value());
+const auto files=zodiac::expand_assets(*loaded);
+REQUIRE(files.has_value());
+CHECK(*files==std::vector<fs::path>{loaded->root/"main.zs"});
+}
+#endif
+
+TEST_CASE("same_path_text compares as the file system compares names")
+{
+CHECK(zodiac::same_path_text(fs::path("a")/"b.txt",fs::path("a")/"b.txt"));
+CHECK_FALSE(zodiac::same_path_text(fs::path("a")/"b.txt",fs::path("a")/"c.txt"));
+#ifdef _WIN32
+CHECK(zodiac::same_path_text(fs::path(u8"D:\\Oyun\\AYAR.TXT"),fs::path(u8"d:\\oyun\\ayar.txt")));
+CHECK(zodiac::same_path_text(fs::path(u8"ŞÖVALYE"),fs::path(u8"şövalye")));
+#else
+CHECK_FALSE(zodiac::same_path_text(fs::path("AYAR.TXT"),fs::path("ayar.txt")));
+#endif
+}
+
 TEST_CASE("set_main_script replaces main with a script inside the project and refuses one outside")
 {
 TempProject project;
@@ -671,10 +700,12 @@ CHECK(loaded->main_script==loaded->root/"levels"/"one.zs");
 TEST_CASE("project_file_text writes the zodiac new format")
 {
 const std::vector<std::string> none;
-CHECK(zodiac::project_file_text("plain","main.zs",none)=="# Zodiac project file.\n[game]\nname = \"plain\"\nmain = \"main.zs\"\n\n[modules]\n# Modules this game uses, for example \"example\". Both lists are searched as shared libraries.\nstatic = []\ndynamic = []\n");
+CHECK(zodiac::project_file_text("plain","main.zs",none,none)=="# Zodiac project file.\n[game]\nname = \"plain\"\nmain = \"main.zs\"\n\n[modules]\n# Modules this game uses, for example \"example\". Both lists are searched as shared libraries.\nstatic = []\ndynamic = []\n");
 const std::vector<std::string> modules{"example","audio_2"};
-CHECK(zodiac::project_file_text("oyun","menu.zs",modules)=="# Zodiac project file.\n[game]\nname = \"oyun\"\nmain = \"menu.zs\"\n\n[modules]\n# Modules this game uses, for example \"example\". Both lists are searched as shared libraries.\nstatic = [\"example\", \"audio_2\"]\ndynamic = []\n");
-CHECK(zodiac::project_file_text("a\"b\\c\x01","d\te.zs",none).find("name = \"a\\\"b\\\\c\\u0001\"\nmain = \"d\\u0009e.zs\"\n")!=std::string::npos);
+CHECK(zodiac::project_file_text("oyun","menu.zs",modules,none)=="# Zodiac project file.\n[game]\nname = \"oyun\"\nmain = \"menu.zs\"\n\n[modules]\n# Modules this game uses, for example \"example\". Both lists are searched as shared libraries.\nstatic = [\"example\", \"audio_2\"]\ndynamic = []\n");
+const std::vector<std::string> dynamic{"lgpl_dynamic","cwd_probe"};
+CHECK(zodiac::project_file_text("oyun","menu.zs",modules,dynamic)=="# Zodiac project file.\n[game]\nname = \"oyun\"\nmain = \"menu.zs\"\n\n[modules]\n# Modules this game uses, for example \"example\". Both lists are searched as shared libraries.\nstatic = [\"example\", \"audio_2\"]\ndynamic = [\"lgpl_dynamic\", \"cwd_probe\"]\n");
+CHECK(zodiac::project_file_text("a\"b\\c\x01","d\te.zs",none,none).find("name = \"a\\\"b\\\\c\\u0001\"\nmain = \"d\\u0009e.zs\"\n")!=std::string::npos);
 }
 
 TEST_CASE("project_file_text round-trips through load_project_file")
@@ -685,13 +716,14 @@ project.write(fs::path(u8"menü bir.zs"),"void main(){}\n");
 const std::vector<std::string> modules{"example","zeta"};
 const std::u8string main_name=fs::path(u8"menü bir.zs").u8string();
 const std::string main_text(reinterpret_cast<const char*>(main_name.data()),main_name.size());
-project.write("zodiac.toml",zodiac::project_file_text("oyun \\ \"şövalye\"",main_text,modules));
+const std::vector<std::string> dynamic{"lgpl_dynamic"};
+project.write("zodiac.toml",zodiac::project_file_text("oyun \\ \"şövalye\"",main_text,modules,dynamic));
 const auto result=zodiac::load_project_file(project.dir()/"zodiac.toml");
 INFO((result.has_value()?std::string():result.error()));
 REQUIRE(result.has_value());
 CHECK(result->name=="oyun \\ \"şövalye\"");
 CHECK(result->main_script==result->root/fs::path(u8"menü bir.zs"));
 CHECK(result->static_modules==modules);
-CHECK(result->dynamic_modules.empty());
+CHECK(result->dynamic_modules==dynamic);
 }
 

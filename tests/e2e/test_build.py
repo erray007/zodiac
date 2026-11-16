@@ -1,6 +1,7 @@
 """End-to-end tests for zodiac build. Windows only: release builds link with the kit's ld.lld and llvm-mingw CRT subset.
 Needs ZODIAC_EXE, ZODIACW_EXE (the GUI-subsystem twin), ZODIAC_MODULE_DIR, ZODIAC_TEST_MODULE_DIR and ZODIAC_ECHO_ARGS in the environment (CTest sets them, see tests/CMakeLists.txt)."""
 import os
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -343,6 +344,40 @@ class BuildTest(unittest.TestCase):
         self.assertEqual((code, err.splitlines()), (0, [LONE_FILE_WARNING]), out)
         self.assertEqual(out.splitlines()[-1], "Build succeeded: %s" % exe)
 
+    def test_build_lone_script_links_modules_without_static_linking_dynamically(self):
+        # Beside example (static library in the kit): lgpl_dynamic allows dynamic linking only, cwd_probe allows both but has no static library.
+        modules = self.root / "mods"
+        modules.mkdir()
+        for name in ("lgpl_dynamic", "cwd_probe"):
+            shutil.copyfile(Path(TEST_MODULE_DIR) / ("zodiac_mod_%s.dll" % name), modules / ("zodiac_mod_%s.dll" % name))
+        folder = self.root / "lone"
+        write(folder / "oyun.zs", 'int main()\n{\nexample_print("tek");\nexample_print(cwd());\nreturn 3;\n}\n')
+        release = folder / "release"
+        exe = release / "oyun.exe"
+        code, out, err = self.build(str(folder / "oyun.zs"), "--module-dir", str(modules))
+        # The fixture module logs "lgpl_dynamic register" and "lgpl_dynamic shutdown" at info level.
+        lines = [line for line in err.splitlines() if not line.startswith("lgpl_dynamic ")]
+        self.assertEqual((code, lines), (0, [LONE_FILE_WARNING]), out)
+        self.assertEqual(out.splitlines()[-1], "Build succeeded: %s" % exe)
+        self.assertEqual(sorted(p.name for p in release.iterdir()), ["oyun.exe", "zodiac_mod_cwd_probe.dll", "zodiac_mod_lgpl_dynamic.dll"])
+        for name in ("lgpl_dynamic", "cwd_probe"):
+            self.assertEqual((release / ("zodiac_mod_%s.dll" % name)).read_bytes(), (modules / ("zodiac_mod_%s.dll" % name)).read_bytes())
+        self.assertIn(b"example_echo", exe.read_bytes())
+        code, out, err = run_exe(exe)
+        self.assertEqual(code, 3, err)
+        self.assertEqual(out.splitlines()[0], "tek")
+        self.assertEqual(os.path.normcase(os.path.realpath(out.splitlines()[1])), os.path.normcase(os.path.realpath(release)))
+        self.assertEqual([line for line in err.splitlines() if not line.startswith("lgpl_dynamic ")], [])
+
+    def test_build_missing_lone_script(self):
+        missing = self.root / "yok.zs"
+        code, out, err = self.build(str(missing))
+        self.assertEqual((code, err.splitlines()), (2, ['error: script "%s" does not exist' % missing]))
+        project = self.new_project(self.root / "game")
+        code, out, err = self.build(str(project / "yok.zs"))
+        self.assertEqual((code, err.splitlines()), (2, ['error: script "%s" does not exist' % (project / "yok.zs")]))
+        self.assertFalse((project / "release").exists())
+
     def test_build_lone_script_relative_from_its_folder(self):
         folder = self.root / "lone"
         write(folder / "Oyun.ZS", "void main()\n{\n}\n")
@@ -376,6 +411,14 @@ class BuildTest(unittest.TestCase):
         other = self.root / "out"
         self.assert_built(self.build("--config", os.path.join("ayar klasörü", "ayar.txt"), "--output", str(other), cwd=self.root), other / "ayarlı.exe")
 
+    def test_build_config_named_in_another_case_is_not_an_asset(self):
+        project = self.root / "game"
+        write(project / "main.zs", "void main()\n{\n}\n")
+        write(project / "ayar.txt", '[game]\nname = "oyun"\nmain = "main.zs"\n[build]\nassets = ["**"]\n')
+        release = project / "release"
+        self.assert_built(self.build("--config", str(project / "AYAR.TXT")), release / "oyun.exe")
+        self.assertEqual(sorted(p.name for p in release.iterdir()), ["main.zs", "oyun.exe"])
+
     def test_build_config_with_script_overrides_main(self):
         project = self.root / "game"
         write(project / "main.zs", "int main()\n{\nreturn 1;\n}\n")
@@ -404,6 +447,12 @@ class BuildTest(unittest.TestCase):
         self.assertEqual((code, err.splitlines()), (2, ["error: --config needs a value"]))
         code, out, err = zodiac("build", "--config=")
         self.assertEqual((code, err.splitlines()), (2, ["error: --config needs a value"]))
+        code, out, err = zodiac("build", "--config", "--no-window")
+        self.assertEqual((code, err.splitlines()), (2, ["error: --config needs a value"]))
+        code, out, err = zodiac("build", "--config=--no-window")
+        self.assertEqual((code, err.splitlines()), (2, ["error: --config needs a value"]))
+        code, out, err = zodiac("build", "--config", str(project / "ayar.txt"), "--config=" + str(project / "ayar.txt"))
+        self.assertEqual((code, out, err.splitlines()), (2, "", ["error: --config given twice"]))
         self.assertFalse((project / "release").exists())
 
     def test_build_refuses_module_that_forbids_static_linking(self):
