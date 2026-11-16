@@ -451,3 +451,48 @@ CHECK((inner.empty()||*inner.begin()==fs::path("..")));
 }
 }
 
+TEST_CASE("load_project_for_script inside a project loads it and makes the file the main script")
+{
+TempProject project;
+project.main_script();
+project.write("includes/menu.zs","void menu(){}\n");
+project.toml("[game]\nmain = \"main.zs\"\n[modules]\nstatic = [\"example\"]\n");
+const std::vector<std::string> installed{"other"};
+const auto result=zodiac::load_project_for_script(project.dir()/"includes"/"menu.zs",installed);
+REQUIRE(result.has_value());
+const fs::path root=fs::absolute(project.dir()).lexically_normal();
+CHECK(result->root==root);
+CHECK(result->main_script==root/"includes"/"menu.zs");
+CHECK(result->static_modules==std::vector<std::string>{"example"});
+}
+
+TEST_CASE("load_project_for_script reports a broken project file")
+{
+TempProject project;
+project.toml("[game\n");
+project.write("menu.zs","");
+const std::vector<std::string> installed;
+const auto result=zodiac::load_project_for_script(project.dir()/"menu.zs",installed);
+REQUIRE_FALSE(result.has_value());
+CHECK(result.error().starts_with("zodiac.toml"));
+}
+
+TEST_CASE("load_project_for_script without a project uses the file folder and the installed modules sorted")
+{
+TempProject project(fs::path("lone"));
+project.write("tek dosya.zs","");
+const std::vector<std::string> installed{"zeta","example","beta"};
+const auto result=zodiac::load_project_for_script(project.dir()/"tek dosya.zs",installed);
+REQUIRE(result.has_value());
+// A zodiac.toml above the system temp folder is outside this test's control.
+if(zodiac::find_project_root(project.dir()/"tek dosya.zs"))return;
+const fs::path root=fs::absolute(project.dir()).lexically_normal();
+CHECK(result->root==root);
+CHECK(result->main_script==root/"tek dosya.zs");
+CHECK(result->name=="tek dosya");
+CHECK(result->static_modules==std::vector<std::string>{"beta","example","zeta"});
+CHECK(result->dynamic_modules.empty());
+CHECK(result->core_exclude.empty());
+CHECK(result->workers.empty());
+}
+

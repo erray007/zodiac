@@ -4,6 +4,7 @@
 #include <expected>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -44,6 +45,10 @@ std::expected<Project,std::string> load_project(const std::filesystem::path& dir
 // The project a script file belongs to: the nearest folder holding a regular file zodiac.toml, starting at the file's own folder and walking up to
 // the filesystem root. The result is absolute and normalized (no trailing separator); nullopt when no folder qualifies. Only checks for the file, never reads it.
 std::optional<std::filesystem::path> find_project_root(const std::filesystem::path& script_file);
+// The project for running one script file. With a project root (find_project_root): load_project(root) with main_script replaced by the given file (absolute, normalized, inside root by construction).
+// Without one: root is the file's folder, main_script the file, name the file's stem, static_modules the installed module names sorted by name (duplicates dropped), everything else default.
+// A project file error is returned unchanged. The file itself is not checked: the caller verifies it is a regular file.
+std::expected<Project,std::string> load_project_for_script(const std::filesystem::path& script_file,std::span<const std::string> installed_modules);
 // Every regular file under project.root matching any of project.build.assets, as absolute paths, sorted and without duplicates.
 // zodiac.toml in the root and everything under <root>/release are never returned. A pattern matching nothing is not an error; a missing or unreadable directory is: the error is one line, `zodiac.toml: error: cannot read directory "<path>": <reason>`.
 std::expected<std::vector<std::filesystem::path>,std::string> expand_assets(const Project& project);

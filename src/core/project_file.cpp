@@ -261,6 +261,27 @@ dir=std::move(parent);
 }
 }
 
+std::expected<Project,std::string> load_project_for_script(const fs::path& script_file,std::span<const std::string> installed_modules)
+{
+std::error_code ec;
+fs::path file=fs::absolute(script_file,ec).lexically_normal();
+if(ec)return fail("zodiac.toml: error: invalid script path \""+one_line(path_to_utf8(script_file))+"\"");
+if(const std::optional<fs::path> root=find_project_root(file)){
+auto project=load_project(*root);
+if(!project)return project;
+project->main_script=std::move(file);
+return project;
+}
+Project project;
+project.root=file.parent_path();
+project.main_script=file;
+project.name=path_to_utf8(file.stem());
+project.static_modules.assign(installed_modules.begin(),installed_modules.end());
+std::ranges::sort(project.static_modules);
+project.static_modules.erase(std::ranges::unique(project.static_modules).begin(),project.static_modules.end());
+return project;
+}
+
 std::expected<std::vector<fs::path>,std::string> expand_assets(const Project& project)
 {
 std::vector<fs::path> files;

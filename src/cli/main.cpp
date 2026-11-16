@@ -14,6 +14,8 @@
 #include <zodiac/plugin.h>
 #include <algorithm>
 #include <exception>
+#include <expected>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <span>
@@ -126,7 +128,7 @@ return dirs;
 int print_help()
 {
 platform::write_stdout_line("zodiac new <dir>: create a new game project in an empty directory");
-platform::write_stdout_line("zodiac run [project_dir]: build and run the game in project_dir (default: the current directory)");
+platform::write_stdout_line("zodiac run [project_dir|file.zs]: build and run the game in project_dir or a single script (default: the current directory)");
 platform::write_stdout_line("zodiac build [project_dir|file.zs]: build a release of the game (default output: <project>/release)");
 platform::write_stdout_line("zodiac modules: list the modules found in the module directories");
 platform::write_stdout_line("zodiac help: show this list");
@@ -143,16 +145,65 @@ platform::write_stdout_line("zodiac " ZODIAC_VERSION);
 return exit_ok;
 }
 
+constexpr std::string_view module_prefix="zodiac_mod_";
+
+// Calls visit(file,file_name) once per module library found in the directories, in search order; the first directory holding a name wins, exactly as it does when a game loads the module.
+template<typename Visit>
+void for_each_installed_module(std::span<const fs::path> dirs,Visit&& visit)
+{
+std::vector<std::string> seen;
+for(const fs::path& dir:dirs){
+std::error_code error;
+fs::directory_iterator it(dir,error);
+if(error)continue;
+const fs::directory_iterator end;
+for(;it!=end;it.increment(error)){
+if(error)break;
+const fs::path file=it->path();
+const std::u8string name=file.filename().u8string();
+const std::string_view text(reinterpret_cast<const char*>(name.data()),name.size());
+if(!text.starts_with(module_prefix)||file.extension()!=ZODIAC_MODULE_SUFFIX)continue;
+std::error_code status;
+if(!it->is_regular_file(status))continue;
+if(std::ranges::find(seen,text)!=seen.end())continue;
+seen.emplace_back(text);
+visit(file,text);
+}
+}
+}
+
+// The names of the installed modules ("zodiac_mod_<name><suffix>"); files whose name part is not a valid module name are skipped.
+std::vector<std::string> installed_module_names(std::span<const fs::path> dirs)
+{
+std::vector<std::string> names;
+for_each_installed_module(dirs,[&names](const fs::path&,std::string_view file_name){
+const std::string_view name=file_name.substr(module_prefix.size(),file_name.size()-module_prefix.size()-std::string_view(ZODIAC_MODULE_SUFFIX).size());
+const bool valid=!name.empty()&&name!="core"&&std::ranges::all_of(name,[](char c){return (c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_';});
+if(valid)names.emplace_back(name);
+});
+return names;
+}
+
 int run_project(const Options& options,Diagnostics& diagnostics)
 {
 if(options.positional.size()>1){
-fail(diagnostics,"error: run takes at most one project directory; run zodiac help");
+fail(diagnostics,"error: run takes at most one project directory or script; run zodiac help");
 return exit_usage_error;
 }
 // --log-file goes first so that a project file error is captured as well.
 if(!add_log_file(diagnostics,options.log_file))return exit_usage_error;
 const fs::path directory=options.positional.empty()?fs::path("."):path_from_utf8(options.positional.front());
-auto project=load_project(directory);
+const std::vector<fs::path> dirs=search_dirs(options);
+std::expected<Project,std::string> project=std::unexpected(std::string());
+if(directory.extension()==".zs"){
+std::error_code error;
+if(!fs::is_regular_file(directory,error)){
+fail(diagnostics,"error: script "+in_quotes(options.positional.front())+" does not exist");
+return exit_usage_error;
+}
+project=load_project_for_script(directory,installed_module_names(dirs));
+}
+else project=load_project(directory);
 if(!project){
 fail(diagnostics,project.error());
 return exit_usage_error;
@@ -160,7 +211,7 @@ return exit_usage_error;
 if(options.log_file.empty()&&!project->diagnostics.file.empty()&&!diagnostics.add_file_sink(project->diagnostics.file))return exit_usage_error;
 // Every path from the command line is resolved (the module directories) or already used (the log file is open, the project root is absolute)
 // before the project root becomes the working directory, which happens before any module registers or script code runs, exactly as in a release.
-ScriptRuntime runtime(diagnostics,ModuleSearchPaths{search_dirs(options)});
+ScriptRuntime runtime(diagnostics,ModuleSearchPaths{dirs});
 if(const int code=enter_root(project->root,diagnostics);code!=0)return code;
 if(const int code=runtime.build(*project);code!=0)return code;
 return exit_code_of(runtime.run(),diagnostics);
@@ -233,28 +284,9 @@ fail(diagnostics,"error: modules takes no arguments; run zodiac help");
 return exit_usage_error;
 }
 if(!add_log_file(diagnostics,options.log_file))return exit_usage_error;
-constexpr std::string_view prefix="zodiac_mod_";
 std::vector<ModuleLine> lines;
-std::vector<std::string> seen;
-for(const fs::path& dir:search_dirs(options)){
-std::error_code error;
-fs::directory_iterator it(dir,error);
-if(error)continue;
-const fs::directory_iterator end;
-for(;it!=end;it.increment(error)){
-if(error)break;
-const fs::path file=it->path();
-const std::u8string name=file.filename().u8string();
-const std::string_view text(reinterpret_cast<const char*>(name.data()),name.size());
-if(!text.starts_with(prefix)||file.extension()!=ZODIAC_MODULE_SUFFIX)continue;
-std::error_code status;
-if(!it->is_regular_file(status))continue;
-// The first directory in the search order wins, exactly as it does when a game loads the module.
-if(std::ranges::find(seen,text)!=seen.end())continue;
-seen.emplace_back(text);
-read_module(file,diagnostics,lines);
-}
-}
+const std::vector<fs::path> dirs=search_dirs(options);
+for_each_installed_module(dirs,[&](const fs::path& file,std::string_view){read_module(file,diagnostics,lines);});
 std::ranges::sort(lines,[](const ModuleLine& a,const ModuleLine& b){return a.name!=b.name?a.name<b.name:a.text<b.text;});
 for(const ModuleLine& line:lines)platform::write_stdout_line(line.text);
 return exit_ok;

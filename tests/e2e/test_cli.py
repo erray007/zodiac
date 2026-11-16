@@ -82,6 +82,39 @@ class CliTest(unittest.TestCase):
         for line in lines:
             self.assertEqual(os.path.normcase(os.path.realpath(line)), expected)
 
+    def test_run_script_in_subfolder_uses_project(self):
+        project = self.root / "game"
+        self.make_project(project, ["example"], "void main()\n{\n}\n")
+        (project / "includes").mkdir()
+        write(project / "shared.zs", 'void shared()\n{\nexample_print("shared");\n}\n')
+        write(project / "includes" / "menu.zs", '#include "../shared.zs"\nvoid main()\n{\nexample_print("menu");\nshared();\n}\n')
+        code, out, err = zodiac("run", str(project / "includes" / "menu.zs"), "--module-dir", MODULE_DIR)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out.splitlines(), ["menu", "shared"])
+
+    def test_run_lone_script_loads_installed_modules(self):
+        folder = self.root / "lone"
+        folder.mkdir()
+        write(folder / "oyun.zs", 'void main()\n{\nexample_print("tek dosya");\n}\n')
+        code, out, err = zodiac("run", str(folder / "oyun.zs"), "--module-dir", MODULE_DIR)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out.splitlines(), ["tek dosya"])
+
+    def test_run_lone_script_relative_include(self):
+        folder = self.root / "lone"
+        folder.mkdir()
+        write(folder / "yardimci.zs", 'void yardim()\n{\nexample_print("yardim");\n}\n')
+        write(folder / "oyun.zs", '#include "yardimci.zs"\nvoid main()\n{\nyardim();\n}\n')
+        code, out, err = zodiac("run", str(folder / "oyun.zs"), "--module-dir", MODULE_DIR)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out.splitlines(), ["yardim"])
+
+    def test_run_missing_script_exit_2(self):
+        missing = self.root / "yok.zs"
+        code, out, err = zodiac("run", str(missing), "--module-dir", MODULE_DIR)
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(err.splitlines(), ['error: script "%s" does not exist' % missing])
+
     def test_missing_module_exit_2(self):
         project = self.root / "game"
         self.make_project(project, ["no_such_module"], "void main()\n{\n}\n")
