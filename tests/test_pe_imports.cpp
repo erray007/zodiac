@@ -20,6 +20,20 @@ namespace {
 namespace fs=std::filesystem;
 using Names=std::vector<std::string>;
 using zodiac::pe_imported_dlls_in;
+using zodiac::PeError;
+using Result=std::expected<Names,PeError>;
+
+bool invalid(const Result& result)
+{
+return !result&&result.error()==PeError::invalid;
+}
+
+bool not_x64(const Result& result)
+{
+return !result&&result.error()==PeError::not_x64;
+}
+
+#define CHECK_INVALID(result) CHECK(invalid(result))
 
 constexpr std::size_t kLfanew=0x40;
 constexpr std::size_t kFileHeader=kLfanew+4;
@@ -159,7 +173,7 @@ std::size_t check_cuts(const Names& full,std::size_t last,std::size_t dense,std:
 {
 std::optional<std::size_t> threshold;
 for(std::size_t length=0;;length=length<dense?length+1:std::min(last,length+step)){
-const std::optional<Names> result=pe_imported_dlls_in(cut(length));
+const Result result=pe_imported_dlls_in(cut(length));
 if(!threshold&&result)threshold=length;
 if(threshold)CHECK_MESSAGE(result==full,"cut at ",length," bytes");
 if(length==last)break;
@@ -170,7 +184,7 @@ return threshold.value_or(last+1);
 // Every prefix of image: returns the shortest that parses (to the full result).
 std::size_t check_prefixes(const std::string& image,std::size_t dense,std::size_t step)
 {
-const std::optional<Names> full=pe_imported_dlls_in(image);
+const Result full=pe_imported_dlls_in(image);
 REQUIRE(full);
 return check_cuts(*full,image.size(),dense,step,[&image](std::size_t length){return std::string_view(image).substr(0,length);});
 }
@@ -190,7 +204,7 @@ return headers;
 // (the up-front check that raw data lies inside the file passes). Fails below some size, gives the full result from it on; returns that size.
 std::size_t check_section_cuts(std::string image,uint32_t rva)
 {
-const std::optional<Names> full=pe_imported_dlls_in(image);
+const Result full=pe_imported_dlls_in(image);
 REQUIRE(full);
 for(const std::size_t header:section_headers(image)){
 const uint32_t start=get32(image,header+12);
@@ -268,19 +282,20 @@ std::string image=valid;
 put(image,at,value,size);
 return pe_imported_dlls_in(image);
 };
-CHECK_FALSE(with(0,'Z',1));
-CHECK_FALSE(with(0x3C,valid.size(),4));
-CHECK_FALSE(with(0x3C,valid.size()-20,4));
-CHECK_FALSE(with(0x3C,0xFFFFFFF0u,4));
-CHECK_FALSE(with(kLfanew+2,'X',1));
-CHECK_FALSE(with(kOptional,0x10B,2));
-CHECK_FALSE(with(kFileHeader+16,111,2));
-CHECK_FALSE(with(kFileHeader+16,0xFFFF,2));
-CHECK_FALSE(with(kFileHeader+2,0,2));
-CHECK_FALSE(with(kFileHeader+2,0xFFFF,2));
+CHECK_INVALID(with(0,'Z',1));
+CHECK_INVALID(with(0x3C,valid.size(),4));
+CHECK_INVALID(with(0x3C,valid.size()-20,4));
+CHECK_INVALID(with(0x3C,0xFFFFFFF0u,4));
+CHECK_INVALID(with(kLfanew+2,'X',1));
+CHECK_INVALID(with(kOptional,0x10C,2));
+CHECK_INVALID(with(kOptional,0,2));
+CHECK_INVALID(with(kFileHeader+16,111,2));
+CHECK_INVALID(with(kFileHeader+16,0xFFFF,2));
+CHECK_INVALID(with(kFileHeader+2,0,2));
+CHECK_INVALID(with(kFileHeader+2,0xFFFF,2));
 // Raw data past the end of the file, or a pointer that wraps around.
-CHECK_FALSE(with(kSectionTable+16,valid.size(),4));
-CHECK_FALSE(with(kSectionTable+20,0xFFFFFFFFu,4));
+CHECK_INVALID(with(kSectionTable+16,valid.size(),4));
+CHECK_INVALID(with(kSectionTable+20,0xFFFFFFFFu,4));
 // The data directory count decides which directories exist: 1 has neither, 2 only the import directory.
 CHECK(with(kOptional+108,1,4)==Names{});
 CHECK(with(kOptional+108,2,4)==Names{"vendor_lib.dll","KERNEL32.dll"});
@@ -289,8 +304,35 @@ CHECK(with(kOptional+108,0xFFFFFFFFu,4)==kVendorNames);
 {
 std::string image=valid;
 put(image,kFileHeader+16,112+8,2);
-CHECK_FALSE(pe_imported_dlls_in(image));
+CHECK_INVALID(pe_imported_dlls_in(image));
 }
+}
+
+TEST_CASE("PE files for another machine are told apart from damaged ones")
+{
+const std::string valid=make_pe(kVendorSpec);
+const auto with=[&valid](std::size_t at,uint64_t value){
+std::string image=valid;
+put(image,at,value,2);
+return image;
+};
+// PE32 (32-bit) whatever the machine field says, and PE32+ for ARM64 or x86.
+CHECK(not_x64(pe_imported_dlls_in(with(kOptional,0x10B))));
+CHECK(not_x64(pe_imported_dlls_in(with(kFileHeader,0xAA64))));
+CHECK(not_x64(pe_imported_dlls_in(with(kFileHeader,0x014C))));
+{
+std::string pe32=with(kFileHeader,0x014C);
+put(pe32,kOptional,0x10B,2);
+CHECK(not_x64(pe_imported_dlls_in(pe32)));
+// Only the headers up to the magic are needed to tell: the rest of a 32-bit file is never parsed.
+CHECK(not_x64(pe_imported_dlls_in(std::string_view(pe32).substr(0,kOptional+2))));
+CHECK_INVALID(pe_imported_dlls_in(std::string_view(pe32).substr(0,kOptional+1)));
+}
+const TempDir dir;
+const fs::path x86=dir.write("x86.dll",with(kFileHeader,0x014C));
+const auto refused=pe_imported_dlls(x86);
+REQUIRE_FALSE(refused);
+CHECK(refused.error()=="error: \""+path_to_utf8(x86)+"\" is not a 64-bit (x64) Windows DLL");
 }
 
 TEST_CASE("RVAs outside the section's raw data are refused")
@@ -304,28 +346,28 @@ std::string image=valid;
 put(image,at,value,4);
 return pe_imported_dlls_in(image);
 };
-CHECK_FALSE(with(import_dir,kSectionRva-1));
-CHECK_FALSE(with(import_dir,kSectionRva+section_size));
-CHECK_FALSE(with(import_dir,0xFFFFFFFFu));
-CHECK_FALSE(with(delay_dir,kSectionRva+section_size));
+CHECK_INVALID(with(import_dir,kSectionRva-1));
+CHECK_INVALID(with(import_dir,kSectionRva+section_size));
+CHECK_INVALID(with(import_dir,0xFFFFFFFFu));
+CHECK_INVALID(with(delay_dir,kSectionRva+section_size));
 // A descriptor that starts inside the section but does not fit in it.
-CHECK_FALSE(with(import_dir,kSectionRva+section_size-kImportDescriptorSize+1));
-CHECK_FALSE(with(delay_dir,kSectionRva+section_size-kDelayDescriptorSize+1));
+CHECK_INVALID(with(import_dir,kSectionRva+section_size-kImportDescriptorSize+1));
+CHECK_INVALID(with(delay_dir,kSectionRva+section_size-kDelayDescriptorSize+1));
 // A virtual size shorter than the raw data bounds the section.
-CHECK_FALSE(with(kSectionTable+8,section_size-1));
+CHECK_INVALID(with(kSectionTable+8,section_size-1));
 CHECK(with(kSectionTable+8,0)==kVendorNames);
 // A name RVA of the first import descriptor outside the section.
 const uint32_t first_import=get32(valid,import_dir)-kSectionRva+kSectionOffset;
-CHECK_FALSE(with(first_import+12,kSectionRva+section_size));
-CHECK_FALSE(with(first_import+12,0x7FFFFFFFu));
+CHECK_INVALID(with(first_import+12,kSectionRva+section_size));
+CHECK_INVALID(with(first_import+12,0x7FFFFFFFu));
 }
 
 TEST_CASE("names must be NUL-terminated, plain and short")
 {
-CHECK_FALSE(pe_imported_dlls_in(make_pe({{""},{}})));
-CHECK_FALSE(pe_imported_dlls_in(make_pe({{"tab\t.dll"},{}})));
-CHECK_FALSE(pe_imported_dlls_in(make_pe({{"\xC3\xBC.dll"},{}})));
-CHECK_FALSE(pe_imported_dlls_in(make_pe({{std::string(256,'a')},{}})));
+CHECK_INVALID(pe_imported_dlls_in(make_pe({{""},{}})));
+CHECK_INVALID(pe_imported_dlls_in(make_pe({{"tab\t.dll"},{}})));
+CHECK_INVALID(pe_imported_dlls_in(make_pe({{"\xC3\xBC.dll"},{}})));
+CHECK_INVALID(pe_imported_dlls_in(make_pe({{std::string(256,'a')},{}})));
 CHECK(pe_imported_dlls_in(make_pe({{std::string(255,'a')},{}}))==Names{std::string(255,'a')});
 CHECK(pe_imported_dlls_in(make_pe({{"with space.dll"},{}}))==Names{"with space.dll"});
 // The last name of the section without its NUL: the section's raw data, and the file, end right after it.
@@ -333,17 +375,17 @@ for(const PeSpec& spec:{PeSpec{{"a.dll"},{}},PeSpec{{},{"b.dll"}}}){
 std::string image=make_pe(spec);
 REQUIRE(image.back()=='\0');
 image.back()='x';
-CHECK_FALSE(pe_imported_dlls_in(image));
+CHECK_INVALID(pe_imported_dlls_in(image));
 // Inside a larger file the section still bounds the name.
 image.append(16,'\0');
-CHECK_FALSE(pe_imported_dlls_in(image));
+CHECK_INVALID(pe_imported_dlls_in(image));
 }
 }
 
 TEST_CASE("descriptor arrays must end inside the section, after at most 65536 entries")
 {
-CHECK_FALSE(pe_imported_dlls_in(make_pe({{"a.dll","b.dll"},{"c.dll"},Unterminated::imports})));
-CHECK_FALSE(pe_imported_dlls_in(make_pe({{"a.dll"},{"c.dll","d.dll"},Unterminated::delay})));
+CHECK_INVALID(pe_imported_dlls_in(make_pe({{"a.dll","b.dll"},{"c.dll"},Unterminated::imports})));
+CHECK_INVALID(pe_imported_dlls_in(make_pe({{"a.dll"},{"c.dll","d.dll"},Unterminated::delay})));
 // An import descriptor with FirstThunk 0 ends the array, as the loader's walk does.
 {
 std::string image=make_pe({{"a.dll","b.dll"},{}});
@@ -352,9 +394,9 @@ put(image,descriptor+kImportDescriptorSize+16,0,4);
 CHECK(pe_imported_dlls_in(image)==Names{"a.dll"});
 }
 CHECK(pe_imported_dlls_in(make_pe({Names(65536,"same.dll"),{}}))==Names{"same.dll"});
-CHECK_FALSE(pe_imported_dlls_in(make_pe({Names(65537,"same.dll"),{}})));
+CHECK_INVALID(pe_imported_dlls_in(make_pe({Names(65537,"same.dll"),{}})));
 CHECK(pe_imported_dlls_in(make_pe({{},Names(65536,"same.dll")}))==Names{"same.dll"});
-CHECK_FALSE(pe_imported_dlls_in(make_pe({{},Names(65537,"same.dll")})));
+CHECK_INVALID(pe_imported_dlls_in(make_pe({{},Names(65537,"same.dll")})));
 }
 
 TEST_CASE("random bytes and random damage never crash")
@@ -379,7 +421,7 @@ for(int round=0;round<20000;++round){
 std::string image=valid;
 const int changes=1+round%4;
 for(int i=0;i<changes;++i)image[position(random)]=static_cast<char>(byte(random));
-const std::optional<Names> result=pe_imported_dlls_in(image);
+const Result result=pe_imported_dlls_in(image);
 if(result)CHECK(names_are_plain(*result));
 }
 }

@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <unordered_set>
 #include <utility>
 
@@ -19,6 +20,9 @@ constexpr std::size_t kSignatureSize=4;
 constexpr std::size_t kFileHeaderSize=20;
 constexpr std::size_t kSectionCountOffset=2;
 constexpr std::size_t kOptionalSizeOffset=16;
+constexpr uint16_t kMachineAmd64=0x8664;
+constexpr std::size_t kMagicSize=2;
+constexpr uint16_t kPe32Magic=0x10B;
 constexpr uint16_t kPe32PlusMagic=0x20B;
 constexpr std::size_t kDirectoryCountOffset=108;
 constexpr std::size_t kDirectoriesOffset=112;
@@ -62,28 +66,33 @@ uint32_t offset;
 // The checked headers of a PE32+ file, with its sections sorted and disjoint so an RVA maps through one of them.
 class Image{
 public:
-static std::optional<Image> parse(std::string_view bytes)
+static std::expected<Image,PeError> parse(std::string_view bytes)
 {
-if(bytes.size()<kDosHeaderSize||bytes[0]!='M'||bytes[1]!='Z')return std::nullopt;
+const std::unexpected<PeError> invalid(PeError::invalid);
+if(bytes.size()<kDosHeaderSize||bytes[0]!='M'||bytes[1]!='Z')return invalid;
 const uint32_t pe=read32(bytes,kLfanewOffset);
-if(!fits(pe,kSignatureSize+kFileHeaderSize,bytes.size())||bytes.substr(pe,kSignatureSize)!=std::string_view("PE\0\0",kSignatureSize))return std::nullopt;
+if(!fits(pe,kSignatureSize+kFileHeaderSize,bytes.size())||bytes.substr(pe,kSignatureSize)!=std::string_view("PE\0\0",kSignatureSize))return invalid;
 const std::size_t file_header=pe+kSignatureSize;
+const uint16_t machine=read16(bytes,file_header);
 const uint16_t section_count=read16(bytes,file_header+kSectionCountOffset);
 const uint16_t optional_size=read16(bytes,file_header+kOptionalSizeOffset);
 const std::size_t optional=file_header+kFileHeaderSize;
-if(optional_size<kDirectoriesOffset||!fits(optional,optional_size,bytes.size()))return std::nullopt;
-if(read16(bytes,optional)!=kPe32PlusMagic)return std::nullopt;
+if(optional_size<kMagicSize||!fits(optional,kMagicSize,bytes.size()))return invalid;
+const uint16_t magic=read16(bytes,optional);
+if(magic==kPe32Magic||(magic==kPe32PlusMagic&&machine!=kMachineAmd64))return std::unexpected(PeError::not_x64);
+if(magic!=kPe32PlusMagic)return invalid;
+if(optional_size<kDirectoriesOffset||!fits(optional,optional_size,bytes.size()))return invalid;
 Image image(bytes);
 const uint32_t directory_count=std::min(read32(bytes,optional+kDirectoryCountOffset),kMaxDirectories);
 for(const std::size_t index:{kImportDirectory,kDelayImportDirectory}){
 if(index>=directory_count)continue;
 const std::size_t entry=kDirectoriesOffset+index*kDirectorySize;
 // A directory the count promises must lie inside the optional header.
-if(entry+kDirectorySize>optional_size)return std::nullopt;
+if(entry+kDirectorySize>optional_size)return invalid;
 (index==kImportDirectory?image.import_rva_:image.delay_rva_)=read32(bytes,optional+entry);
 }
 const std::size_t table=optional+optional_size;
-if(!fits(table,uint64_t{section_count}*kSectionHeaderSize,bytes.size()))return std::nullopt;
+if(!fits(table,uint64_t{section_count}*kSectionHeaderSize,bytes.size()))return invalid;
 image.sections_.reserve(section_count);
 for(std::size_t i=0;i<section_count;++i){
 const std::size_t header=table+i*kSectionHeaderSize;
@@ -91,16 +100,16 @@ const uint32_t virtual_size=read32(bytes,header+8);
 const uint32_t rva=read32(bytes,header+12);
 const uint32_t raw_size=read32(bytes,header+16);
 const uint32_t offset=read32(bytes,header+20);
-if(raw_size!=0&&!fits(offset,raw_size,bytes.size()))return std::nullopt;
+if(raw_size!=0&&!fits(offset,raw_size,bytes.size()))return invalid;
 // Bytes past the virtual size are not mapped; a virtual size of 0 means the raw size.
 const uint32_t size=virtual_size==0?raw_size:std::min(raw_size,virtual_size);
-if(uint64_t{rva}+size>std::numeric_limits<uint32_t>::max())return std::nullopt;
+if(uint64_t{rva}+size>std::numeric_limits<uint32_t>::max())return invalid;
 if(size!=0)image.sections_.push_back({rva,size,offset});
 }
 std::ranges::sort(image.sections_,{},&Section::rva);
 for(std::size_t i=1;i<image.sections_.size();++i){
 const Section& previous=image.sections_[i-1];
-if(uint64_t{previous.rva}+previous.size>image.sections_[i].rva)return std::nullopt;
+if(uint64_t{previous.rva}+previous.size>image.sections_[i].rva)return invalid;
 }
 return image;
 }
@@ -171,16 +180,16 @@ names.add(*name);
 }
 }
 
-std::optional<std::vector<std::string>> pe_imported_dlls_in(std::string_view bytes)
+std::expected<std::vector<std::string>,PeError> pe_imported_dlls_in(std::string_view bytes)
 {
-const std::optional<Image> image=Image::parse(bytes);
-if(!image)return std::nullopt;
+const std::expected<Image,PeError> image=Image::parse(bytes);
+if(!image)return std::unexpected(image.error());
 NameList names;
 // The loader stops at the first import descriptor without a name or an import address table.
 const auto import_ends=[](std::string_view descriptor){return read32(descriptor,kImportNameOffset)==0||read32(descriptor,kImportFirstThunkOffset)==0;};
 const auto delay_ends=[](std::string_view descriptor){return read32(descriptor,kDelayNameOffset)==0;};
-if(!walk(*image,image->import_rva(),kImportDescriptorSize,kImportNameOffset,import_ends,names))return std::nullopt;
-if(!walk(*image,image->delay_rva(),kDelayDescriptorSize,kDelayNameOffset,delay_ends,names))return std::nullopt;
+if(!walk(*image,image->import_rva(),kImportDescriptorSize,kImportNameOffset,import_ends,names))return std::unexpected(PeError::invalid);
+if(!walk(*image,image->delay_rva(),kDelayDescriptorSize,kDelayNameOffset,delay_ends,names))return std::unexpected(PeError::invalid);
 return std::move(names).take();
 }
 
@@ -196,8 +205,8 @@ std::string bytes(static_cast<std::size_t>(size),'\0');
 in.seekg(0);
 in.read(bytes.data(),static_cast<std::streamsize>(bytes.size()));
 if(!in)return std::unexpected("error: cannot read "+quoted);
-std::optional<std::vector<std::string>> names=pe_imported_dlls_in(bytes);
-if(!names)return std::unexpected("error: "+quoted+" is not a valid Windows DLL");
+std::expected<std::vector<std::string>,PeError> names=pe_imported_dlls_in(bytes);
+if(!names)return std::unexpected("error: "+quoted+(names.error()==PeError::not_x64?" is not a 64-bit (x64) Windows DLL":" is not a valid Windows DLL"));
 return std::move(*names);
 }
 }

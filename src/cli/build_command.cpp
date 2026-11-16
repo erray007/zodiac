@@ -24,7 +24,9 @@
 #include <zodiac/plugin.h>
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <expected>
 #include <fstream>
@@ -355,16 +357,21 @@ std::optional<std::wstring> folder_;
 // The regular files directly inside each folder a module DLL lives in, listed once per build.
 class FolderFiles{
 public:
-const std::vector<fs::path>& of(const fs::path& folder)
+// The files in folder; nullptr after reporting "error: cannot read directory "<folder>": <reason>" when it cannot be listed.
+const std::vector<fs::path>* of(const fs::path& folder,Diagnostics& diagnostics)
 {
-for(const auto& [listed,files]:folders_)if(same_path_text(listed,folder))return files;
+for(const auto& [listed,files]:folders_)if(same_path_text(listed,folder))return &files;
 std::vector<fs::path> files;
 std::error_code ec;
 for(fs::directory_iterator entry(folder,ec),end;!ec&&entry!=end;entry.increment(ec)){
 std::error_code type_error;
 if(entry->is_regular_file(type_error))files.push_back(entry->path());
 }
-return folders_.emplace_back(folder,std::move(files)).second;
+if(ec){
+fail(diagnostics,"error: cannot read directory "+quoted_path(folder)+": "+error_text(ec));
+return nullptr;
+}
+return &folders_.emplace_back(folder,std::move(files)).second;
 }
 private:
 std::deque<std::pair<fs::path,std::vector<fs::path>>> folders_;
@@ -379,11 +386,13 @@ return file;
 }
 
 // The files that ship for the dynamic module module whose DLL is library (spec item 7): library, then the DLLs it imports that sit in its
-// folder, recursively, breadth first, each once. Reports why and returns nullopt when a DLL cannot be read or an import is neither there
-// nor a system DLL.
+// folder, recursively, breadth first, each once. Reports why and returns nullopt when the folder cannot be listed, a DLL is no x64 DLL or
+// cannot be read, or an import is neither there nor a system DLL.
 std::optional<std::vector<fs::path>> module_files(std::string_view module,const fs::path& library,FolderFiles& folders,SystemDlls& system_dlls,Diagnostics& diagnostics)
 {
-const std::vector<fs::path>& neighbours=folders.of(library.parent_path());
+const std::vector<fs::path>* listing=folders.of(library.parent_path(),diagnostics);
+if(!listing)return std::nullopt;
+const std::vector<fs::path>& neighbours=*listing;
 std::vector<fs::path> files{library};
 const auto listed=[&files](const fs::path& file){return std::ranges::any_of(files,[&file](const fs::path& known){return same_path_text(known.filename(),file.filename());});};
 for(std::size_t next=0;next<files.size();++next){
@@ -405,6 +414,75 @@ return std::nullopt;
 }
 }
 return files;
+}
+
+// The files each dynamic module ships (module_files), walked once per module: before the modules load, so a missing third-party DLL
+// is reported by name instead of as the loader's failure, and again only for modules that turn up while loading (undeclared dependencies).
+class ModuleDlls{
+public:
+ModuleDlls(const std::vector<fs::path>& module_dirs,const fs::path& root):module_dirs_(module_dirs),root_(root){}
+// Walks module when its library can be found; true when it cannot (the loading reports that) or the walk succeeds.
+bool check(std::string_view module,Diagnostics& diagnostics)
+{
+return !find_module_library(module,module_dirs_,root_)||files(module,diagnostics);
+}
+// The files of module, the library first; nullptr after reporting why.
+const std::vector<fs::path>* files(std::string_view module,Diagnostics& diagnostics)
+{
+for(const auto& [name,files]:walked_)if(name==module)return &files;
+const std::optional<fs::path> library=find_module_library(module,module_dirs_,root_);
+if(!library){
+fail(diagnostics,"error: cannot find the library of module "+in_quotes(module)+" to copy it");
+return nullptr;
+}
+std::optional<std::vector<fs::path>> found=module_files(module,*library,folders_,system_dlls_,diagnostics);
+if(!found)return nullptr;
+return &walked_.emplace_back(std::string(module),std::move(*found)).second;
+}
+private:
+const std::vector<fs::path>& module_dirs_;
+const fs::path& root_;
+FolderFiles folders_;
+SystemDlls system_dlls_;
+std::deque<std::pair<std::string,std::vector<fs::path>>> walked_;
+};
+
+// Whether files a and b hold the same bytes; nullopt after reporting "error: cannot read "<file>"" when either cannot be read.
+std::optional<bool> same_contents(const fs::path& a,const fs::path& b,Diagnostics& diagnostics)
+{
+std::error_code ec;
+const std::uintmax_t size_a=fs::file_size(a,ec);
+if(ec){
+fail(diagnostics,"error: cannot read "+quoted_path(a));
+return std::nullopt;
+}
+const std::uintmax_t size_b=fs::file_size(b,ec);
+if(ec){
+fail(diagnostics,"error: cannot read "+quoted_path(b));
+return std::nullopt;
+}
+if(size_a!=size_b)return false;
+std::ifstream in_a(a,std::ios::binary);
+std::ifstream in_b(b,std::ios::binary);
+if(!in_a||!in_b){
+fail(diagnostics,"error: cannot read "+quoted_path(!in_a?a:b));
+return std::nullopt;
+}
+constexpr std::size_t chunk=65536;
+std::vector<char> buffer_a(chunk);
+std::vector<char> buffer_b(chunk);
+for(std::uintmax_t left=size_a;left>0;){
+const std::size_t count=static_cast<std::size_t>(std::min<std::uintmax_t>(left,chunk));
+in_a.read(buffer_a.data(),static_cast<std::streamsize>(count));
+in_b.read(buffer_b.data(),static_cast<std::streamsize>(count));
+if(!in_a||!in_b){
+fail(diagnostics,"error: cannot read "+quoted_path(!in_a?a:b));
+return std::nullopt;
+}
+if(std::memcmp(buffer_a.data(),buffer_b.data(),count)!=0)return false;
+left-=count;
+}
+return true;
 }
 
 bool copy_into(const fs::path& from,const fs::path& to,Diagnostics& diagnostics)
@@ -519,7 +597,7 @@ return exit_build_error;
 
 // Everything after the compile: the payload object, the link and the signing of the executable and the DLL copies (dynamic modules and
 // the third-party DLLs they import) under temporary names, the renames, then the assets. Returns 0 or 2.
-int write_release(const Project& project,const ScriptRuntime& runtime,const KitLayout& kit,const std::vector<StaticLibrary>& libraries,const std::vector<fs::path>& module_dirs,const fs::path& output,const fs::path& exe,Diagnostics& diagnostics)
+int write_release(const Project& project,const ScriptRuntime& runtime,const KitLayout& kit,const std::vector<StaticLibrary>& libraries,ModuleDlls& module_dlls,const fs::path& output,const fs::path& exe,Diagnostics& diagnostics)
 {
 auto bytecode=runtime.save_bytecode(project.build.strip_debug_info);
 if(!bytecode)return fail(diagnostics,bytecode.error());
@@ -551,27 +629,33 @@ if(const int code=sign(project.build.sign_command,tmp.path(),exe,project.root,di
 }
 // The dynamic modules are copied (and signed) under temporary names too, so a failure up to here leaves the old release untouched.
 struct Library{
-Library(fs::path final_path,fs::path temporary_path,Diagnostics& sink):target(std::move(final_path)),copy(std::move(temporary_path),sink){}
+Library(fs::path source_path,std::string_view module_name,fs::path final_path,fs::path temporary_path,Diagnostics& sink):source(std::move(source_path)),module(module_name),target(std::move(final_path)),copy(std::move(temporary_path),sink){}
+fs::path source;
+std::string module;
 fs::path target;
 TemporaryFile copy;
 };
 // A deque never moves its elements, which TemporaryFile cannot do.
 std::deque<Library> copies;
-FolderFiles folders;
-SystemDlls system_dlls;
 for(const PayloadModule& module:payload.modules){
 if(module.link!=LinkMode::dynamic_link)continue;
-const std::optional<fs::path> library=find_module_library(module.name,module_dirs,project.root);
-if(!library)return fail(diagnostics,"error: cannot find the library of module "+in_quotes(module.name)+" to copy it");
-// The module DLL and the third-party DLLs it needs; a file another module already shipped is not copied again.
-const std::optional<std::vector<fs::path>> files=module_files(module.name,*library,folders,system_dlls,diagnostics);
+// The module DLL and the third-party DLLs it needs, as walked before the modules loaded (or now, for a module found while loading).
+const std::vector<fs::path>* files=module_dlls.files(module.name,diagnostics);
 if(!files)return exit_build_error;
 for(const fs::path& file:*files){
 fs::path target=output/file.filename();
-if(std::ranges::any_of(copies,[&target](const Library& shipped){return same_path_text(shipped.target,target);}))continue;
+// A file another module already ships goes out once; the same name with other bytes would leave one of the modules with the wrong DLL.
+const auto shipped=std::ranges::find_if(copies,[&target](const Library& library){return same_path_text(library.target,target);});
+if(shipped!=copies.end()){
+if(same_path_text(shipped->source,file))continue;
+const std::optional<bool> same=same_contents(shipped->source,file,diagnostics);
+if(!same)return exit_build_error;
+if(*same)continue;
+return fail(diagnostics,"error: "+quoted_path(file.filename())+" is shipped by "+in_quotes(shipped->module)+" and "+in_quotes(module.name)+" with different contents");
+}
 fs::path copy_path=target;
 copy_path+=".tmp";
-const Library& copy=copies.emplace_back(std::move(target),std::move(copy_path),diagnostics);
+const Library& copy=copies.emplace_back(file,module.name,std::move(target),std::move(copy_path),diagnostics);
 if(!copy_into(file,copy.copy.path(),diagnostics))return exit_build_error;
 if(signing){
 if(const int code=sign(project.build.sign_command,copy.copy.path(),copy.target,project.root,diagnostics))return code;
@@ -644,13 +728,20 @@ if(!usable_file_name(project->name))return fail(diagnostics,"error: the game nam
 const fs::path output=options.output.empty()?project->root/"release":absolute_normal(options.output);
 outcome.exe=output/path_from_utf8(project->name+".exe");
 const fs::path& exe=outcome.exe;
+// Spec item 7, before anything loads: a third-party DLL missing next to a dynamic module would otherwise surface as the loader's
+// "module could not be found" at the compile; the build names it instead.
+ModuleDlls module_dlls(options.module_dirs,project->root);
+for(const std::string& name:project->dynamic_modules){
+if(contains(project->static_modules,name))continue;
+if(!module_dlls.check(name,diagnostics))return exit_build_error;
+}
 ScriptRuntime runtime(diagnostics,ModuleSearchPaths{options.module_dirs});
 // As in zodiac run: global initializers run during the compile, so they see the same working directory as in run and in the release.
 if(const int code=enter_root(project->root,diagnostics))return code;
 std::vector<StaticLibrary> libraries;
 const ScriptRuntime::ModuleCheck check=[&project,&kit,&libraries,&diagnostics](std::span<const zodiac_module_info* const> loaded){return check_static_modules(*project,kit,loaded,libraries,diagnostics);};
 if(const int code=runtime.build(*project,check))return code;
-return write_release(*project,runtime,kit,libraries,options.module_dirs,output,exe,diagnostics);
+return write_release(*project,runtime,kit,libraries,module_dlls,output,exe,diagnostics);
 }
 #else
 int build_release(const BuildOptions&,Diagnostics& diagnostics,BuildOutcome&)

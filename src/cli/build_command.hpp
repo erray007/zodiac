@@ -24,10 +24,14 @@
 //    undeclared dependency) is then copied from the folder it was loaded from to <output>/<dll>.tmp and signed the same way, followed by its
 //    third-party DLLs (spec item 7): each name pe_imported_dlls (core/pe_imports.hpp) reads from the module DLL, and recursively from each DLL
 //    found this way, that names a file in the module DLL's folder (compared as the file system does; a name without a dot gets ".dll") is
-//    copied and signed under that file's own name, breadth first, each file once per build (a name already shipped, by any module, is skipped).
-//    A name not found there is skipped when it is a system DLL (it starts with "api-ms-win-" or "ext-ms-", ASCII case-insensitively, or
-//    SearchPathW finds it in GetSystemDirectoryW); otherwise "error: module "<name>" needs "<dll>", which is not next to "<module dll path>""
-//    (exit 2), and a DLL pe_imported_dlls refuses stops the build with its error (exit 2). A failed signing:
+//    copied and signed under that file's own name, breadth first, each file once per build. A name another module already ships is skipped
+//    when both are the same file or hold the same bytes, otherwise "error: "<dll>" is shipped by "<module a>" and "<module b>" with different
+//    contents" (exit 2). A name not found there is skipped when it is a system DLL (it starts with "api-ms-win-" or "ext-ms-", ASCII
+//    case-insensitively, or SearchPathW finds it in GetSystemDirectoryW); otherwise "error: module "<name>" needs "<dll>", which is not next to
+//    "<module dll path>"" (exit 2). A DLL pe_imported_dlls refuses (not x64, damaged, unreadable) stops the build with its error, and a folder
+//    that cannot be listed with "error: cannot read directory "<dir>": <reason>" (exit 2). This walk runs for every module listed under dynamic
+//    (and not under static) whose library is found, before step 2 loads anything, so a missing DLL is reported by these messages, not by the
+//    loader; the copy reuses it, walking only modules found while loading (undeclared dependencies). A failed signing:
 //    "error: signing "<final file>" failed" (the .exe or .dll path the file is built for) followed by the tool's output, each line indented by
 //    two spaces (exit 2).
 // 6. <name>.exe.tmp is renamed over <output>/<name>.exe, then each <dll>.tmp over its DLL. A rename that fails because another process holds the

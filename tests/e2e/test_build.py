@@ -486,26 +486,30 @@ class BuildTest(unittest.TestCase):
         self.assertTrue((release / "game.exe").is_file())
         self.assertEqual((release / "zodiac_mod_lgpl_dynamic.dll").read_bytes(), (Path(TEST_MODULE_DIR) / "zodiac_mod_lgpl_dynamic.dll").read_bytes())
 
-    def vendor_folder(self, folder):
-        """A copy of vendor_dep and its third-party DLLs: vendor_lib.dll spelled Vendor_Lib.DLL (imports match names case-insensitively),
-        vendor_base.dll, and a DLL nothing imports."""
+    def vendor_folder(self, folder, modules=("vendor_dep",)):
+        """A copy of the given vendor fixture modules and their third-party DLLs: vendor_lib.dll spelled Vendor_Lib.DLL (imports match
+        names case-insensitively), vendor_base.dll, and a DLL nothing imports."""
         self.assertTrue(VENDOR_MODULE_DIR and Path(VENDOR_MODULE_DIR).is_dir(), VENDOR_MODULE_DIR)
         folder.mkdir(parents=True)
         source = Path(VENDOR_MODULE_DIR)
-        shutil.copyfile(source / "zodiac_mod_vendor_dep.dll", folder / "zodiac_mod_vendor_dep.dll")
+        for module in modules:
+            shutil.copyfile(source / ("zodiac_mod_%s.dll" % module), folder / ("zodiac_mod_%s.dll" % module))
         shutil.copyfile(source / "vendor_lib.dll", folder / "Vendor_Lib.DLL")
         shutil.copyfile(source / "vendor_base.dll", folder / "vendor_base.dll")
         shutil.copyfile(source / "vendor_base.dll", folder / "unused.dll")
         return folder
 
-    VENDOR_SCRIPT = "int main()\n{\nreturn vendor_value(3);\n}\n"
-    VENDOR_RELEASE = ["Vendor_Lib.DLL", "game.exe", "vendor_base.dll", "zodiac_mod_vendor_dep.dll"]
+    # vendor_dep delay-imports vendor_lib.dll, vendor_direct imports it normally; both functions return value*7.
+    VENDOR_SCRIPTS = {"vendor_dep": "int main()\n{\nreturn vendor_value(3);\n}\n", "vendor_direct": "int main()\n{\nreturn vendor_direct_value(3);\n}\n"}
+    VENDOR_SCRIPT = VENDOR_SCRIPTS["vendor_dep"]
 
-    def assert_vendor_release(self, release, folder):
-        self.assertEqual(sorted(p.name for p in release.iterdir()), self.VENDOR_RELEASE)
-        for name in self.VENDOR_RELEASE[:1] + self.VENDOR_RELEASE[2:]:
-            self.assertEqual((release / name).read_bytes(), (folder / name).read_bytes(), name)
-        # vendor_dep delay-imports vendor_lib.dll, which imports vendor_base.dll: the release runs only with both next to it.
+    def assert_vendor_release(self, release, folder, module="vendor_dep"):
+        expected = sorted(["Vendor_Lib.DLL", "game.exe", "vendor_base.dll", "zodiac_mod_%s.dll" % module])
+        self.assertEqual(sorted(p.name for p in release.iterdir()), expected)
+        for name in expected:
+            if name != "game.exe":
+                self.assertEqual((release / name).read_bytes(), (folder / name).read_bytes(), name)
+        # vendor_lib.dll imports vendor_base.dll: the release runs only with both next to it.
         self.assertEqual(run_exe(release / "game.exe"), (21, "", ""))
 
     def test_build_ships_third_party_dlls_of_dynamic_modules(self):
@@ -529,23 +533,64 @@ class BuildTest(unittest.TestCase):
         self.assert_built(self.build(str(project)), release / "game.exe")
         self.assert_vendor_release(release, plugins)
 
-    def test_build_refuses_a_module_whose_third_party_dll_is_missing(self):
-        mods = self.vendor_folder(self.root / "mods")
-        project = self.new_project(self.root / "game", dynamic=["vendor_dep"], script=self.VENDOR_SCRIPT)
+    def test_build_ships_third_party_dlls_of_a_normally_importing_module(self):
+        self.assertIn("vendor_lib.dll", pe_imports(Path(VENDOR_MODULE_DIR) / "zodiac_mod_vendor_direct.dll"))
+        mods = self.vendor_folder(self.root / "mods", modules=("vendor_direct",))
+        project = self.new_project(self.root / "game", dynamic=["vendor_direct"], script=self.VENDOR_SCRIPTS["vendor_direct"])
         release = project / "release"
         self.assert_built(self.build(str(project), "--module-dir", str(mods)), release / "game.exe")
+        self.assert_vendor_release(release, mods, module="vendor_direct")
+
+    def test_build_refuses_a_module_whose_third_party_dll_is_missing(self):
+        # A normal import (the BASS/FMOD case: the module could not even load) and a delay import; a missing DLL the module imports, then
+        # one that DLL imports (found recursively). The build names it before loading anything and keeps the earlier release.
+        for module in ("vendor_direct", "vendor_dep"):
+            mods = self.vendor_folder(self.root / module / "mods", modules=(module,))
+            project = self.new_project(self.root / module / "game", dynamic=[module], script=self.VENDOR_SCRIPTS[module])
+            release = project / "release"
+            self.assert_built(self.build(str(project), "--module-dir", str(mods)), release / "game.exe")
+            before = {p.name: p.read_bytes() for p in release.iterdir()}
+            library = mods / ("zodiac_mod_%s.dll" % module)
+            for missing, needed in (("Vendor_Lib.DLL", "vendor_lib.dll"), ("vendor_base.dll", "vendor_base.dll")):
+                with self.subTest(module=module, missing=missing):
+                    held = self.root / module / missing
+                    (mods / missing).rename(held)
+                    code, out, err = self.build(str(project), "--module-dir", str(mods))
+                    held.rename(mods / missing)
+                    self.assertEqual((code, err.splitlines()), (2, ['error: module "%s" needs "%s", which is not next to "%s"' % (module, needed, library)]), out)
+                    self.assertEqual(out.splitlines()[-1], "Build failed: 1 error")
+                    self.assertEqual({p.name: p.read_bytes() for p in release.iterdir()}, before)
+
+    def test_build_refuses_a_third_party_dll_that_is_not_x64(self):
+        mods = self.vendor_folder(self.root / "mods")
+        # vendor_base.dll with the x86 machine (0x14C) in its file header.
+        base = mods / "vendor_base.dll"
+        data = bytearray(base.read_bytes())
+        struct.pack_into("<H", data, struct.unpack_from("<I", data, 0x3C)[0] + 4, 0x14C)
+        base.write_bytes(bytes(data))
+        project = self.new_project(self.root / "game", dynamic=["vendor_dep"], script=self.VENDOR_SCRIPT)
+        code, out, err = self.build(str(project), "--module-dir", str(mods))
+        self.assertEqual((code, err.splitlines()), (2, ['error: "%s" is not a 64-bit (x64) Windows DLL' % base]), out)
+        self.assertEqual(out.splitlines()[-1], "Build failed: 1 error")
+        self.assertFalse((project / "release").exists())
+
+    def test_build_ships_a_dll_two_modules_need_once(self):
+        # vendor_dep and vendor_direct each come with their own copy of vendor_lib.dll and vendor_base.dll, in folders of their own.
+        first = self.vendor_folder(self.root / "first", modules=("vendor_dep",))
+        second = self.vendor_folder(self.root / "second", modules=("vendor_direct",))
+        project = self.new_project(self.root / "game", dynamic=["vendor_dep", "vendor_direct"], script="int main()\n{\nreturn vendor_value(1)+vendor_direct_value(2);\n}\n")
+        release = project / "release"
+        self.assert_built(self.build(str(project), "--module-dir", str(first), "--module-dir", str(second)), release / "game.exe")
+        self.assertEqual(sorted(p.name for p in release.iterdir()), ["Vendor_Lib.DLL", "game.exe", "vendor_base.dll", "zodiac_mod_vendor_dep.dll", "zodiac_mod_vendor_direct.dll"])
+        self.assertEqual(run_exe(release / "game.exe"), (21, "", ""))
         before = {p.name: p.read_bytes() for p in release.iterdir()}
-        module = mods / "zodiac_mod_vendor_dep.dll"
-        # A missing DLL the module imports, then one that DLL imports (found recursively): the build stops and keeps the earlier release.
-        for missing, needed in (("Vendor_Lib.DLL", "vendor_lib.dll"), ("vendor_base.dll", "vendor_base.dll")):
-            with self.subTest(missing=missing):
-                held = self.root / missing
-                (mods / missing).rename(held)
-                code, out, err = self.build(str(project), "--module-dir", str(mods))
-                held.rename(mods / missing)
-                self.assertEqual((code, err.splitlines()), (2, ['error: module "vendor_dep" needs "%s", which is not next to "%s"' % (needed, module)]), out)
-                self.assertEqual(out.splitlines()[-1], "Build failed: 1 error")
-                self.assertEqual({p.name: p.read_bytes() for p in release.iterdir()}, before)
+        # The same name with other bytes: one of the modules would get the wrong DLL, so the build stops.
+        with open(second / "vendor_base.dll", "ab") as extra:
+            extra.write(b"\0")
+        code, out, err = self.build(str(project), "--module-dir", str(first), "--module-dir", str(second))
+        self.assertEqual((code, err.splitlines()), (2, ['error: "vendor_base.dll" is shipped by "vendor_dep" and "vendor_direct" with different contents']), out)
+        self.assertEqual(out.splitlines()[-1], "Build failed: 1 error")
+        self.assertEqual({p.name: p.read_bytes() for p in release.iterdir()}, before)
 
     def test_build_static_plugin_needs_library_and_toolchain_stamp(self):
         project = self.new_project(self.root / "game", static=["gpl_static"])

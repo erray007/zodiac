@@ -71,7 +71,7 @@ zodiac_add_module(cwd_probe SOURCES fixtures/modules/cwd_probe.cpp NO_STATIC OUT
 configure_file(fixtures/modules/corrupt_module.txt "${ZODIAC_TEST_MODULE_DIR}/zodiac_mod_corrupt${CMAKE_SHARED_LIBRARY_SUFFIX}" COPYONLY)
 if(WIN32)
 # Third-party DLLs of a dynamic module, in a folder of their own (zodiac build ships what sits next to a module DLL):
-# vendor_dep delay-imports vendor_lib.dll, which imports vendor_base.dll; neither of those two is a Zodiac module.
+# vendor_dep delay-imports vendor_lib.dll, vendor_direct imports it normally, and vendor_lib.dll imports vendor_base.dll; neither of those two is a Zodiac module.
 set(ZODIAC_VENDOR_MODULE_DIR "${CMAKE_BINARY_DIR}/vendor_modules")
 foreach(vendor IN ITEMS vendor_base vendor_lib)
 add_library(${vendor} SHARED fixtures/modules/vendor_lib.cpp)
@@ -83,6 +83,8 @@ target_link_libraries(vendor_lib PRIVATE vendor_base)
 zodiac_add_module(vendor_dep SOURCES fixtures/modules/vendor_dep.cpp NO_STATIC OUTPUT_DIRECTORY "${ZODIAC_VENDOR_MODULE_DIR}")
 target_link_libraries(zodiac_mod_vendor_dep PRIVATE vendor_lib)
 target_link_options(zodiac_mod_vendor_dep PRIVATE -Wl,--delayload=vendor_lib.dll)
+zodiac_add_module(vendor_direct SOURCES fixtures/modules/vendor_dep.cpp NO_STATIC OUTPUT_DIRECTORY "${ZODIAC_VENDOR_MODULE_DIR}" DEFINITIONS VENDOR_DIRECT)
+target_link_libraries(zodiac_mod_vendor_direct PRIVATE vendor_lib)
 endif()
 zodiac_add_test(test_project_file SOURCES test_project_file.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_text SOURCES test_text.cpp LIBRARIES zodiac_core)
