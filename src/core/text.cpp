@@ -1,6 +1,7 @@
 #include <core/text.hpp>
 #include <algorithm>
 #include <cstddef>
+#include <type_traits>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -103,6 +104,18 @@ if(!more_pattern)return true;
 pattern=pattern_rest;
 path.remove_prefix(path_cut+1);
 }
+}
+bool has_extension(const std::filesystem::path& path,std::string_view extension)
+{
+const std::filesystem::path actual=path.extension();
+const auto& text=actual.native();
+if(text.size()!=extension.size())return false;
+// Code units are compared as unsigned numbers (wchar_t on Windows, char elsewhere); only A-Z fold.
+const auto lower=[](unsigned long c){return c>=0x41&&c<=0x5A?c+0x20:c;};
+for(std::size_t i=0;i<text.size();++i){
+if(lower(static_cast<std::make_unsigned_t<std::filesystem::path::value_type>>(text[i]))!=lower(static_cast<unsigned char>(extension[i])))return false;
+}
+return true;
 }
 std::string error_text(const std::error_code& code)
 {

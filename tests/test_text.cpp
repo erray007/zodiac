@@ -1,5 +1,6 @@
 #include <core/text.hpp>
 #include <doctest/doctest.h>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -52,6 +53,21 @@ WideCharToMultiByte(CP_UTF8,0,wide.data(),static_cast<int>(wide.size()),expected
 CHECK(text==expected);
 }
 #endif
+
+TEST_CASE("has_extension compares the extension ignoring ASCII case")
+{
+CHECK(zodiac::has_extension("main.zs",".zs"));
+CHECK(zodiac::has_extension("MAIN.ZS",".zs"));
+CHECK(zodiac::has_extension("dir/Menu.Zs",".zs"));
+CHECK(zodiac::has_extension(std::filesystem::path(u8"şövalye.zS"),".zs"));
+CHECK_FALSE(zodiac::has_extension("main.zsx",".zs"));
+CHECK_FALSE(zodiac::has_extension("main.z",".zs"));
+CHECK_FALSE(zodiac::has_extension("main",".zs"));
+CHECK_FALSE(zodiac::has_extension("zs",".zs"));
+// A file name that only starts with a dot has no extension.
+CHECK_FALSE(zodiac::has_extension(".zs",".zs"));
+CHECK_FALSE(zodiac::has_extension("main.ys",".zs"));
+}
 
 TEST_CASE("one_line escapes control characters")
 {

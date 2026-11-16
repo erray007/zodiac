@@ -100,6 +100,14 @@ class CliTest(unittest.TestCase):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out.splitlines(), ["tek dosya"])
 
+    def test_run_script_extension_ignores_case(self):
+        folder = self.root / "upper"
+        folder.mkdir()
+        write(folder / "MAIN.ZS", 'void main()\n{\nexample_print("buyuk harf");\n}\n')
+        code, out, err = zodiac("run", str(folder / "MAIN.ZS"), "--module-dir", MODULE_DIR)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out.splitlines(), ["buyuk harf"])
+
     def test_run_lone_script_relative_include(self):
         folder = self.root / "lone"
         folder.mkdir()

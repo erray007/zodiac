@@ -314,6 +314,15 @@ project.toml("[game]\nmain = \"main.zs\"\n[workers]\nscripts = [\"../x.zs\"]\n")
 CHECK(error_of(project)=="zodiac.toml: error: worker script \"../x.zs\" must be inside the project");
 project.toml("[game]\nmain = \"main.zs\"\n[workers]\nscripts = [5]\n");
 CHECK(error_of(project)=="zodiac.toml: error: [workers] scripts must be an array of strings");
+// The extension is compared ignoring case, as Windows compares file names.
+project.write("Bots2.ZS","");
+project.write("notes.txt","");
+project.toml("[game]\nmain = \"main.zs\"\n[workers]\nscripts = [\"Bots2.ZS\"]\n");
+const auto upper=zodiac::load_project(project.dir());
+REQUIRE(upper.has_value());
+CHECK(upper->workers==std::vector<fs::path>{upper->root/"Bots2.ZS"});
+project.toml("[game]\nmain = \"main.zs\"\n[workers]\nscripts = [\"notes.txt\"]\n");
+CHECK(error_of(project)=="zodiac.toml: error: worker script \"notes.txt\" must be a .zs file");
 }
 
 TEST_CASE("project name comes from [game] name or the folder")

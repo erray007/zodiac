@@ -233,7 +233,7 @@ auto worker=inside_root(project.root,worker_name);
 if(!worker)return fail("zodiac.toml: error: worker script \""+one_line(worker_name)+"\" must be inside the project");
 const bool worker_is_file=fs::is_regular_file(*worker,ec);
 if(ec||!worker_is_file)return fail("zodiac.toml: error: worker script \""+one_line(worker_name)+"\" does not exist");
-if(worker->extension()!=fs::path(".zs"))return fail("zodiac.toml: error: worker script \""+one_line(worker_name)+"\" must be a .zs file");
+if(!has_extension(*worker,".zs"))return fail("zodiac.toml: error: worker script \""+one_line(worker_name)+"\" must be a .zs file");
 if(std::ranges::find(project.workers,*worker)==project.workers.end())project.workers.push_back(std::move(*worker));
 }
 auto main_script=inside_root(project.root,main_value->get());

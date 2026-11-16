@@ -218,6 +218,13 @@ class BuildTest(unittest.TestCase):
         self.assert_built(self.build(str(project / "levels" / "one" / "level.zs")), exe)
         self.assertEqual(run_exe(exe), (0, "", ""))
 
+    def test_build_from_script_file_with_upper_case_extension(self):
+        project = self.new_project(self.root / "game")
+        write(project / "menus" / "Menu.ZS", "void menu()\n{\n}\n")
+        exe = project / "release" / "game.exe"
+        self.assert_built(self.build(str(project / "menus" / "Menu.ZS")), exe)
+        self.assertEqual(run_exe(exe), (0, "", ""))
+
     def test_build_locked_output(self):
         import ctypes
         from ctypes import wintypes

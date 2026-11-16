@@ -195,7 +195,7 @@ if(!add_log_file(diagnostics,options.log_file))return exit_usage_error;
 const fs::path directory=options.positional.empty()?fs::path("."):path_from_utf8(options.positional.front());
 const std::vector<fs::path> dirs=search_dirs(options);
 std::expected<Project,std::string> project=std::unexpected(std::string());
-if(directory.extension()==".zs"){
+if(has_extension(directory,".zs")){
 std::error_code error;
 if(!fs::is_regular_file(directory,error)){
 fail(diagnostics,"error: script "+in_quotes(options.positional.front())+" does not exist");

@@ -1,5 +1,6 @@
 // Text helpers shared by user-facing messages.
 #pragma once
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -14,6 +15,9 @@ bool is_one_line(std::string_view text) noexcept;
 // "*" matches any run of characters inside one segment, "?" exactly one character of a segment (a whole UTF-8 sequence, not one byte), and a "**" segment any number of whole segments (including none).
 // Uses no regular expressions and never allocates.
 bool glob_match(std::string_view pattern,std::string_view path) noexcept;
+// True when path's extension (as std::filesystem::path::extension gives it) equals extension (".zs"), compared ASCII
+// case-insensitively: Windows file names ignore case, so "MAIN.ZS" is a script too. extension must be ASCII.
+bool has_extension(const std::filesystem::path& path,std::string_view extension);
 // The system's description of code as UTF-8 without trailing line breaks, spaces or full stop, for use after "...: " in a message
 // ("error N" when the system has none). On Windows a std::system_category code (a Win32 error, as std::filesystem and
 // GetLastError report them) is described by FormatMessageW in the user's language and converted to UTF-8, never through
