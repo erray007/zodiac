@@ -1,11 +1,14 @@
 #include "core/host.hpp"
+#include "core/types/array.hpp"
+#include "core/types/script_guard.hpp"
 #include "core/types/string.hpp"
+#include "core/types/string_binding.hpp"
 #include <angelscript.h>
-#include <scriptarray/scriptarray.h>
-#include <bit>
+#include <algorithm>
 #include <charconv>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <new>
 #include <type_traits>
 
@@ -121,24 +124,26 @@ bool is_named(const asITypeInfo* type,const char* name) noexcept
 const char* name_space=type->GetNamespace();
 return std::strcmp(type->GetName(),name)==0&&(!name_space||!*name_space);
 }
-// The script string registered by register_string (zodiac::String).
+// The script string registered by register_string (zodiac::String), recognised by the engine's string factory.
 bool is_script_string(const asITypeInfo* type) noexcept
 {
-return type&&is_named(type,"string")&&(type->GetFlags()&asOBJ_VALUE)&&type->GetSize()==sizeof(String);
+return is_script_string_type(type);
 }
-CScriptArray* to_array(zodiac_array* array) noexcept
+ScriptArray* to_array(zodiac_array* array) noexcept
 {
-return reinterpret_cast<CScriptArray*>(array);
+return reinterpret_cast<ScriptArray*>(array);
 }
-bool is_string_array(const CScriptArray* array) noexcept
+// Appends one default element (ScriptArray grows geometrically, so repeated pushes stay amortized O(1)) and returns its
+// index, or -1 when the array could not grow (the array has raised the script exception).
+int push_default(ScriptArray* array) noexcept
 {
-return is_script_string(array->GetArrayObjectType()->GetSubType());
+const int size=array->length();
+if(size==std::numeric_limits<int>::max()){
+raise_script_exception("out of memory");
+return -1;
 }
-// Geometric growth so repeated pushes stay amortized O(1); CScriptArray itself grows to the exact size.
-void grow_to(CScriptArray* array,asUINT size)
-{
-array->Reserve(size<=(asUINT(1)<<31)?std::bit_ceil(size):size);
-array->Resize(size);
+array->resize(size+1);
+return array->length()==size+1?size:-1;
 }
 // Only accepts noexcept functions, so every table entry is checked at compile time to never throw into plugin code.
 template<class R,class... A> constexpr auto nothrow_entry(R (*fn)(A...) noexcept) noexcept
@@ -412,49 +417,42 @@ if(result.kind!=Kind::array||!result.handle||result.element!=kind){
 misuse(gen,bound,"ret_array");
 return nullptr;
 }
-CScriptArray* array=nullptr;
-try{
-array=CScriptArray::Create(result.type);
-if(array&&reserve)array->Reserve(reserve<=(uint32_t(1)<<31)?std::bit_ceil(reserve):reserve);
-}
-catch(...){
-if(array)array->Release();
-out_of_memory();
-return nullptr;
-}
+ScriptArray* array=ScriptArray::create(result.type);
 if(!array)return nullptr;
+// The hint is a capacity; pushes grow geometrically beyond it.
+if(reserve)array->reserve(static_cast<int>(std::min<uint32_t>(reserve,static_cast<uint32_t>(std::numeric_limits<int>::max()))));
 return_handle(gen,result,array);
 return reinterpret_cast<zodiac_array*>(array);
 }
 static uint32_t array_length(zodiac_array* array) noexcept
 {
-return array?to_array(array)->GetSize():0;
+return array?static_cast<uint32_t>(to_array(array)->length()):0;
 }
 static const char* array_get_string(zodiac_array* array,uint32_t index,size_t* length) noexcept
 {
-CScriptArray* items=to_array(array);
-const String* text=items&&index<items->GetSize()&&is_string_array(items)?static_cast<const String*>(items->At(index)):nullptr;
+const ScriptArray* items=to_array(array);
+const String* text=items&&index<static_cast<uint32_t>(items->length())&&items->holds_strings()?static_cast<const String*>(items->at(static_cast<int>(index))):nullptr;
 if(length)*length=text?static_cast<size_t>(text->byte_length()):0;
 return text?text->data():nullptr;
 }
 static int32_t array_get_int32(zodiac_array* array,uint32_t index) noexcept
 {
-CScriptArray* items=to_array(array);
-return items&&index<items->GetSize()&&items->GetElementTypeId()==asTYPEID_INT32?load<int32_t>(items->At(index)):0;
+const ScriptArray* items=to_array(array);
+return items&&index<static_cast<uint32_t>(items->length())&&items->element_type_id()==asTYPEID_INT32?load<int32_t>(items->at(static_cast<int>(index))):0;
 }
 static double array_get_double(zodiac_array* array,uint32_t index) noexcept
 {
-CScriptArray* items=to_array(array);
-return items&&index<items->GetSize()&&items->GetElementTypeId()==asTYPEID_DOUBLE?load<double>(items->At(index)):0.0;
+const ScriptArray* items=to_array(array);
+return items&&index<static_cast<uint32_t>(items->length())&&items->element_type_id()==asTYPEID_DOUBLE?load<double>(items->at(static_cast<int>(index))):0.0;
 }
 static void array_push_string(zodiac_array* array,const char* data,size_t length) noexcept
 {
-CScriptArray* items=to_array(array);
-if(!items||!is_string_array(items))return;
+ScriptArray* items=to_array(array);
+if(!items||!items->holds_strings())return;
+const int index=push_default(items);
+if(index<0||!data)return;
 try{
-const asUINT size=items->GetSize();
-grow_to(items,size+1);
-if(String* text=static_cast<String*>(items->At(size));text&&data)*text=std::string_view(data,length);
+*static_cast<String*>(items->at(index))=std::string_view(data,length);
 }
 catch(...){
 out_of_memory();
@@ -462,29 +460,13 @@ out_of_memory();
 }
 static void array_push_int32(zodiac_array* array,int32_t value) noexcept
 {
-CScriptArray* items=to_array(array);
-if(!items||items->GetElementTypeId()!=asTYPEID_INT32)return;
-try{
-const asUINT size=items->GetSize();
-grow_to(items,size+1);
-if(void* slot=items->At(size))store(slot,value);
-}
-catch(...){
-out_of_memory();
-}
+ScriptArray* items=to_array(array);
+if(items&&items->element_type_id()==asTYPEID_INT32)items->insert_last(&value);
 }
 static void array_push_double(zodiac_array* array,double value) noexcept
 {
-CScriptArray* items=to_array(array);
-if(!items||items->GetElementTypeId()!=asTYPEID_DOUBLE)return;
-try{
-const asUINT size=items->GetSize();
-grow_to(items,size+1);
-if(void* slot=items->At(size))store(slot,value);
-}
-catch(...){
-out_of_memory();
-}
+ScriptArray* items=to_array(array);
+if(items&&items->element_type_id()==asTYPEID_DOUBLE)items->insert_last(&value);
 }
 static void set_exception(zodiac_call*,const char* message) noexcept
 {

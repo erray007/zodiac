@@ -206,14 +206,14 @@ REQUIRE(fixture.run("string main(){string s;s=7;string t;t=2.5;string u;u=false;
 CHECK(fixture.returned_string()=="72.5false");
 }
 
-TEST_CASE("comparison is byte order and works with the array add-on")
+TEST_CASE("comparison is byte order and works with the array")
 {
 ScriptFixture fixture;
 CHECK(holds(fixture,"\"a\"==\"a\"&&\"a\"!=\"b\""));
 CHECK(holds(fixture,"\"a\"<\"b\"&&\"b\">\"a\"&&\"a\"<=\"a\"&&\"a\">=\"a\""));
 CHECK(holds(fixture,"\"z\"<\"\xC4\xB1\""));
 CHECK(holds(fixture,"\"ab\"<\"abc\""));
-REQUIRE(fixture.run("string main(){array<string> a={\"c\",\"a\",\"b\"};a.sortAsc();a.insertLast(\"\xC5\x9F\");return join(a,\",\")+a.find(\"b\");}","string main()")==asEXECUTION_FINISHED);
+REQUIRE(fixture.run("string main(){array<string> a={\"c\",\"a\",\"b\"};a.sort();a.insert_last(\"\xC5\x9F\");return join(a,\",\")+a.find(\"b\");}","string main()")==asEXECUTION_FINISHED);
 CHECK(fixture.returned_string()=="a,b,c,\xC5\x9F" "1");
 }
 

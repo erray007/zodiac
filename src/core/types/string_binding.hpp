@@ -1,8 +1,10 @@
 // Registers zodiac::String as the script `string` (spec 8.1) and the exception helpers (spec 8.8) with an AngelScript engine.
 // Contract:
 // - register_string(engine): `string` is a value type of zodiac::String's size with asOBJ_VALUE|asOBJ_APP_CLASS_CDAK (its
-//   asGetTypeTraits), bound with native calling conventions. The array template must be registered first: split()
-//   returns and join() takes array<string> (the add-on array until Zodiac's own array replaces it).
+//   asGetTypeTraits), bound with native calling conventions. Zodiac's array (register_array) must be registered first:
+//   split() returns and join() takes array<string>, and join(separator) is added to array<T> as string join(const T &in)
+//   const, which throws "join needs an array of strings" for any other element type (a string separator does not compile
+//   for them).
 //   Script API (style C; indices and counts are characters): length, byte_length, empty, s[i] (read-only, one-character
 //   string), code_at, byte_at, find, rfind, contains, starts_with, ends_with, count, substr, left, right,
 //   split(delimiter, keep_empty=true), replace(old, new, all=true), trim, trim_left, trim_right, lower, upper,
@@ -24,11 +26,15 @@
 // - register_exception_helpers(engine): void throw(const string &in), and string exception_info() with its alias
 //   getExceptionInfo() bound to the same function (the active context's exception text, "" when none).
 // - Both throw std::runtime_error naming the declaration when the engine refuses a registration (a programming error).
+// - is_script_string_type(type) is true exactly for the `string` type register_string registered in type's engine (the
+//   engine's string factory is Zodiac's and its type is type), never for another type that happens to be named string.
 #pragma once
 
 class asIScriptEngine;
+class asITypeInfo;
 
 namespace zodiac {
 void register_string(asIScriptEngine* engine);
 void register_exception_helpers(asIScriptEngine* engine);
+bool is_script_string_type(const asITypeInfo* type) noexcept;
 }

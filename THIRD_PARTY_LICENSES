@@ -2,7 +2,7 @@ Zodiac third-party licenses
 
 The Zodiac kit contains or is built from the software below. The license texts are copied unchanged from the sources the kit is built from.
 
-AngelScript and toml++ are linked into zodiac.exe and into every game built with the kit, and so are Zodiac's tables generated from the Unicode Character Database. The LLVM linker (ld.lld.exe) and its runtime libraries libLLVM, libc++ and libunwind are shipped in bin (libLLVM also contains the regular expression, strlcpy, xxHash and Unicode code listed after the LLVM license), and libc++, libunwind and compiler-rt (libclang_rt.builtins) are statically linked into every game. The MinGW-w64 runtime is statically linked into zodiac.exe and into every game. doctest is only used to test Zodiac and is not shipped.
+AngelScript and toml++ are linked into zodiac.exe and into every game built with the kit, and so are Zodiac's tables generated from the Unicode Character Database. Zodiac's script array (array<T>) is derived from AngelScript's scriptarray add-on and is covered by the AngelScript license below. The LLVM linker (ld.lld.exe) and its runtime libraries libLLVM, libc++ and libunwind are shipped in bin (libLLVM also contains the regular expression, strlcpy, xxHash and Unicode code listed after the LLVM license), and libc++, libunwind and compiler-rt (libclang_rt.builtins) are statically linked into every game. The MinGW-w64 runtime is statically linked into zodiac.exe and into every game. doctest is only used to test Zodiac and is not shipped.
 
 ==============================================================================
 AngelScript (zlib license), https://www.angelcode.com/angelscript/

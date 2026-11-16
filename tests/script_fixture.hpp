@@ -2,8 +2,8 @@
 #pragma once
 #include <doctest/doctest.h>
 #include <angelscript.h>
-#include <scriptarray/scriptarray.h>
 #include <core/host.hpp>
+#include <core/types/array.hpp>
 #include <core/types/string.hpp>
 #include <core/types/string_binding.hpp>
 #include <string>
@@ -25,8 +25,8 @@ inline asIScriptEngine* create_engine(std::string& messages)
 asIScriptEngine* engine=asCreateScriptEngine();
 REQUIRE(engine!=nullptr);
 engine->SetMessageCallback(asFUNCTION(collect_engine_message),&messages,asCALL_CDECL);
-// The same registrations as ScriptRuntime: the array add-on first, since split and join use array<string>.
-RegisterScriptArray(engine,true);
+// The same registrations as ScriptRuntime: the array first, since split and join use array<string>.
+zodiac::register_array(engine);
 zodiac::register_string(engine);
 zodiac::register_exception_helpers(engine);
 return engine;

@@ -2,13 +2,14 @@
 #include <core/text.hpp>
 #include <core/types/script_guard.hpp>
 #include <core/types/string.hpp>
+#include <core/types/array.hpp>
 #include <angelscript.h>
-#include <scriptarray/scriptarray.h>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <stdexcept>
@@ -284,37 +285,41 @@ String right(const String& self,int count)
 {
 return value_or_raise(self.right(count),self);
 }
-CScriptArray* split(const String& self,const String& delimiter,bool keep_empty)
+ScriptArray* split(const String& self,const String& delimiter,bool keep_empty)
 {
 asIScriptContext* context=asGetActiveContext();
 asITypeInfo* type=context?static_cast<asITypeInfo*>(context->GetEngine()->GetUserData(string_array_slot)):nullptr;
 if(!type)return nullptr;
 std::vector<String> parts=self.split(delimiter.bytes(),keep_empty);
-const asUINT size=static_cast<asUINT>(parts.size());
-CScriptArray* array=CScriptArray::Create(type,size);
+if(parts.size()>static_cast<std::size_t>(std::numeric_limits<int>::max()))throw std::bad_alloc();
+const int size=static_cast<int>(parts.size());
+// The array raises the script exception when it cannot allocate its elements.
+ScriptArray* array=ScriptArray::create(type,size);
 if(!array)return nullptr;
-if(array->GetSize()!=size){
-// The array could not allocate its elements and has raised the script exception.
-array->Release();
-return nullptr;
-}
-for(asUINT index=0;index<size;++index)*static_cast<String*>(array->At(index))=std::move(parts[index]);
+for(int index=0;index<size;++index)*static_cast<String*>(array->at(index))=std::move(parts[static_cast<std::size_t>(index)]);
 return array;
 }
-String join(const CScriptArray& parts,const String& separator)
+String join(const ScriptArray& parts,const String& separator)
 {
-const asUINT size=parts.GetSize();
+const int size=parts.length();
 if(size==0)return String();
-std::size_t total=static_cast<std::size_t>(separator.byte_length())*(size-1);
-for(asUINT index=0;index<size;++index)total+=static_cast<std::size_t>(static_cast<const String*>(parts.At(index))->byte_length());
+std::size_t total=static_cast<std::size_t>(separator.byte_length())*static_cast<std::size_t>(size-1);
+for(int index=0;index<size;++index)total+=static_cast<std::size_t>(static_cast<const String*>(parts.at(index))->byte_length());
 if(total>static_cast<std::size_t>(String::max_byte_length))throw std::bad_alloc();
 String out;
 out.reserve(static_cast<int>(total));
-for(asUINT index=0;index<size;++index){
+for(int index=0;index<size;++index){
 if(index)out.append(separator);
-out.append(*static_cast<const String*>(parts.At(index)));
+out.append(*static_cast<const String*>(parts.at(index)));
 }
 return out;
+}
+// array<T>::join(const T &in separator): registered on the template, so it only does anything for array<string>; for other
+// element types a string separator does not even compile.
+String join_method(const ScriptArray& parts,const void* separator)
+{
+if(!parts.holds_strings())throw std::runtime_error("join needs an array of strings");
+return join(parts,*static_cast<const String*>(separator));
 }
 String replace(const String& self,const String& old_text,const String& new_text,bool all)
 {
@@ -490,6 +495,9 @@ void register_string(asIScriptEngine* engine)
 if(!engine->GetTypeInfoByName("array"))throw std::runtime_error("cannot register string: register the array type first");
 check(engine->RegisterObjectType("string",sizeof(String),asOBJ_VALUE|asOBJ_APP_CLASS_CDAK),"string");
 check(engine->RegisterStringFactory("string",&string_factory()),"string factory");
+// A template method has to be registered before any instance exists, and split's declaration below creates array<string>.
+constexpr const char* join_declaration="string join(const T&in separator) const";
+check(engine->RegisterObjectMethod("array<T>",join_declaration,asFUNCTION(guarded<&join_method>::call),asCALL_CDECL_OBJFIRST),join_declaration);
 Registrar r(engine);
 r.behaviour(asBEHAVE_CONSTRUCT,"void f()",asFUNCTION(construct),asCALL_CDECL_OBJLAST);
 r.behaviour(asBEHAVE_CONSTRUCT,"void f(const string &in)",asFUNCTION(copy_construct),asCALL_CDECL_OBJLAST);
@@ -549,5 +557,13 @@ r.global("string format(const string &in format, const ?&in ...)",asFUNCTION(sta
 asITypeInfo* array_type=engine->GetTypeInfoByDecl("array<string>");
 if(!array_type)throw std::runtime_error("cannot register string: array<string> is not available");
 engine->SetUserData(array_type,string_array_slot);
+}
+
+bool is_script_string_type(const asITypeInfo* type) noexcept
+{
+if(!type)return false;
+asIStringFactory* factory=nullptr;
+const int type_id=type->GetEngine()->GetStringFactory(nullptr,&factory);
+return factory==&string_factory()&&type_id==type->GetTypeId();
 }
 }

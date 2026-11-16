@@ -93,6 +93,7 @@ zodiac_add_test(test_unicode SOURCES test_unicode.cpp LIBRARIES zodiac_core)
 target_compile_definitions(test_unicode PRIVATE "ZODIAC_TEST_UNICODE_VECTORS=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/unicode/nfc_vectors.txt\"")
 zodiac_add_test(test_string SOURCES test_string.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_string_binding SOURCES test_string_binding.cpp script_fixture.hpp LIBRARIES zodiac_core)
+zodiac_add_test(test_array SOURCES test_array.cpp script_fixture.hpp LIBRARIES zodiac_core)
 zodiac_add_test(test_module_registry SOURCES test_module_registry.cpp script_fixture.hpp LIBRARIES zodiac_core)
 target_compile_definitions(test_module_registry PRIVATE
 "ZODIAC_TEST_MODULE_DIR=\"${CMAKE_BINARY_DIR}/modules\""
