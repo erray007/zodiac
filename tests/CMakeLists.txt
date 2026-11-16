@@ -190,7 +190,7 @@ set_tests_properties(cli_e2e PROPERTIES ENVIRONMENT "ZODIAC_EXE=$<TARGET_FILE:zo
 if(WIN32)
 # Builds real releases with the build tree's kit layout (zodiac_kit_stage); echo_args stands in for a signing tool.
 add_test(NAME build_e2e COMMAND ${Python3_EXECUTABLE} -I -m unittest discover -v -s ${CMAKE_CURRENT_SOURCE_DIR}/e2e -p "test_build.py")
-set_tests_properties(build_e2e PROPERTIES ENVIRONMENT "ZODIAC_EXE=$<TARGET_FILE:zodiac>;ZODIACW_EXE=$<TARGET_FILE:zodiacw>;ZODIAC_MODULE_DIR=${CMAKE_BINARY_DIR}/modules;ZODIAC_TEST_MODULE_DIR=${ZODIAC_TEST_MODULE_DIR};ZODIAC_VERSION=${PROJECT_VERSION};ZODIAC_ECHO_ARGS=$<TARGET_FILE:echo_args>;ZODIAC_VENDOR_MODULE_DIR=${ZODIAC_VENDOR_MODULE_DIR};PYTHONIOENCODING=utf-8")
+set_tests_properties(build_e2e PROPERTIES ENVIRONMENT "ZODIAC_EXE=$<TARGET_FILE:zodiac>;ZODIACW_EXE=$<TARGET_FILE:zodiacw>;ZODIAC_MODULE_DIR=${CMAKE_BINARY_DIR}/modules;ZODIAC_TEST_MODULE_DIR=${ZODIAC_TEST_MODULE_DIR};ZODIAC_VERSION=${PROJECT_VERSION};ZODIAC_ECHO_ARGS=$<TARGET_FILE:echo_args>;ZODIAC_VENDOR_MODULE_DIR=${ZODIAC_VENDOR_MODULE_DIR};ZODIAC_BUILD_CONFIG=$<CONFIG>;PYTHONIOENCODING=utf-8")
 # The installed kit: a fresh "cmake --install" into build/<preset>/kit-test/Zodiac (the folder is emptied first, so nothing stale survives),
 # then kit_e2e checks the layout and builds games with a copy of it in a folder of its own, with only the Windows system folders on PATH.
 set(ZODIAC_KIT_TEST_DIR "${CMAKE_BINARY_DIR}/kit-test/Zodiac")

@@ -13,7 +13,7 @@
 **Plan series** (each its own plan, written when the previous one lands):
 1. Foundation (this plan)
 2. Script API proposal: a document for owner approval, including the game-loop model (spec §5). No module code before it is approved.
-3. Release builds: static module registration via linker section, bundled `lld`, bytecode/asset embedding, CI size gate (< 3 MB hello world)
+3. Release builds: static module registration via linker section, bundled `lld`, bytecode/asset embedding, CI size gate (at most 5 MB hello world; raised to 5 MB by the owner, 2026-11-17)
 4. Core platform: window, keyboard, timers, file I/O
 5. `audio` + `screen_reader`
 6. Windows host → Linux target

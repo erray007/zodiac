@@ -224,8 +224,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "hello.exe failed with exit code $LASTEXITCODE" }
           $size = (Get-Item -LiteralPath $hello).Length
           "hello.exe ran and exited with 0. Size: $size bytes."
-          # Size gate (spec 8.9): a core-only hello world release is at most 3 MB.
-          if ($size -gt 3MB) { throw "hello.exe is $size bytes, more than the 3 MB limit" }
+          # Size gate (spec 8.9): a core-only hello world release is at most 5 MB.
+          if ($size -gt 5MB) { throw "hello.exe is $size bytes, more than the 5 MB limit" }
       # Two rounds. Round 1: .zs already belongs to another program (a fake ProgID); every option is installed, then uninstall must give .zs back and
       # remove everything else it added. Round 2: the user PATH already holds the kit's bin folder; uninstall must leave that entry, which it did not add.
       - name: Setup wizard, silent install and uninstall

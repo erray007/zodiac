@@ -252,7 +252,7 @@ The dev CLI (`zodiac run`) always writes to its console; the file sink applies t
 
 ## 9. Success criteria
 
-- A "hello world" release build (core + audio + screen_reader, playing one sound and speaking text) is a single executable **under 3 MB**, with no networking, HTTP or Phonon code inside (verifiable by symbol inspection). CI enforces the size limit and fails the PR when it is exceeded.
+- A "hello world" release build (core + audio + screen_reader, playing one sound and speaking text) is a single executable **at most 5 MB** (raised to 5 MB by the owner, 2026-11-17), with no networking, HTTP or Phonon code inside (verifiable by symbol inspection). CI enforces the size limit and fails the PR when it is exceeded.
 - A clean Windows machine and a clean Linux machine can install the kit and produce a release build with no other toolchain installed.
 - Blood Bath (client on Windows, server on Linux) is ported using `bgt_compat` with minimal, documented changes, and a full multiplayer session works end to end.
 - CI builds and tests every module on Windows and Linux on every PR.

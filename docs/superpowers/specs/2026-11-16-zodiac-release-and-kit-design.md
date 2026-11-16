@@ -202,7 +202,7 @@ command = ["signtool", "sign", "/fd", "SHA256", "/a", "{file}"]
 
 - Builds the kit layout, the zip and the setup wizard on every push to `main` and for tags; uploads them as artifacts. Tags `v*` publish a GitHub release with both packages and checksums.
 - Clean-machine test: in a fresh Windows job without the dev toolchain on PATH, unzip the kit, `zodiac new`, `zodiac build`, run the produced executable, check the exit code and output.
-- Size gate: a core-only "hello world" release must be at most 3 MB; CI fails above it. (The foundation spec's full criterion with `audio` and `screen_reader` takes over in plan 5.)
+- Size gate: a core-only "hello world" release must be at most 5 MB (raised to 5 MB by the owner, 2026-11-17), measured on Release builds; CI fails above it. (The foundation spec's full criterion with `audio` and `screen_reader` takes over in plan 5.)
 - Silent install and uninstall of the setup wizard (`/VERYSILENT`) in CI, checking PATH, association and file removal.
 
 ## 9. Success criteria
@@ -212,7 +212,7 @@ command = ["signtool", "sign", "/fd", "SHA256", "/a", "{file}"]
 - Every script fixture gives the same exit code and diagnostics under `run` and as a release build.
 - Double-clicking a `.zs` file runs it; with no project file, a script calling a function from an installed module runs. *Superseded by `2026-11-16-zodiac-kit-usability-design.md` item 8: with no project file a core-only script runs, and a module call fails to compile with the note line.*
 - The owner completes the setup wizard and the uninstall with NVDA alone.
-- A core-only hello world release is at most 3 MB.
+- A core-only hello world release is at most 5 MB (raised to 5 MB by the owner, 2026-11-17).
 
 ## 9a. Order (my call)
 

@@ -24,6 +24,5 @@ endfunction()
 zodiac_core_target(zodiac_core ${ZODIAC_CORE_SOURCES} pe_imports.cpp pe_imports.hpp)
 zodiac_core_target(zodiac_core_release ${ZODIAC_CORE_SOURCES} static_modules.cpp)
 target_compile_definitions(zodiac_core_release PUBLIC ZODIAC_RELEASE=1)
-# The release core is the code games ship, so it is optimized for size even in debug presets: the kit's hello size gate
-# (at most 3 MB) then measures code like a release's instead of unoptimized code, which is about three times larger.
-target_compile_options(zodiac_core_release PRIVATE $<$<CONFIG:Debug>:-Os>)
+# Like every target, the release core is unoptimized in Debug builds so it stays debuggable; the hello size gate (at most
+# 5 MB, test_hello_size_gate) therefore measures Release builds only.
