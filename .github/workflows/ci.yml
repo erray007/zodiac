@@ -138,7 +138,7 @@ jobs:
         env:
           ZODIAC_SIGNING_PASSWORD: ${{ secrets.ZODIAC_SIGNING_PASSWORD }}
         run: .tools/cmake/bin/cmake --build --preset windows-release --target zodiac_installer
-      # A setup built from the script as it was before the rename (a test fixture, never released): kit-clean-machine installs it and upgrades it with the real one.
+      # A setup built from the script as it was before the rename (a test fixture, uploaded as its own artifact so the release job never sees it): kit-clean-machine installs it and upgrades it with the real one.
       - name: Build the old-named setup for the upgrade test
         run: |
           $setup = Get-ChildItem dist -Filter 'zodiac-setup-*.exe' | Select-Object -First 1
@@ -155,7 +155,13 @@ jobs:
           path: |
             dist/zodiac-*-windows-x86_64.zip
             dist/zodiac-setup-*.exe
-            dist/zodiac-old-setup-*.exe
+          if-no-files-found: error
+      # A separate artifact, so the release job (which publishes every file of zodiac-kit) can never attach it.
+      - name: Upload the old-named setup for the upgrade test
+        uses: actions/upload-artifact@v4
+        with:
+          name: zodiac-old-setup
+          path: dist/zodiac-old-setup-*.exe
           if-no-files-found: error
       - name: Upload logs on failure
         if: failure()
@@ -180,6 +186,11 @@ jobs:
         with:
           name: zodiac-kit
           path: ${{ runner.temp }}/zodiac-kit
+      - name: Download the old-named setup
+        uses: actions/download-artifact@v4
+        with:
+          name: zodiac-old-setup
+          path: ${{ runner.temp }}/zodiac-old-setup
       - name: Portable zip in a folder with a space and a non-English letter
         run: |
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\Wbem;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
@@ -291,7 +302,7 @@ jobs:
 
           # Round 3: the upgrade a user with the old-named setup really does. The old setup (packaging/test/zodiac-old-name.iss) installs everything, the user
           # keeps a file in its Start menu folder, then the real setup installs over it: same AppId, so one uninstall entry, renamed, with the shortcuts moved.
-          $oldSetup = Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\zodiac-kit" -Filter 'zodiac-old-setup-*.exe' | Select-Object -First 1
+          $oldSetup = Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\zodiac-old-setup" -Filter 'zodiac-old-setup-*.exe' | Select-Object -First 1
           if (-not $oldSetup) { throw "The old-named setup is missing from the artifact" }
           $pathBefore = Get-RawUserPath
           $app = Install-Zodiac 'addtopath,associate,buildmenu,shortcuts' 3 $oldSetup.FullName "Zodiac $version"
@@ -345,6 +356,9 @@ jobs:
           $version = $setup.BaseName -replace '^zodiac-setup-', ''
           if ($env:GITHUB_REF_NAME -cne "v$version") { throw "The tag $env:GITHUB_REF_NAME does not match the kit version $version (PROJECT_VERSION in CMakeLists.txt): tag v$version instead" }
           "Tag $env:GITHUB_REF_NAME matches the kit version $version."
+          # Only the zip and the setup are released: anything else in the artifact (such as a test setup) must not be published.
+          $unexpected = @(Get-ChildItem -LiteralPath kit -Recurse -File | Where-Object { $_.Name -cne "zodiac-setup-$version.exe" -and $_.Name -cne "zodiac-$version-windows-x86_64.zip" })
+          if ($unexpected.Count -ne 0) { throw "The kit artifact holds files that are not released: $($unexpected.Name -join ', ')" }
       - name: Write SHA256SUMS
         run: |
           $lines = Get-ChildItem -LiteralPath kit -File | Sort-Object Name | ForEach-Object { "$((Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant())  $($_.Name)" }
