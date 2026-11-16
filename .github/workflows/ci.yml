@@ -356,6 +356,7 @@ jobs:
           $version = $setup.BaseName -replace '^zodiac-setup-', ''
           if ($env:GITHUB_REF_NAME -cne "v$version") { throw "The tag $env:GITHUB_REF_NAME does not match the kit version $version (PROJECT_VERSION in CMakeLists.txt): tag v$version instead" }
           "Tag $env:GITHUB_REF_NAME matches the kit version $version."
+          if (-not (Test-Path -LiteralPath "kit/zodiac-$version-windows-x86_64.zip")) { throw "The portable zip is missing from the artifact" }
           # Only the zip and the setup are released: anything else in the artifact (such as a test setup) must not be published.
           $unexpected = @(Get-ChildItem -LiteralPath kit -Recurse -File | Where-Object { $_.Name -cne "zodiac-setup-$version.exe" -and $_.Name -cne "zodiac-$version-windows-x86_64.zip" })
           if ($unexpected.Count -ne 0) { throw "The kit artifact holds files that are not released: $($unexpected.Name -join ', ')" }

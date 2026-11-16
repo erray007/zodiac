@@ -51,7 +51,7 @@ Zodiac is distributed as an installable package. A game developer installs only 
 
 | Option | Summary |
 |---|---|
-| **A. Load every installed module (chosen)** | One-file experiments (`speak("hello")`) just work, as in NVGT. `zodiac build` still requires a project file. |
+| **A. Load every installed module (chosen first, superseded: see row B and kit usability spec item 8)** | One-file experiments (`speak("hello")`) just work, as in NVGT. `zodiac build` still required a project file (later changed: it builds a lone script with the core only). |
 | B. Core only | Stricter; every experiment needs a project file. *Chosen later instead of A: `2026-11-16-zodiac-kit-usability-design.md` item 8.* |
 
 **Code signing**
