@@ -22,7 +22,7 @@ The owner tried the kit: right-click "Build with Zodiac" on a lone `.zs` file st
 
 8. **No project file means core only (supersedes items 1 and 6, and plan 3 spec 8.5's "every installed module").** The owner found the flaw: Zodiac will ship several audio engines that register the same names, so loading every installed module would make them collide. Without a `zodiac.toml` (and without `--config`), `zodiac run <file.zs>` and `zodiac build <file.zs>` load no modules at all, only the core.
    - The build warning becomes `warning: no zodiac.toml; only the core is available (create a project file to add modules)`.
-   - When the compile fails in this mode, one extra line follows the compiler errors: `note: no zodiac.toml; only the core is available, so module functions are not declared (create a project file to add modules)`. In `run` and `build` alike.
+   - When the compile fails in this mode, one extra line follows the compiler errors: `note: no zodiac.toml; only the core is available, so module functions are not declared (create a project file to add modules)`. In `run` and `build` alike. Only a failed compile draws the note; a missing or misdeclared `main()` or a throwing global initializer does not.
    - `Create project file` writes a `zodiac.toml` with empty `static` and `dynamic` lists. The run error window offers the same button, only when that note was reported (no project file and the scripts failed to compile); every other run failure has no button.
    - The lone-build static/dynamic split of item 6 is removed.
    - Design note for the audio plan: audio engine modules share one API so a game switches engine by changing one line of `zodiac.toml`.
