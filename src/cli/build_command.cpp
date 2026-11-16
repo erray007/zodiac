@@ -44,9 +44,13 @@ namespace {
 constexpr int exit_build_error=2;
 
 // What a build produced, also when it failed part way: the executable's path (empty until known) and the game's name (empty until the project loads).
+// used_lone_file and static_modules are set once the project loads: true when a lone script was built without a project file, and the modules
+// linked statically (for a lone script, every installed module), so the result window can offer a project file listing them.
 struct BuildOutcome{
 std::filesystem::path exe;
 std::string game_name;
+bool used_lone_file=false;
+std::vector<std::string> static_modules;
 };
 
 #ifdef _WIN32
@@ -439,15 +443,41 @@ if(!copy_into(asset,output/asset.lexically_relative(project.root),diagnostics))r
 return exit_ok;
 }
 
+// Step 1: the project to build, as build_command.hpp describes it. Reports its own errors and the lone-file warning.
+std::expected<Project,int> project_of(const BuildOptions& options,Diagnostics& diagnostics)
+{
+const auto failed=[&diagnostics](std::string_view message){return std::unexpected(fail(diagnostics,message));};
+std::error_code ec;
+if(!options.config.empty()){
+auto project=load_project_file(options.config);
+if(!project)return failed(project.error());
+if(options.target.empty())return std::move(*project);
+if(!fs::is_regular_file(options.target,ec))return failed("error: script "+quoted_path(options.target)+" does not exist");
+if(auto replaced=set_main_script(*project,options.target);!replaced)return failed(replaced.error());
+return std::move(*project);
+}
+const fs::path target=options.target.empty()?fs::path("."):options.target;
+if(const std::optional<fs::path> root=project_root_of(target)){
+auto project=load_project(*root);
+if(!project)return failed(project.error());
+return std::move(*project);
+}
+if(!has_extension(target,".zs")||!fs::is_regular_file(target,ec))return failed("error: zodiac.toml not found; create a project with zodiac new");
+auto project=load_project_for_script(target,installed_module_names(options.module_dirs));
+if(!project)return failed(project.error());
+// A zodiac.toml that appeared since the search is used by load_project_for_script, and then it is no lone file.
+if(project->file.empty())diagnostics.report(ZODIAC_LOG_WARNING,"warning: no zodiac.toml; every installed module was linked in (create a project file to choose modules)");
+return std::move(*project);
+}
+
 int build_release(const BuildOptions& options,Diagnostics& diagnostics,BuildOutcome& outcome)
 {
-const fs::path target=options.target.empty()?fs::path("."):options.target;
-const std::optional<fs::path> root=project_root_of(target);
-if(!root)return fail(diagnostics,"error: zodiac.toml not found; create a project with zodiac new");
-auto project=load_project(*root);
-if(!project)return fail(diagnostics,project.error());
+auto project=project_of(options,diagnostics);
+if(!project)return project.error();
 outcome.game_name=project->name;
-if(!usable_file_name(project->name))return fail(diagnostics,"error: the game name "+in_quotes(project->name)+" cannot be used as a file name; change [game] name in zodiac.toml");
+outcome.used_lone_file=project->file.empty();
+outcome.static_modules=project->static_modules;
+if(!usable_file_name(project->name))return fail(diagnostics,"error: the game name "+in_quotes(project->name)+" cannot be used as a file name; "+(outcome.used_lone_file?std::string("rename the script"):"change [game] name in "+path_to_utf8(project->file.filename())));
 const fs::path kit_exe=platform::executable_path();
 if(kit_exe.empty())return fail(diagnostics,"error: cannot find the folder of the zodiac executable");
 const KitLayout kit=kit_layout(kit_exe);
@@ -496,7 +526,8 @@ const bool succeeded=code==0;
 platform::write_stdout_line(report.summary(succeeded,outcome.exe));
 if(options.no_window||!platform::has_interactive_desktop())return code;
 // A project that did not load leaves the cwd as it was, so the target still resolves as given.
-const std::string name=outcome.game_name.empty()?target_name(options.target):outcome.game_name;
+const std::filesystem::path& named=options.target.empty()&&!options.config.empty()?options.config.parent_path():options.target;
+const std::string name=outcome.game_name.empty()?target_name(named):outcome.game_name;
 const std::filesystem::path folder=outcome.exe.parent_path();
 platform::show_result_window("Zodiac build - "+name,report.text(succeeded,outcome.exe),succeeded,succeeded?&folder:nullptr);
 return code;

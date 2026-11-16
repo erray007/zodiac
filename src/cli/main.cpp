@@ -28,9 +28,6 @@
 #ifndef ZODIAC_VERSION
 #error ZODIAC_VERSION must be defined by the build (the project version)
 #endif
-#ifndef ZODIAC_MODULE_SUFFIX
-#error ZODIAC_MODULE_SUFFIX must be defined by the build (the shared library extension of the target platform)
-#endif
 
 namespace zodiac::cli {
 namespace {
@@ -44,6 +41,8 @@ std::string command;
 std::vector<std::string> positional;
 std::vector<fs::path> module_dirs;
 fs::path log_file;
+// run and build: --config, already absolute (resolved against the working directory zodiac started in); empty when not given.
+fs::path config;
 // build only: --output and --no-window.
 fs::path output;
 bool output_given=false;
@@ -90,6 +89,21 @@ if(arg=="--no-window"){
 options.no_window=true;
 continue;
 }
+if(arg=="--config"||arg.starts_with("--config=")){
+std::string_view value;
+if(arg.size()>8)value=std::string_view(arg).substr(9);
+else if(i+1<args.size())value=args[++i];
+if(value.empty()){
+options.error="error: --config needs a value";
+return options;
+}
+// Before anything can change the working directory, so a relative path means the folder zodiac started in.
+const fs::path config=path_from_utf8(value);
+std::error_code error;
+fs::path absolute=fs::absolute(config,error);
+options.config=error?config:absolute.lexically_normal();
+continue;
+}
 if(options.command.empty()&&(arg=="--version"||arg=="--help"||arg=="-h")){
 options.command=arg=="--version"?"version":"help";
 continue;
@@ -134,6 +148,7 @@ platform::write_stdout_line("zodiac modules: list the modules found in the modul
 platform::write_stdout_line("zodiac help: show this list");
 platform::write_stdout_line("zodiac --version: show the version");
 platform::write_stdout_line("options for run, build and modules: --module-dir <dir> adds a module directory (repeatable), --log-file <path> also writes messages to a file");
+platform::write_stdout_line("options for run and build: --config <file> (or --config=<file>) names the project file, of any name; its folder is the project root, and a script given with it replaces main");
 platform::write_stdout_line("options for build: --output <dir> writes the release there, --no-window reports the result on the console only");
 platform::write_stdout_line("exit codes: 0 success, 1 script error, 2 usage/project/module error, otherwise the value returned by int main() (0-255)");
 return exit_ok;
@@ -145,43 +160,18 @@ platform::write_stdout_line("zodiac " ZODIAC_VERSION);
 return exit_ok;
 }
 
-constexpr std::string_view module_prefix="zodiac_mod_";
-
-// Calls visit(file,file_name) once per module library found in the directories, in search order; the first directory holding a name wins, exactly as it does when a game loads the module.
-template<typename Visit>
-void for_each_installed_module(std::span<const fs::path> dirs,Visit&& visit)
+// True when the positional argument names a script (a .zs file name, whether or not it exists).
+bool names_script(const Options& options)
 {
-std::vector<std::string> seen;
-for(const fs::path& dir:dirs){
-std::error_code error;
-fs::directory_iterator it(dir,error);
-if(error)continue;
-const fs::directory_iterator end;
-for(;it!=end;it.increment(error)){
-if(error)break;
-const fs::path file=it->path();
-const std::u8string name=file.filename().u8string();
-const std::string_view text(reinterpret_cast<const char*>(name.data()),name.size());
-if(!text.starts_with(module_prefix)||file.extension()!=ZODIAC_MODULE_SUFFIX)continue;
-std::error_code status;
-if(!it->is_regular_file(status))continue;
-if(std::ranges::find(seen,text)!=seen.end())continue;
-seen.emplace_back(text);
-visit(file,text);
-}
-}
+return !options.positional.empty()&&has_extension(path_from_utf8(options.positional.front()),".zs");
 }
 
-// The names of the installed modules ("zodiac_mod_<name><suffix>"); files whose name part is not a valid module name are skipped.
-std::vector<std::string> installed_module_names(std::span<const fs::path> dirs)
+// --config names the project, so a project folder beside it is refused. False (already reported) on that conflict.
+bool check_config_target(const Options& options,Diagnostics& diagnostics)
 {
-std::vector<std::string> names;
-for_each_installed_module(dirs,[&names](const fs::path&,std::string_view file_name){
-const std::string_view name=file_name.substr(module_prefix.size(),file_name.size()-module_prefix.size()-std::string_view(ZODIAC_MODULE_SUFFIX).size());
-const bool valid=!name.empty()&&name!="core"&&std::ranges::all_of(name,[](char c){return (c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_';});
-if(valid)names.emplace_back(name);
-});
-return names;
+if(options.config.empty()||options.positional.empty()||names_script(options))return true;
+fail(diagnostics,"error: --config cannot be combined with a project folder");
+return false;
 }
 
 int run_project(const Options& options,Diagnostics& diagnostics)
@@ -190,20 +180,27 @@ if(options.positional.size()>1){
 fail(diagnostics,"error: run takes at most one project directory or script; run zodiac help");
 return exit_usage_error;
 }
+if(!check_config_target(options,diagnostics))return exit_usage_error;
 // --log-file goes first so that a project file error is captured as well.
 if(!add_log_file(diagnostics,options.log_file))return exit_usage_error;
 const fs::path directory=options.positional.empty()?fs::path("."):path_from_utf8(options.positional.front());
 const std::vector<fs::path> dirs=search_dirs(options);
 std::expected<Project,std::string> project=std::unexpected(std::string());
-if(has_extension(directory,".zs")){
+if(names_script(options)){
 std::error_code error;
 if(!fs::is_regular_file(directory,error)){
 fail(diagnostics,"error: script "+in_quotes(options.positional.front())+" does not exist");
 return exit_usage_error;
 }
-project=load_project_for_script(directory,installed_module_names(dirs));
+if(options.config.empty())project=load_project_for_script(directory,installed_module_names(dirs));
+else{
+project=load_project_file(options.config);
+if(project){
+if(auto replaced=set_main_script(*project,directory);!replaced)project=std::unexpected(std::move(replaced.error()));
 }
-else project=load_project(directory);
+}
+}
+else project=options.config.empty()?load_project(directory):load_project_file(options.config);
 if(!project){
 fail(diagnostics,project.error());
 return exit_usage_error;
@@ -223,9 +220,11 @@ if(options.positional.size()>1){
 fail(diagnostics,"error: build takes at most one project directory or script; run zodiac help");
 return exit_usage_error;
 }
+if(!check_config_target(options,diagnostics))return exit_usage_error;
 if(!add_log_file(diagnostics,options.log_file))return exit_usage_error;
 BuildOptions build;
-build.target=options.positional.empty()?fs::path("."):path_from_utf8(options.positional.front());
+if(!options.positional.empty())build.target=path_from_utf8(options.positional.front());
+build.config=options.config;
 build.output=options.output;
 build.module_dirs=search_dirs(options);
 build.no_window=options.no_window;
@@ -286,36 +285,16 @@ return exit_usage_error;
 if(!add_log_file(diagnostics,options.log_file))return exit_usage_error;
 std::vector<ModuleLine> lines;
 const std::vector<fs::path> dirs=search_dirs(options);
-for_each_installed_module(dirs,[&](const fs::path& file,std::string_view){read_module(file,diagnostics,lines);});
+for(const InstalledModule& module:find_installed_modules(dirs))read_module(module.file,diagnostics,lines);
 std::ranges::sort(lines,[](const ModuleLine& a,const ModuleLine& b){return a.name!=b.name?a.name<b.name:a.text<b.text;});
 for(const ModuleLine& line:lines)platform::write_stdout_line(line.text);
 return exit_ok;
 }
 
-// A TOML basic string body: backslash, quote and control characters escaped, everything else (UTF-8) unchanged.
-std::string toml_escaped(std::string_view text)
-{
-std::string result;
-result.reserve(text.size());
-for(const char c:text){
-const unsigned char byte=static_cast<unsigned char>(c);
-if(c=='\\'||c=='"')result.push_back('\\'),result.push_back(c);
-else if(byte<0x20||byte==0x7F){
-constexpr std::string_view digits="0123456789ABCDEF";
-result.append("\\u00").push_back(digits[byte>>4]);
-result.push_back(digits[byte&15]);
-}
-else result.push_back(c);
-}
-return result;
-}
-
-bool write_file(const fs::path& file,std::string_view first,std::string_view middle,std::string_view last,Diagnostics& diagnostics)
+bool write_file(const fs::path& file,std::string_view text,Diagnostics& diagnostics)
 {
 std::ofstream out(file,std::ios::binary|std::ios::trunc);
-out.write(first.data(),static_cast<std::streamsize>(first.size()));
-out.write(middle.data(),static_cast<std::streamsize>(middle.size()));
-out.write(last.data(),static_cast<std::streamsize>(last.size()));
+out.write(text.data(),static_cast<std::streamsize>(text.size()));
 out.close();
 if(out)return true;
 fail(diagnostics,"error: cannot write "+in_quotes(path_to_utf8(file)));
@@ -359,8 +338,8 @@ return exit_usage_error;
 fs::path absolute=fs::absolute(directory,error).lexically_normal();
 if(!absolute.has_filename())absolute=absolute.parent_path();
 const std::string name=path_to_utf8(absolute.filename());
-if(!write_file(directory/"zodiac.toml",toml_before_name,toml_escaped(name.empty()?std::string_view("game"):std::string_view(name)),toml_after_name,diagnostics))return exit_usage_error;
-if(!write_file(directory/"main.zs",main_script,{},{},diagnostics))return exit_usage_error;
+if(!write_file(directory/"zodiac.toml",project_file_text(name.empty()?std::string_view("game"):std::string_view(name),"main.zs",{}),diagnostics))return exit_usage_error;
+if(!write_file(directory/"main.zs",main_script,diagnostics))return exit_usage_error;
 platform::write_stdout_line("created project "+in_quotes(shown));
 return exit_ok;
 }
@@ -387,6 +366,10 @@ return exit_usage_error;
 }
 if((options.output_given||options.no_window)&&options.command!="build"){
 fail(diagnostics,"error: --output and --no-window apply to build only; run zodiac help");
+return exit_usage_error;
+}
+if(!options.config.empty()&&options.command!="run"&&options.command!="build"){
+fail(diagnostics,"error: --config applies to run and build only; run zodiac help");
 return exit_usage_error;
 }
 if(options.command=="help")return print_help();

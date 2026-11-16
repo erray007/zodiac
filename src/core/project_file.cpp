@@ -124,31 +124,47 @@ return {};
 }
 return fail("zodiac.toml: error: [diagnostics] "+std::string(key)+" must be \"auto\", \"always\" or \"never\"");
 }
-std::expected<std::string,std::string> read_file(const fs::path& path,const fs::path& dir)
+bool is_regular(const fs::path& path) noexcept
 {
 std::error_code ec;
 const bool exists=fs::is_regular_file(path,ec);
-if(ec||!exists)return fail("zodiac.toml: error: no zodiac.toml in \""+one_line(path_to_utf8(dir))+"\"");
-const std::uintmax_t size=fs::file_size(path,ec);
-std::ifstream in(path,std::ios::binary);
-if(ec||!in)return fail("zodiac.toml: error: cannot read \""+one_line(path_to_utf8(path))+"\"");
-std::string content(static_cast<std::size_t>(size),'\0');
-in.read(content.data(),static_cast<std::streamsize>(size));
-if(in.gcount()!=static_cast<std::streamsize>(size))return fail("zodiac.toml: error: cannot read \""+one_line(path_to_utf8(path))+"\"");
-return content;
+return exists&&!ec;
 }
-}
-
-std::expected<Project,std::string> load_project(const fs::path& dir)
+// The whole file, or nullopt when it cannot be read completely.
+std::optional<std::string> read_whole(const fs::path& path)
 {
 std::error_code ec;
-Project project;
-project.root=fs::absolute(dir,ec).lexically_normal();
-if(ec)return fail("zodiac.toml: error: invalid project directory \""+one_line(path_to_utf8(dir))+"\"");
-if(!project.root.has_filename()&&project.root.has_relative_path())project.root=project.root.parent_path();
-auto content=read_file(project.root/"zodiac.toml",project.root);
-if(!content)return fail(std::move(content.error()));
-toml::parse_result parsed=toml::parse(*content,std::string_view("zodiac.toml"));
+const std::uintmax_t size=fs::file_size(path,ec);
+std::ifstream in(path,std::ios::binary);
+if(ec||!in)return std::nullopt;
+std::string content(static_cast<std::size_t>(size),'\0');
+in.read(content.data(),static_cast<std::streamsize>(size));
+if(in.gcount()!=static_cast<std::streamsize>(size))return std::nullopt;
+return content;
+}
+// A TOML basic string body: backslash, quote and control characters escaped, everything else (UTF-8) unchanged.
+void append_toml_escaped(std::string& out,std::string_view text)
+{
+constexpr std::string_view digits="0123456789ABCDEF";
+for(const char c:text){
+const unsigned char byte=static_cast<unsigned char>(c);
+if(c=='\\'||c=='"'){
+out.push_back('\\');
+out.push_back(c);
+}
+else if(byte<0x20||byte==0x7F){
+out.append("\\u00");
+out.push_back(digits[byte>>4]);
+out.push_back(digits[byte&15]);
+}
+else out.push_back(c);
+}
+}
+// Parses and validates content, the text of project.file; project.root and project.file are already set. Errors start with "zodiac.toml".
+std::expected<Project,std::string> parse_project(Project project,const std::string& content)
+{
+std::error_code ec;
+toml::parse_result parsed=toml::parse(content,std::string_view("zodiac.toml"));
 if(!parsed)
 {
 const toml::parse_error& error=parsed.error();
@@ -261,6 +277,90 @@ if(ec||!is_file)return fail("zodiac.toml: error: main script \""+one_line(main_v
 project.main_script=std::move(*main_script);
 return project;
 }
+}
+
+std::expected<Project,std::string> load_project(const fs::path& dir)
+{
+std::error_code ec;
+Project project;
+project.root=fs::absolute(dir,ec).lexically_normal();
+if(ec)return fail("zodiac.toml: error: invalid project directory \""+one_line(path_to_utf8(dir))+"\"");
+if(!project.root.has_filename()&&project.root.has_relative_path())project.root=project.root.parent_path();
+project.file=project.root/"zodiac.toml";
+if(!is_regular(project.file))return fail("zodiac.toml: error: no zodiac.toml in \""+one_line(path_to_utf8(project.root))+"\"");
+const std::optional<std::string> content=read_whole(project.file);
+if(!content)return fail("zodiac.toml: error: cannot read \""+one_line(path_to_utf8(project.file))+"\"");
+return parse_project(std::move(project),*content);
+}
+
+std::expected<Project,std::string> load_project_file(const fs::path& config_file)
+{
+const auto missing=[&config_file]{return fail("error: config file \""+one_line(path_to_utf8(config_file))+"\" does not exist");};
+std::error_code ec;
+Project project;
+project.file=fs::absolute(config_file,ec).lexically_normal();
+if(ec||!project.file.has_filename()||!is_regular(project.file))return missing();
+const std::optional<std::string> content=read_whole(project.file);
+if(!content)return missing();
+project.root=project.file.parent_path();
+auto result=parse_project(std::move(project),*content);
+if(result)return result;
+// parse_project names the file "zodiac.toml"; the message names the file actually read.
+constexpr std::string_view default_name="zodiac.toml";
+std::string message=std::move(result.error());
+if(message.starts_with(default_name))message.replace(0,default_name.size(),one_line(path_to_utf8(config_file.filename())));
+return fail(std::move(message));
+}
+
+std::expected<void,std::string> set_main_script(Project& project,const fs::path& script_file)
+{
+std::error_code ec;
+fs::path file=fs::absolute(script_file,ec).lexically_normal();
+if(ec)file=script_file.lexically_normal();
+// Each folder above the file is compared with the root through the file system, so a differently spelled root (another case on Windows,
+// a link) still counts; the main script is then rebuilt below root itself, keeping every path of the project spelled alike.
+std::vector<fs::path> below{file.filename()};
+fs::path dir=file.parent_path();
+for(;;){
+const bool same=fs::equivalent(dir,project.root,ec);
+if(same&&!ec){
+fs::path main=project.root;
+for(auto it=below.rbegin();it!=below.rend();++it)main/=*it;
+project.main_script=std::move(main);
+return {};
+}
+fs::path parent=dir.parent_path();
+if(parent.empty()||parent==dir)break;
+below.push_back(dir.filename());
+dir=std::move(parent);
+}
+return fail("error: script \""+one_line(path_to_utf8(file))+"\" is outside the project folder \""+one_line(path_to_utf8(project.root))+"\"");
+}
+
+std::string project_file_text(std::string_view name,std::string_view main_relative,std::span<const std::string> static_modules)
+{
+constexpr std::string_view head="# Zodiac project file.\n[game]\nname = \"";
+constexpr std::string_view after_name="\"\nmain = \"";
+constexpr std::string_view after_main="\"\n\n[modules]\n# Modules this game uses, for example \"example\". Both lists are searched as shared libraries.\nstatic = [";
+constexpr std::string_view tail="]\ndynamic = []\n";
+std::size_t size=head.size()+after_name.size()+after_main.size()+tail.size()+name.size()+main_relative.size();
+for(const std::string& module:static_modules)size+=module.size()+4;
+std::string text;
+text.reserve(size);
+text.append(head);
+append_toml_escaped(text,name);
+text.append(after_name);
+append_toml_escaped(text,main_relative);
+text.append(after_main);
+for(std::size_t i=0;i<static_modules.size();++i){
+if(i)text.append(", ");
+text.push_back('"');
+append_toml_escaped(text,static_modules[i]);
+text.push_back('"');
+}
+text.append(tail);
+return text;
+}
 
 std::optional<fs::path> find_project_root(const fs::path& script_file)
 {
@@ -317,7 +417,7 @@ if(path==release_dir)
 it.disable_recursion_pending();
 continue;
 }
-if(path==manifest)continue;
+if(path==manifest||path==project.file)continue;
 fs::file_status status=it->status(ec);
 // The entry's cached type does not follow every kind of link (a Windows junction is cached as a folder, even when its
 // target is gone), so a folder is asked again through the filesystem before the walk enters it.

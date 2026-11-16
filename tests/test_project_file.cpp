@@ -564,5 +564,134 @@ CHECK(result->static_modules==std::vector<std::string>{"beta","example","zeta"})
 CHECK(result->dynamic_modules.empty());
 CHECK(result->core_exclude.empty());
 CHECK(result->workers.empty());
+CHECK(result->file.empty());
+}
+
+TEST_CASE("load_project records the project file it read")
+{
+TempProject project;
+project.main_script();
+project.toml(minimal);
+const auto result=zodiac::load_project(project.dir());
+REQUIRE(result.has_value());
+CHECK(result->file==result->root/"zodiac.toml");
+}
+
+TEST_CASE("load_project_file reads a project file of any name and resolves paths against its folder")
+{
+TempProject project(fs::path(u8"oyun klasörü"));
+project.write(fs::path(u8"sahneler/menü.zs"),"void main(){}\n");
+project.write("my settings.txt","[game]\nmain = \"sahneler/menü.zs\"\n[modules]\nstatic = [\"example\"]\n");
+const auto result=zodiac::load_project_file(project.dir()/"my settings.txt");
+REQUIRE(result.has_value());
+const fs::path root=fs::absolute(project.dir()).lexically_normal();
+CHECK(result->root==root);
+CHECK(result->file==root/"my settings.txt");
+CHECK(result->name==zodiac::path_to_utf8(fs::path(u8"oyun klasörü")));
+CHECK(result->main_script==root/fs::path(u8"sahneler")/fs::path(u8"menü.zs"));
+CHECK(result->static_modules==std::vector<std::string>{"example"});
+}
+
+TEST_CASE("load_project_file resolves a relative file name against the working directory")
+{
+TempProject project;
+project.main_script();
+project.write("ayar.toml",minimal);
+const fs::path previous=fs::current_path();
+fs::current_path(project.dir().parent_path());
+const auto result=zodiac::load_project_file(project.dir().filename()/"ayar.toml");
+fs::current_path(previous);
+REQUIRE(result.has_value());
+CHECK(result->root==fs::absolute(project.dir()).lexically_normal());
+CHECK(result->main_script==result->root/"main.zs");
+}
+
+TEST_CASE("load_project_file reports a missing file")
+{
+TempProject project(fs::path(u8"Kanka şövalye"));
+const fs::path missing=project.dir()/"ayar.txt";
+const auto result=zodiac::load_project_file(missing);
+REQUIRE_FALSE(result.has_value());
+CHECK(result.error()=="error: config file \""+zodiac::path_to_utf8(missing)+"\" does not exist");
+// A folder is not a project file either.
+const auto folder=zodiac::load_project_file(project.dir());
+REQUIRE_FALSE(folder.has_value());
+CHECK(folder.error()=="error: config file \""+zodiac::path_to_utf8(project.dir())+"\" does not exist");
+}
+
+TEST_CASE("load_project_file names its own file in project file errors")
+{
+TempProject project;
+project.write("ayar.txt","[game\n");
+const auto syntax=zodiac::load_project_file(project.dir()/"ayar.txt");
+REQUIRE_FALSE(syntax.has_value());
+CHECK(syntax.error().starts_with("ayar.txt:1:"));
+project.write("ayar.txt","[game]\nmain = \"yok.zs\"\n");
+const auto missing_main=zodiac::load_project_file(project.dir()/"ayar.txt");
+REQUIRE_FALSE(missing_main.has_value());
+CHECK(missing_main.error()=="ayar.txt: error: main script \"yok.zs\" does not exist");
+// A file named zodiac.toml reads exactly as load_project reads it.
+project.toml("[game]\nmain = \"yok.zs\"\n");
+const auto same=zodiac::load_project_file(project.dir()/"zodiac.toml");
+REQUIRE_FALSE(same.has_value());
+CHECK(same.error()=="zodiac.toml: error: main script \"yok.zs\" does not exist");
+}
+
+TEST_CASE("expand_assets never returns the project file")
+{
+TempProject project;
+project.main_script();
+project.write("ayar.txt","[game]\nmain = \"main.zs\"\n[build]\nassets = [\"**\"]\n");
+const auto loaded=zodiac::load_project_file(project.dir()/"ayar.txt");
+REQUIRE(loaded.has_value());
+const auto files=zodiac::expand_assets(*loaded);
+REQUIRE(files.has_value());
+CHECK(*files==std::vector<fs::path>{loaded->root/"main.zs"});
+}
+
+TEST_CASE("set_main_script replaces main with a script inside the project and refuses one outside")
+{
+TempProject project;
+project.main_script();
+project.write("levels/one.zs","");
+project.write("../outside.zs","");
+project.toml(minimal);
+auto loaded=zodiac::load_project(project.dir());
+REQUIRE(loaded.has_value());
+const auto inside=zodiac::set_main_script(*loaded,project.dir()/"levels"/".."/"levels"/"one.zs");
+REQUIRE(inside.has_value());
+CHECK(loaded->main_script==loaded->root/"levels"/"one.zs");
+const fs::path outside=project.dir()/".."/"outside.zs";
+const auto refused=zodiac::set_main_script(*loaded,outside);
+REQUIRE_FALSE(refused.has_value());
+CHECK(refused.error()=="error: script \""+zodiac::path_to_utf8(fs::absolute(outside).lexically_normal())+"\" is outside the project folder \""+zodiac::path_to_utf8(loaded->root)+"\"");
+CHECK(loaded->main_script==loaded->root/"levels"/"one.zs");
+}
+
+TEST_CASE("project_file_text writes the zodiac new format")
+{
+const std::vector<std::string> none;
+CHECK(zodiac::project_file_text("plain","main.zs",none)=="# Zodiac project file.\n[game]\nname = \"plain\"\nmain = \"main.zs\"\n\n[modules]\n# Modules this game uses, for example \"example\". Both lists are searched as shared libraries.\nstatic = []\ndynamic = []\n");
+const std::vector<std::string> modules{"example","audio_2"};
+CHECK(zodiac::project_file_text("oyun","menu.zs",modules)=="# Zodiac project file.\n[game]\nname = \"oyun\"\nmain = \"menu.zs\"\n\n[modules]\n# Modules this game uses, for example \"example\". Both lists are searched as shared libraries.\nstatic = [\"example\", \"audio_2\"]\ndynamic = []\n");
+CHECK(zodiac::project_file_text("a\"b\\c\x01","d\te.zs",none).find("name = \"a\\\"b\\\\c\\u0001\"\nmain = \"d\\u0009e.zs\"\n")!=std::string::npos);
+}
+
+TEST_CASE("project_file_text round-trips through load_project_file")
+{
+TempProject project(fs::path(u8"tek klasör"));
+// A Windows file name cannot hold a quote, so the name carries the characters that need escaping.
+project.write(fs::path(u8"menü bir.zs"),"void main(){}\n");
+const std::vector<std::string> modules{"example","zeta"};
+const std::u8string main_name=fs::path(u8"menü bir.zs").u8string();
+const std::string main_text(reinterpret_cast<const char*>(main_name.data()),main_name.size());
+project.write("zodiac.toml",zodiac::project_file_text("oyun \\ \"şövalye\"",main_text,modules));
+const auto result=zodiac::load_project_file(project.dir()/"zodiac.toml");
+INFO((result.has_value()?std::string():result.error()));
+REQUIRE(result.has_value());
+CHECK(result->name=="oyun \\ \"şövalye\"");
+CHECK(result->main_script==result->root/fs::path(u8"menü bir.zs"));
+CHECK(result->static_modules==modules);
+CHECK(result->dynamic_modules.empty());
 }
 

@@ -19,6 +19,7 @@ FIXTURES_NEEDING_TEST_MODULES = {"holds_plugin_object"}
 # The fixtures that build; the identity test fails if this set changes, so a fixture can never drop out of it silently.
 BUILDABLE_FIXTURES = {"int_main", "non_ascii_include", "runtime_error", "uses_module", "void_main"}
 SIZE_LIMIT = 3145728
+LONE_FILE_WARNING = "warning: no zodiac.toml; every installed module was linked in (create a project file to choose modules)"
 
 
 def zodiac(*args, cwd=None, errors="strict", exe=None, env=None):
@@ -318,15 +319,92 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(dll.read_bytes(), b"earlier build")
         self.assertEqual(sorted(p.name for p in release.iterdir()), ["game.exe", "game.exe.tmp.m", "zodiac_mod_example.dll", "zodiac_mod_example.dll.tmp.m"])
 
-    def test_build_without_project(self):
+    def test_build_folder_without_project(self):
         alone = self.root / "alone"
         write(alone / "game.zs", "void main()\n{\n}\n")
-        expected = ["error: zodiac.toml not found; create a project with zodiac new"]
-        code, out, err = self.build(str(alone / "game.zs"))
-        self.assertEqual((code, err.splitlines()), (2, expected))
         code, out, err = self.build(str(alone))
-        self.assertEqual((code, err.splitlines()), (2, expected))
+        self.assertEqual((code, err.splitlines()), (2, ["error: zodiac.toml not found; create a project with zodiac new"]))
         self.assertFalse((alone / "release").exists())
+
+    def test_build_lone_script_links_every_installed_module(self):
+        folder = self.root / "tek klasör"
+        write(folder / "oyun.zs", 'int main()\n{\nexample_print("tek dosya");\nreturn 4;\n}\n')
+        exe = folder / "release" / "oyun.exe"
+        code, out, err = self.build(str(folder / "oyun.zs"))
+        self.assertEqual((code, err.splitlines()), (0, [LONE_FILE_WARNING]), out)
+        self.assertEqual(out.splitlines()[-1], "Build succeeded: %s" % exe)
+        self.assertFalse((folder / "zodiac.toml").exists())
+        code, out, err = run_exe(exe)
+        self.assertEqual((code, out.splitlines(), err), (4, ["tek dosya"], ""))
+        self.assertIn(b"example_echo", exe.read_bytes())
+        self.assertEqual(sorted(p.name for p in exe.parent.iterdir()), ["oyun.exe"])
+        # Without --no-window and with no desktop, the warning still reaches the console, before the summary.
+        code, out, err = zodiac("build", str(folder / "oyun.zs"), "--module-dir", MODULE_DIR, env=no_desktop_env())
+        self.assertEqual((code, err.splitlines()), (0, [LONE_FILE_WARNING]), out)
+        self.assertEqual(out.splitlines()[-1], "Build succeeded: %s" % exe)
+
+    def test_build_lone_script_relative_from_its_folder(self):
+        folder = self.root / "lone"
+        write(folder / "Oyun.ZS", "void main()\n{\n}\n")
+        code, out, err = self.build("Oyun.ZS", cwd=folder)
+        self.assertEqual((code, err.splitlines()), (0, [LONE_FILE_WARNING]), out)
+        self.assertEqual(out.splitlines()[-1], "Build succeeded: %s" % (folder / "release" / "Oyun.exe"))
+
+    def test_build_lone_script_under_an_unrelated_project_uses_that_project(self):
+        project = self.new_project(self.root / "parent")
+        write(project / "tools" / "lone.zs", 'void main()\n{\nexample_print("lone");\n}\n')
+        # The upward search finds the parent's zodiac.toml: its project is built (its main.zs, no modules), not the lone file.
+        exe = project / "release" / "parent.exe"
+        self.assert_built(self.build(str(project / "tools" / "lone.zs")), exe)
+        self.assertFalse((project / "tools" / "release").exists())
+        self.assertEqual(run_exe(exe), (0, "", ""))
+
+    def test_build_config_file_of_any_name(self):
+        project = self.root / "ayar klasörü"
+        write(project / "sahne" / "menü.zs", 'int main()\n{\nexample_print("ayar");\nreturn 6;\n}\n')
+        write(project / "ayar.txt", '[game]\nname = "ayarlı"\nmain = "sahne/menü.zs"\n[modules]\nstatic = ["example"]\n[build]\nassets = ["**/*.txt"]\n')
+        write(project / "notlar.txt", "not")
+        release = project / "release"
+        exe = release / "ayarlı.exe"
+        # Started from another folder: the config file is absolute here, and every path in it resolves against its own folder.
+        self.assert_built(self.build("--config=%s" % (project / "ayar.txt"), cwd=self.root), exe)
+        code, out, err = run_exe(exe)
+        self.assertEqual((code, out.splitlines(), err), (6, ["ayar"], ""))
+        # The project file itself is never an asset.
+        self.assertEqual(sorted(p.name for p in release.iterdir()), ["ayarlı.exe", "notlar.txt"])
+        # A relative config path, resolved against the folder zodiac started in.
+        other = self.root / "out"
+        self.assert_built(self.build("--config", os.path.join("ayar klasörü", "ayar.txt"), "--output", str(other), cwd=self.root), other / "ayarlı.exe")
+
+    def test_build_config_with_script_overrides_main(self):
+        project = self.root / "game"
+        write(project / "main.zs", "int main()\n{\nreturn 1;\n}\n")
+        write(project / "levels" / "two.zs", "int main()\n{\nreturn 2;\n}\n")
+        write(project / "settings.toml", '[game]\nmain = "main.zs"\n')
+        exe = project / "release" / "game.exe"
+        self.assert_built(self.build(str(project / "levels" / "two.zs"), "--config", str(project / "settings.toml")), exe)
+        self.assertEqual(run_exe(exe)[0], 2)
+
+    def test_build_config_errors(self):
+        project = self.root / "game"
+        write(project / "main.zs", "void main()\n{\n}\n")
+        write(project / "ayar.txt", '[game]\nmain = "main.zs"\n')
+        code, out, err = self.build(str(project), "--config", str(project / "ayar.txt"))
+        self.assertEqual((code, out, err.splitlines()), (2, "", ["error: --config cannot be combined with a project folder"]))
+        missing = project / "yok.txt"
+        code, out, err = self.build("--config", str(missing))
+        self.assertEqual((code, err.splitlines()), (2, ['error: config file "%s" does not exist' % missing]))
+        self.assertEqual(out.splitlines()[-1], "Build failed: 1 error")
+        code, out, err = self.build(str(project / "yok.zs"), "--config", str(project / "ayar.txt"))
+        self.assertEqual((code, err.splitlines()), (2, ['error: script "%s" does not exist' % (project / "yok.zs")]))
+        write(self.root / "outside.zs", "void main()\n{\n}\n")
+        code, out, err = self.build(str(self.root / "outside.zs"), "--config", str(project / "ayar.txt"))
+        self.assertEqual((code, err.splitlines()), (2, ['error: script "%s" is outside the project folder "%s"' % (self.root / "outside.zs", project)]))
+        code, out, err = zodiac("build", "--config")
+        self.assertEqual((code, err.splitlines()), (2, ["error: --config needs a value"]))
+        code, out, err = zodiac("build", "--config=")
+        self.assertEqual((code, err.splitlines()), (2, ["error: --config needs a value"]))
+        self.assertFalse((project / "release").exists())
 
     def test_build_refuses_module_that_forbids_static_linking(self):
         project = self.new_project(self.root / "game", static=["lgpl_dynamic"])

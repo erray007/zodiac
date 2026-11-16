@@ -1,8 +1,12 @@
 // zodiac::cli::build_project is "zodiac build": it turns a project into a release folder holding <name>.exe, its dynamic module DLLs and its assets.
 //
 // Steps (release-and-kit spec 8.2), each failure reported as one line through Diagnostics:
-// 1. target is a project folder or a script file; a script file belongs to the project find_project_root finds. No zodiac.toml:
-//    "error: zodiac.toml not found; create a project with zodiac new" (exit 2). The project is loaded as zodiac run loads it (errors exit 2).
+// 1. With config, the project is load_project_file(config), and a target (a .zs script) becomes its main script through set_main_script (a missing
+//    script: "error: script "<target>" does not exist"). Without config, target is a project folder or a script file; a script file belongs to the
+//    project find_project_root finds (whose own main stays the main script). A .zs script with no zodiac.toml in its folder or above builds alone,
+//    as zodiac run runs it (load_project_for_script: root its folder, name its stem, every installed module of module_dirs static), after the
+//    warning "warning: no zodiac.toml; every installed module was linked in (create a project file to choose modules)". A folder (or another
+//    file) with no zodiac.toml: "error: zodiac.toml not found; create a project with zodiac new" (exit 2). Project file errors exit 2.
 // 2. The modules load as in zodiac run (module_dirs, then <root>/plugins). Before any registers, every static module is checked:
 //    a module whose link modes lack ZODIAC_LINK_STATIC is refused ("error: module "<name>" (<license>) cannot be linked statically; list it under dynamic");
 //    a license outside Zlib MIT BSD-2-Clause BSD-3-Clause Apache-2.0 BSL-1.0 ISC Unlicense CC0-1.0 draws
@@ -31,7 +35,7 @@
 // "error: release builds are not supported on this host yet" (exit 2).
 // Result (spec 8.2a): every message goes to the console as it happens, and the last line on standard output is the summary BuildReport::summary
 // gives. Without no_window, when platform::has_interactive_desktop() holds, the result window (platform/result_window.hpp) then opens, titled
-// "Zodiac build - <game name>" (the target's own name when no project loaded), holding BuildReport::text, with "Open output folder" for the
+// "Zodiac build - <game name>" (when no project loaded, the target's own name, or the config file's folder without a target), holding BuildReport::text, with "Open output folder" for the
 // executable's folder after a success; build_project returns once it is closed. Without a desktop it ends as a --no-window build does.
 // Threads: main thread only; changes the working directory.
 #pragma once
@@ -41,7 +45,10 @@
 
 namespace zodiac::cli {
 struct BuildOptions{
+// Empty: the current folder, or with config no script override.
 std::filesystem::path target;
+// --config: the project file, absolute; empty when not given. The caller refuses a project folder target beside it.
+std::filesystem::path config;
 // Empty: <project root>/release.
 std::filesystem::path output;
 // The module search folders, absolute, in search order (zodiac run's: --module-dir folders, then the kit's modules folder).

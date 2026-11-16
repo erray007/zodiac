@@ -34,6 +34,16 @@ return modes?modes:(ZODIAC_LINK_STATIC|ZODIAC_LINK_DYNAMIC);
 }
 // The shared library file name the registry looks for: "zodiac_mod_<name>" plus the platform's shared library extension.
 std::string module_file_name(std::string_view name);
+// A module library found in a module folder: the file and its name part (between "zodiac_mod_" and the extension, not validated).
+struct InstalledModule{
+std::filesystem::path file;
+std::string name;
+};
+// Every regular file in dirs named "zodiac_mod_<name>" plus the platform's shared library extension, in search order; a file name already found in an
+// earlier folder is skipped, as it is when a game loads the module. Unreadable folders are skipped.
+std::vector<InstalledModule> find_installed_modules(std::span<const std::filesystem::path> dirs);
+// The names of find_installed_modules that are valid module names other than "core", in search order.
+std::vector<std::string> installed_module_names(std::span<const std::filesystem::path> dirs);
 struct ModuleSearchPaths{
 std::vector<std::filesystem::path> dirs;
 // <exe_dir>/../modules, then <project_dir>/plugins.

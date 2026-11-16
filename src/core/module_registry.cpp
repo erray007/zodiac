@@ -54,6 +54,43 @@ file.append(prefix).append(name).append(suffix);
 return file;
 }
 
+std::vector<InstalledModule> find_installed_modules(std::span<const std::filesystem::path> dirs)
+{
+namespace fs=std::filesystem;
+constexpr std::string_view prefix="zodiac_mod_";
+constexpr std::string_view suffix=ZODIAC_MODULE_SUFFIX;
+const fs::path extension(suffix);
+std::vector<InstalledModule> found;
+for(const fs::path& dir:dirs){
+std::error_code error;
+fs::directory_iterator it(dir,error);
+if(error)continue;
+for(const fs::directory_iterator end;it!=end;it.increment(error)){
+if(error)break;
+const fs::path& file=it->path();
+if(file.extension()!=extension)continue;
+std::string name=path_to_utf8(file.filename());
+if(!name.starts_with(prefix))continue;
+std::error_code status;
+if(!it->is_regular_file(status))continue;
+name.erase(name.size()-suffix.size());
+name.erase(0,prefix.size());
+if(std::any_of(found.begin(),found.end(),[&name](const InstalledModule& module){return module.name==name;}))continue;
+found.push_back({file,std::move(name)});
+}
+}
+return found;
+}
+
+std::vector<std::string> installed_module_names(std::span<const std::filesystem::path> dirs)
+{
+std::vector<std::string> names;
+for(InstalledModule& module:find_installed_modules(dirs)){
+if(module.name!="core"&&valid_module_name(module.name))names.push_back(std::move(module.name));
+}
+return names;
+}
+
 ModuleSearchPaths ModuleSearchPaths::defaults(const std::filesystem::path& exe_dir,const std::filesystem::path& project_dir)
 {
 return ModuleSearchPaths{{(exe_dir/".."/"modules").lexically_normal(),project_dir/"plugins"}};

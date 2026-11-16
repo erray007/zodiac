@@ -1,11 +1,12 @@
-// zodiac::load_project reads and validates <dir>/zodiac.toml: the game name and main script, the modules a game uses, core parts to exclude, diagnostics output, build settings (assets, debug info, signing) and worker scripts.
-// toml++ is only included by project_file.cpp, so it never leaks into other translation units. Every error is one plain-text line starting with "zodiac.toml".
+// zodiac::load_project reads and validates <dir>/zodiac.toml (load_project_file any project file): the game name and main script, the modules a game uses, core parts to exclude, diagnostics output, build settings (assets, debug info, signing) and worker scripts.
+// toml++ is only included by project_file.cpp, so it never leaks into other translation units. Every error is one plain-text line; the ones about a project file's content start with that file's name ("zodiac.toml").
 #pragma once
 #include <expected>
 #include <filesystem>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace zodiac {
@@ -28,6 +29,8 @@ std::vector<std::string> sign_command;
 struct Project{
 // Absolute, normalized project directory.
 std::filesystem::path root;
+// The project file it was read from (absolute, normalized, inside root); empty for a lone script's project, which has none.
+std::filesystem::path file;
 // [game] name, or the name of the root folder when absent.
 std::string name;
 // Absolute, normalized, inside root, and an existing regular file.
@@ -42,7 +45,18 @@ BuildConfig build;
 // [workers] scripts: absolute, normalized, inside root, existing .zs regular files, without duplicates, in file order.
 std::vector<std::filesystem::path> workers;
 };
+// Reads <dir>/zodiac.toml. A missing file: `zodiac.toml: error: no zodiac.toml in "<dir>"`; an unreadable one: `zodiac.toml: error: cannot read "<file>"`.
 std::expected<Project,std::string> load_project(const std::filesystem::path& dir);
+// Reads the project file config_file, whatever its name or extension (zodiac run/build --config); root is its folder (absolute, normalized), and every
+// relative path in it resolves against that folder. A missing, unreadable or non-regular file: `error: config file "<config_file as given>" does not exist`.
+// Every other error is load_project's, starting with the file's own name instead of "zodiac.toml" ("ayar.txt:3:1: error: ...").
+std::expected<Project,std::string> load_project_file(const std::filesystem::path& config_file);
+// Makes script_file (resolved against the working directory) the project's main script. Refused, leaving project unchanged, when it is not inside
+// project.root: `error: script "<absolute script>" is outside the project folder "<root>"`. The file itself is not checked: the caller verifies it is a regular file.
+std::expected<void,std::string> set_main_script(Project& project,const std::filesystem::path& script_file);
+// The text "zodiac new" writes as zodiac.toml, with [game] name and main and [modules] static filled in (TOML basic strings: backslash, quote and
+// control characters escaped, UTF-8 kept), dynamic empty. main_relative uses '/' separators. load_project reads it back to the same name, main and static list.
+std::string project_file_text(std::string_view name,std::string_view main_relative,std::span<const std::string> static_modules);
 // The project a script file belongs to: the nearest folder holding a regular file zodiac.toml, starting at the file's own folder and walking up to
 // the filesystem root. The result is absolute and normalized (no trailing separator); nullopt when no folder qualifies. Only checks for the file, never reads it.
 std::optional<std::filesystem::path> find_project_root(const std::filesystem::path& script_file);
@@ -51,7 +65,7 @@ std::optional<std::filesystem::path> find_project_root(const std::filesystem::pa
 // A project file error is returned unchanged. The file itself is not checked: the caller verifies it is a regular file.
 std::expected<Project,std::string> load_project_for_script(const std::filesystem::path& script_file,std::span<const std::string> installed_modules);
 // Every regular file under project.root matching any of project.build.assets, as absolute paths, sorted and without duplicates.
-// zodiac.toml in the root and everything under <root>/release are never returned. A pattern matching nothing is not an error; a missing or unreadable directory is: the error is one line, `zodiac.toml: error: cannot read directory "<path>": <reason>`.
+// zodiac.toml in the root, the project file (project.file) and everything under <root>/release are never returned. A pattern matching nothing is not an error; a missing or unreadable directory is: the error is one line, `zodiac.toml: error: cannot read directory "<path>": <reason>`.
 // A link whose target no longer exists is skipped (there is nothing to copy); any other entry whose type cannot be read is an error: `zodiac.toml: error: cannot read "<entry path>": <reason>`.
 std::expected<std::vector<std::filesystem::path>,std::string> expand_assets(const Project& project);
 }

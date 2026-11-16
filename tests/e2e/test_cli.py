@@ -117,6 +117,49 @@ class CliTest(unittest.TestCase):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out.splitlines(), ["yardim"])
 
+    def test_run_config_file_relative_from_another_folder(self):
+        project = self.root / "ayar klasörü"
+        (project / "sahne").mkdir(parents=True)
+        write(project / "sahne" / "menü.zs", 'string start_dir = cwd();\nvoid main()\n{\nexample_print("ayar");\nexample_print(start_dir);\n}\n')
+        write(project / "ayar.txt", '[game]\nmain = "sahne/menü.zs"\n[modules]\nstatic = ["example", "cwd_probe"]\n')
+        for flag in (["--config", os.path.join("ayar klasörü", "ayar.txt")], ["--config=" + os.path.join("ayar klasörü", "ayar.txt")]):
+            with self.subTest(flag=flag[0]):
+                code, out, err = zodiac("run", *flag, "--module-dir", MODULE_DIR, "--module-dir", TEST_MODULE_DIR, cwd=self.root)
+                self.assertEqual((code, err), (0, ""))
+                lines = out.splitlines()
+                self.assertEqual(lines[0], "ayar")
+                # The project root is the config file's folder, and it is the working directory while the game runs.
+                self.assertEqual(os.path.normcase(os.path.realpath(lines[1])), os.path.normcase(os.path.realpath(project)))
+
+    def test_run_config_with_script_overrides_main(self):
+        project = self.root / "game"
+        project.mkdir()
+        write(project / "main.zs", "int main()\n{\nreturn 1;\n}\n")
+        write(project / "two.zs", "int main()\n{\nreturn 2;\n}\n")
+        write(project / "settings.toml", '[game]\nmain = "main.zs"\n')
+        code, out, err = zodiac("run", str(project / "two.zs"), "--config", str(project / "settings.toml"), "--module-dir", MODULE_DIR)
+        self.assertEqual((code, out, err), (2, "", ""))
+        code, out, err = zodiac("run", "--config", str(project / "settings.toml"), "--module-dir", MODULE_DIR)
+        self.assertEqual((code, out, err), (1, "", ""))
+
+    def test_run_config_errors(self):
+        project = self.root / "game"
+        project.mkdir()
+        write(project / "main.zs", "void main()\n{\n}\n")
+        write(project / "ayar.txt", '[game]\nmain = "main.zs"\n')
+        code, out, err = zodiac("run", str(project), "--config", str(project / "ayar.txt"))
+        self.assertEqual((code, out, err.splitlines()), (2, "", ["error: --config cannot be combined with a project folder"]))
+        code, out, err = zodiac("run", "--config", "yok.txt", cwd=project)
+        self.assertEqual((code, out, err.splitlines()), (2, "", ['error: config file "%s" does not exist' % (project / "yok.txt")]))
+        write(project / "bozuk.txt", "[game\n")
+        code, out, err = zodiac("run", "--config", str(project / "bozuk.txt"))
+        self.assertEqual(code, 2)
+        self.assertTrue(err.startswith("bozuk.txt:1:"), err)
+        code, out, err = zodiac("run", "--config")
+        self.assertEqual((code, err.splitlines()), (2, ["error: --config needs a value"]))
+        code, out, err = zodiac("modules", "--config", str(project / "ayar.txt"))
+        self.assertEqual((code, err.splitlines()), (2, ["error: --config applies to run and build only; run zodiac help"]))
+
     def test_run_missing_script_exit_2(self):
         missing = self.root / "yok.zs"
         code, out, err = zodiac("run", str(missing), "--module-dir", MODULE_DIR)
@@ -264,6 +307,7 @@ class CliTest(unittest.TestCase):
         for command in ("new", "run", "build", "modules", "help"):
             self.assertTrue(any(command in line for line in out.splitlines()), command)
         self.assertIn("zodiac build [project_dir|file.zs]: build a release of the game (default output: <project>/release)", out.splitlines())
+        self.assertTrue(any("--config <file>" in line for line in out.splitlines()), out)
 
     @unittest.skipIf(os.name == "nt", "Windows builds releases; see test_build.py")
     def test_build_not_supported_on_this_host(self):
