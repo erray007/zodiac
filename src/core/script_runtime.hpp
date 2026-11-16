@@ -1,4 +1,4 @@
-// zodiac::ScriptRuntime owns one AngelScript engine with Zodiac's string and exception helpers and the array add-on (no dictionary until Zodiac's own),
+// zodiac::ScriptRuntime owns one AngelScript engine with Zodiac's array, string, dictionary and exception helpers,
 // loads a project's modules into it, builds the project's scripts and runs main(). Every error goes to the Diagnostics it was given.
 //
 // build(): loads and registers the static and dynamic modules (all as shared libraries in dev mode, searched in the constructor's
