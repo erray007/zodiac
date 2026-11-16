@@ -124,6 +124,17 @@ class CliTest(unittest.TestCase):
         self.assertEqual(out.splitlines(), ["Run failed: 1 error"])
         code, out, err = zodiac("run", str(folder / "oyun.zs"), "--no-window", "--module-dir", MODULE_DIR)
         self.assertEqual((code, out, err.splitlines()[-1]), (1, "", LONE_FILE_NOTE))
+        # Offering the create action in the window never creates the file itself.
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), ["oyun.zs"])
+
+    def test_run_lone_script_without_main_creates_no_project_file(self):
+        folder = self.root / "lone_no_main_files"
+        folder.mkdir()
+        write(folder / "oyun.zs", "void other()\n{\n}\n")
+        code, out, err = zodiac("run", str(folder / "oyun.zs"), "--module-dir", MODULE_DIR)
+        self.assertEqual((code, out.splitlines()), (1, ["Run failed: 1 error"]))
+        self.assertNotIn("note:", err)
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), ["oyun.zs"])
 
     def test_run_lone_script_without_main_fails_without_the_note(self):
         folder = self.root / "lone_no_main"

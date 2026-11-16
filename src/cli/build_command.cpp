@@ -701,7 +701,7 @@ const ScriptRuntime::ModuleCheck check=[&project,&kit,&libraries,&diagnostics](s
 bool compile_failed=false;
 if(const int code=runtime.build(*project,check,&compile_failed)){
 // As in zodiac run: a lone script has the core only, so a call into a module is the likely cause of its compile error.
-if(compile_failed&&outcome.used_lone_file)diagnostics.report(ZODIAC_LOG_WARNING,lone_script_compile_note);
+if(offers_project_file(outcome.used_lone_file,compile_failed))diagnostics.report(ZODIAC_LOG_WARNING,lone_script_compile_note);
 return code;
 }
 return write_release(*project,runtime,kit,libraries,module_dlls,output,exe,diagnostics);
@@ -733,13 +733,7 @@ const std::string name=outcome.game_name.empty()?target_name(named):outcome.game
 const std::filesystem::path folder=outcome.exe.parent_path();
 // A lone script's build offers the project file it could have had: that script as main, no modules yet (spec item 8).
 platform::ResultAction create;
-if(outcome.used_lone_file){
-create.label=L"Create &project file";
-create.run=[&outcome]{
-const std::string script=path_to_utf8(outcome.main_script.filename());
-return create_project_file(outcome.root,outcome.game_name,script);
-};
-}
+if(outcome.used_lone_file)create=create_project_action(outcome.root,outcome.game_name,outcome.main_script);
 platform::show_result_window("Zodiac build - "+name,L"&Build output",report.text(succeeded,outcome.exe),succeeded,succeeded?&folder:nullptr,outcome.used_lone_file?&create:nullptr);
 return code;
 }

@@ -1,5 +1,6 @@
 // zodiac::cli::ResultReport is the diagnostics sink that keeps the tally and transcript of a zodiac build or zodiac run, for the summary line and
-// the result window; create_project_file is the result window's "Create project file" action.
+// the result window; create_project_file is the result window's "Create project file" action, offers_project_file says when a run or build window
+// has it and create_project_action builds it for both.
 //
 // write() records every line (any level) in arrival order and counts an error for each ZODIAC_LOG_ERROR line that does not start with two spaces
 // (continuation lines, such as call-stack frames or a signing tool's output, do). The transcript keeps the newest lines whose sizes (plus one
@@ -15,6 +16,7 @@
 #include <deque>
 #include <filesystem>
 #include <mutex>
+#include <platform/result_window.hpp>
 #include <string>
 #include <string_view>
 
@@ -49,6 +51,16 @@ inline constexpr std::string_view lone_script_compile_note="note: no zodiac.toml
 // is ever replaced), or "error: cannot create "<path>": <reason>" / "error: cannot write "<path>"" (a partly written file is removed again).
 // Paths are native, UTF-8. Never throws except std::bad_alloc.
 std::string create_project_file(const std::filesystem::path& folder,std::string_view name,std::string_view main_relative);
+// Whether lone_script_compile_note is reported, and with it the result window offers "Create project file": exactly when a script ran or was built
+// without a project file (lone) and its scripts failed to compile (compile_failed). Any other failure (a missing main(), a runtime error, a project
+// file's run) is neither.
+constexpr bool offers_project_file(bool lone,bool compile_failed) noexcept
+{
+return lone&&compile_failed;
+}
+// The result window's "Create &project file" action: run() calls create_project_file(root,name,main_script's file name) and returns its line. It holds
+// copies of its arguments, so it may outlive them; its label is a literal.
+platform::ResultAction create_project_action(const std::filesystem::path& root,std::string_view name,const std::filesystem::path& main_script);
 // The last element of the target's absolute, normalized path ("game" for "." in a folder game, "main.zs" for a script; "." when target is
 // empty): what a result window title names when no project loaded.
 std::string target_name(const std::filesystem::path& target);

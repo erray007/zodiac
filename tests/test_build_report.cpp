@@ -137,6 +137,30 @@ CHECK(zodiac::cli::create_project_file(folder.path(),"oyun","oyun.zs")=="error: 
 CHECK(read_file(file)=="# mine\n");
 }
 
+TEST_CASE("offers_project_file is true only for a lone script whose scripts failed to compile")
+{
+CHECK(zodiac::cli::offers_project_file(true,true));
+CHECK_FALSE(zodiac::cli::offers_project_file(true,false));
+CHECK_FALSE(zodiac::cli::offers_project_file(false,true));
+CHECK_FALSE(zodiac::cli::offers_project_file(false,false));
+}
+
+TEST_CASE("create_project_action creates the project file of a script in the root and outlives its arguments")
+{
+const TempFolder folder;
+zodiac::platform::ResultAction action;
+{
+const fs::path root=folder.path();
+const std::string name="oyun";
+action=zodiac::cli::create_project_action(root,name,root/"oyun.zs");
+}
+CHECK(action.label==L"Create &project file");
+const fs::path file=folder.path()/"zodiac.toml";
+CHECK(action.run()=="Created "+zodiac::path_to_utf8(file));
+CHECK(read_file(file)==zodiac::project_file_text("oyun","oyun.zs",{},{}));
+CHECK(action.run()=="error: \""+zodiac::path_to_utf8(file)+"\" already exists");
+}
+
 TEST_CASE("create_project_file reports a folder it cannot write to on one line")
 {
 const TempFolder folder;

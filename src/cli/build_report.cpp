@@ -105,6 +105,14 @@ std::filesystem::remove(file,ec);
 return "error: cannot write "+quoted(file);
 }
 
+platform::ResultAction create_project_action(const std::filesystem::path& root,std::string_view name,const std::filesystem::path& main_script)
+{
+platform::ResultAction action;
+action.label=L"Create &project file";
+action.run=[root,name=std::string(name),script=path_to_utf8(main_script.filename())]{return create_project_file(root,name,script);};
+return action;
+}
+
 std::string target_name(const std::filesystem::path& target)
 {
 std::error_code ec;
