@@ -1,5 +1,6 @@
-// zodiac::String (string.hpp): UTF-8 scanning with word-at-a-time ASCII fast paths, the heap block and its sparse character
-// index, the hash, searching on character boundaries, case mapping, NFC runs, and number formatting and parsing.
+// zodiac::String (string.hpp): UTF-8 scanning with word-at-a-time ASCII fast paths, the heap block (recycled through a
+// per-thread cache) and its sparse character index, the hash, inline short copies, an SSE2 substring search, searching on
+// character boundaries, case mapping, NFC runs, and number formatting and parsing.
 #include <core/types/string.hpp>
 #include <core/types/unicode.hpp>
 #include <algorithm>
@@ -13,6 +14,9 @@
 #include <stdlib.h>
 #include <string>
 #include <system_error>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 namespace zodiac {
 namespace {
@@ -43,6 +47,48 @@ return word;
 inline void store_word(char* p,std::uint64_t word) noexcept
 {
 std::memcpy(p,&word,8);
+}
+// memcpy for ranges that do not overlap. Up to 32 bytes are copied inline with overlapping word loads that stay inside the
+// source (the C runtime's memcpy costs a call through the import table, more than the copy itself for the short pieces
+// scripts concatenate); longer ranges go to memcpy.
+inline void copy_bytes(char* d,const char* s,std::size_t n) noexcept
+{
+if(n>32){
+std::memcpy(d,s,n);
+return;
+}
+const byte* from=ubytes(s);
+if(n>=8){
+if(n>16){
+const std::uint64_t a=load_word(from),b=load_word(from+8),c=load_word(from+n-16),e=load_word(from+n-8);
+store_word(d,a);
+store_word(d+8,b);
+store_word(d+n-16,c);
+store_word(d+n-8,e);
+return;
+}
+const std::uint64_t a=load_word(from),b=load_word(from+n-8);
+store_word(d,a);
+store_word(d+n-8,b);
+return;
+}
+if(n>=4){
+std::uint32_t a,b;
+std::memcpy(&a,s,4);
+std::memcpy(&b,s+n-4,4);
+std::memcpy(d,&a,4);
+std::memcpy(d+n-4,&b,4);
+return;
+}
+if(n>=2){
+std::uint16_t a,b;
+std::memcpy(&a,s,2);
+std::memcpy(&b,s+n-2,2);
+std::memcpy(d,&a,2);
+std::memcpy(d+n-2,&b,2);
+return;
+}
+if(n==1)*d=*s;
 }
 // Bytes in front of the first byte with its high bit set, for a word loaded from memory whose high bits are not all clear.
 inline unsigned ascii_prefix(std::uint64_t word) noexcept
@@ -208,13 +254,55 @@ if(!is_continuation(*start))return static_cast<std::ptrdiff_t>(char_size(start,e
 }
 return e-1;
 }
+// Byte offset of the first occurrence of needle at or after from, or npos (std::string_view::find's result).
+// With SSE2 (every x86-64 target) it tests 16 candidate starts per step against the needle's first and last bytes and
+// compares the bytes between only where both match; inline compares replace libc++'s memchr and memcmp calls, which
+// dominate for the short needles and texts scripts search. Other targets use std::string_view::find.
+std::size_t search(std::string_view text,std::string_view needle,std::size_t from) noexcept
+{
+#if defined(__SSE2__)
+const std::size_t size=text.size();
+const std::size_t n=needle.size();
+if(from>size||n>size-from)return npos;
+if(n==0)return from;
+const byte* t=ubytes(text.data());
+const byte* s=ubytes(needle.data());
+// Candidate starts are [from, stop); every load below stays inside the text.
+const std::size_t stop=size-n+1;
+std::size_t i=from;
+const byte head=s[0];
+const byte tail=s[n-1];
+auto matches_inside=[t,s,n](std::size_t at) noexcept{
+for(std::size_t k=1;k+1<n;++k)if(t[at+k]!=s[k])return false;
+return true;
+};
+if(stop-i>=16){
+const __m128i first=_mm_set1_epi8(static_cast<char>(head));
+const __m128i last=_mm_set1_epi8(static_cast<char>(tail));
+for(;i+16<=stop;i+=16){
+const __m128i a=_mm_loadu_si128(reinterpret_cast<const __m128i*>(t+i));
+const __m128i b=_mm_loadu_si128(reinterpret_cast<const __m128i*>(t+i+n-1));
+auto mask=static_cast<unsigned>(_mm_movemask_epi8(_mm_and_si128(_mm_cmpeq_epi8(a,first),_mm_cmpeq_epi8(b,last))));
+while(mask){
+const std::size_t at=i+static_cast<std::size_t>(std::countr_zero(mask));
+if(matches_inside(at))return at;
+mask&=mask-1;
+}
+}
+}
+for(;i<stop;++i)if(t[i]==head&&t[i+n-1]==tail&&matches_inside(i))return i;
+return npos;
+#else
+return text.find(needle,from);
+#endif
+}
 // Byte offset of the first match at or after from that covers whole characters.
 std::size_t find_aligned(std::string_view text,std::string_view needle,std::size_t from) noexcept
 {
 const byte* begin=ubytes(text.data());
 const byte* end=begin+text.size();
 for(;;){
-const std::size_t pos=text.find(needle,from);
+const std::size_t pos=search(text,needle,from);
 if(pos==npos||(is_boundary(begin,end,begin+pos)&&is_boundary(begin,end,begin+pos+needle.size())))return pos;
 from=pos+1;
 }
@@ -320,15 +408,83 @@ return value;
 struct HeapHeader {
 std::uint32_t* index;
 };
-char* allocate_block(std::uint32_t capacity)
+// Blocks of up to block_cache_limit bytes come in size classes of block_class_step bytes and are recycled through a
+// per-thread cache of up to block_cache_depth blocks per class: the C runtime's allocator costs more than everything else
+// a short heap string does (a copy, a concatenation, a dictionary key), and scripts make and drop those all the time. A
+// block may be freed on any thread; it then goes to that thread's cache. A thread's cache is freed when the thread ends
+// (at most block_classes*block_cache_depth blocks, about 70 KB); blocks freed after that go straight to the allocator.
+constexpr std::size_t block_class_step=16;
+constexpr std::size_t block_cache_limit=256;
+constexpr std::size_t block_classes=block_cache_limit/block_class_step;
+constexpr std::uint32_t block_cache_depth=32;
+struct FreeBlock {
+FreeBlock* next;
+};
+struct BlockCache {
+FreeBlock* heads[block_classes];
+std::uint32_t counts[block_classes];
+~BlockCache();
+};
+// Trivially destructible, so it stays usable after the cache is destroyed (strings freed by later destructors).
+thread_local bool block_cache_closed=false;
+thread_local BlockCache block_cache{};
+BlockCache::~BlockCache()
 {
-void* block=::operator new(sizeof(HeapHeader)+std::size_t{capacity}+1);
+block_cache_closed=true;
+for(FreeBlock* head:heads){
+while(head){
+FreeBlock* next=head->next;
+::operator delete(static_cast<void*>(head));
+head=next;
+}
+}
+}
+// The size class of a block of bytes bytes (bytes <= block_cache_limit): class k holds blocks of (k+1)*block_class_step.
+inline std::size_t block_class(std::size_t bytes) noexcept
+{
+return (bytes-1)/block_class_step;
+}
+// A block for capacity bytes and the NUL; capacity is raised to all the block holds.
+char* allocate_block(std::uint32_t& capacity)
+{
+std::size_t bytes=sizeof(HeapHeader)+std::size_t{capacity}+1;
+void* block=nullptr;
+if(bytes<=block_cache_limit){
+const std::size_t k=block_class(bytes);
+bytes=(k+1)*block_class_step;
+capacity=static_cast<std::uint32_t>(bytes-sizeof(HeapHeader)-1);
+if(!block_cache_closed){
+BlockCache& cache=block_cache;
+if(FreeBlock* head=cache.heads[k]){
+cache.heads[k]=head->next;
+--cache.counts[k];
+block=head;
+}
+}
+}
+if(!block)block=::operator new(bytes);
 auto* header=::new(block) HeapHeader{nullptr};
 return reinterpret_cast<char*>(header+1);
 }
 inline HeapHeader* header_of(char* ptr) noexcept
 {
 return reinterpret_cast<HeapHeader*>(ptr)-1;
+}
+// Frees the block of ptr, allocated for capacity bytes (its index, if any, already freed or moved to another block).
+void free_block(char* ptr,std::uint32_t capacity) noexcept
+{
+void* block=header_of(ptr);
+const std::size_t bytes=sizeof(HeapHeader)+std::size_t{capacity}+1;
+if(bytes<=block_cache_limit&&!block_cache_closed){
+BlockCache& cache=block_cache;
+const std::size_t k=block_class(bytes);
+if(cache.counts[k]<block_cache_depth){
+cache.heads[k]=::new(block) FreeBlock{cache.heads[k]};
+++cache.counts[k];
+return;
+}
+}
+::operator delete(block);
 }
 
 // Number parsing. Clinger's fast path is exact when the significand fits in 53 bits and the power of ten is exact.
@@ -454,7 +610,7 @@ cursor_+=size;
 void put(const char* bytes,std::size_t size)
 {
 if(size==0)return;
-std::memcpy(reserve(size),bytes,size);
+copy_bytes(reserve(size),bytes,size);
 cursor_+=size;
 }
 void put_byte(char value)
@@ -644,27 +800,20 @@ return mix(a^secret0^size,b^secret1);
 }
 }
 
-// Copies read other's caches atomically: other may be read (and its caches filled) by other threads at the same time.
-// The inline buffer and the sizes are never written by const members.
-String::String(const String& other)
+void String::copy_heap(const String& other)
 {
 const std::uint32_t meta=other.load_meta();
-if(!other.is_heap()){
-rep_.storage=other.rep_.storage;
-rep_.size=other.rep_.size;
-rep_.meta=meta;
-return;
-}
 const std::uint32_t size=other.size_bytes();
 if(size<=static_cast<std::uint32_t>(inline_capacity)){
-std::memcpy(rep_.storage.buffer,other.rep_.storage.heap.ptr,std::size_t{size}+1);
+copy_bytes(rep_.storage.buffer,other.rep_.storage.heap.ptr,std::size_t{size}+1);
 rep_.size=size;
 rep_.meta=meta;
 return;
 }
-char* ptr=allocate_block(size);
-std::memcpy(ptr,other.rep_.storage.heap.ptr,std::size_t{size}+1);
-rep_.storage.heap={ptr,size,0,0};
+std::uint32_t capacity=size;
+char* ptr=allocate_block(capacity);
+copy_bytes(ptr,other.rep_.storage.heap.ptr,std::size_t{size}+1);
+rep_.storage.heap={ptr,capacity,0,0};
 rep_.size=size|heap_bit;
 rep_.meta=meta;
 copy_hash(other);
@@ -693,14 +842,14 @@ rep_.meta=meta;
 return *this;
 }
 if(size<=static_cast<std::uint32_t>(inline_capacity)){
-std::memcpy(rep_.storage.buffer,other.rep_.storage.heap.ptr,std::size_t{size}+1);
+copy_bytes(rep_.storage.buffer,other.rep_.storage.heap.ptr,std::size_t{size}+1);
 rep_.size=size;
 rep_.meta=meta;
 return *this;
 }
 }else if(rep_.storage.heap.capacity>=size){
 free_index();
-std::memcpy(rep_.storage.heap.ptr,other.data(),std::size_t{size}+1);
+copy_bytes(rep_.storage.heap.ptr,other.data(),std::size_t{size}+1);
 rep_.size=size|heap_bit;
 rep_.meta=meta;
 copy_hash(other);
@@ -730,14 +879,15 @@ void String::init(const char* bytes,std::size_t size,std::uint32_t meta)
 if(size>max_size)too_long();
 const auto n=static_cast<std::uint32_t>(size);
 if(n<=static_cast<std::uint32_t>(inline_capacity)){
-if(n!=0)std::memcpy(rep_.storage.buffer,bytes,n);
+if(n!=0)copy_bytes(rep_.storage.buffer,bytes,n);
 rep_.storage.buffer[n]='\0';
 rep_.size=n;
 }else{
-char* ptr=allocate_block(n);
-std::memcpy(ptr,bytes,n);
+std::uint32_t capacity=n;
+char* ptr=allocate_block(capacity);
+copy_bytes(ptr,bytes,n);
 ptr[n]='\0';
-rep_.storage.heap={ptr,n,0,0};
+rep_.storage.heap={ptr,capacity,0,0};
 rep_.size=n|heap_bit;
 }
 rep_.meta=n==0?meta_ascii:meta;
@@ -747,7 +897,7 @@ void String::release() noexcept
 {
 HeapHeader* header=header_of(rep_.storage.heap.ptr);
 if(header->index!=nullptr)::operator delete(header->index);
-::operator delete(static_cast<void*>(header));
+free_block(rep_.storage.heap.ptr,rep_.storage.heap.capacity);
 }
 
 void String::free_index() noexcept
@@ -795,12 +945,12 @@ void String::reallocate(std::uint32_t capacity)
 {
 const std::uint32_t size=size_bytes();
 char* ptr=allocate_block(capacity);
-std::memcpy(ptr,data(),size);
+copy_bytes(ptr,data(),size);
 ptr[size]='\0';
 if(is_heap()){
 HeapHeader* old_header=header_of(rep_.storage.heap.ptr);
 header_of(ptr)->index=old_header->index;
-::operator delete(static_cast<void*>(old_header));
+free_block(rep_.storage.heap.ptr,rep_.storage.heap.capacity);
 rep_.storage.heap.ptr=ptr;
 rep_.storage.heap.capacity=capacity;
 }else{
@@ -837,9 +987,42 @@ void String::clear() noexcept
 raw_set_size(0,meta_ascii);
 }
 
+// The common append: the bytes fit the current storage. No call is made unless the text has a sparse index to update.
 String& String::append_raw(const char* bytes,std::size_t size,std::uint32_t meta)
 {
 if(size==0)return *this;
+const std::uint32_t old_size=size_bytes();
+// capacity_bytes() never exceeds max_size, so a fit cannot overflow.
+if(size>capacity_bytes()-old_size)return append_grown(bytes,size,meta);
+const bool joins=is_continuation(static_cast<byte>(bytes[0]));
+const std::uint32_t new_meta=joined_meta(rep_.meta,meta,std::string_view(bytes,size));
+const auto total=old_size+static_cast<std::uint32_t>(size);
+char* d=mutable_data();
+// bytes may view this string's own text, which lies before old_size and so never overlaps the copy.
+copy_bytes(d+old_size,bytes,size);
+d[total]='\0';
+rep_.size=total|(rep_.size&heap_bit);
+rep_.meta=new_meta;
+if(is_heap()){
+rep_.storage.heap.hash_known=0;
+// Only non-ASCII text has an index, so a result known to be ASCII (which needs ASCII on both sides) had none.
+const bool known_ascii=new_meta!=meta_unknown&&(new_meta&meta_ascii)!=0;
+if(!known_ascii&&header_of(rep_.storage.heap.ptr)->index!=nullptr)update_index(joins);
+}
+return *this;
+}
+
+void String::update_index(bool joins)
+{
+// Earlier characters (and so the index entries) change only when the new bytes start with a continuation byte that
+// completes a sequence the old end left open; otherwise the index is extended over the new text.
+if(joins)free_index();
+else extend_index();
+}
+
+// An append that needs a larger block.
+String& String::append_grown(const char* bytes,std::size_t size,std::uint32_t meta)
+{
 const std::uint32_t old_size=size_bytes();
 if(size>max_size-old_size)too_long();
 const auto total=old_size+static_cast<std::uint32_t>(size);
@@ -853,18 +1036,13 @@ reallocate(std::max(total,std::min(capacity_bytes()*2,max_size)));
 if(own)bytes=data()+(source-base);
 }
 char* d=mutable_data();
-std::memcpy(d+old_size,bytes,size);
+copy_bytes(d+old_size,bytes,size);
 d[total]='\0';
 rep_.size=total|(rep_.size&heap_bit);
 rep_.meta=new_meta;
 if(is_heap()){
 rep_.storage.heap.hash_known=0;
-// Earlier characters (and so the index entries) change only when the new bytes start with a continuation byte that
-// completes a sequence the old end left open; otherwise the index is extended over the new text.
-if(header_of(rep_.storage.heap.ptr)->index!=nullptr){
-if(joins)free_index();
-else extend_index();
-}
+if(header_of(rep_.storage.heap.ptr)->index!=nullptr)update_index(joins);
 }
 return *this;
 }
@@ -963,8 +1141,8 @@ String String::concat(std::string_view a,std::uint32_t a_meta,std::string_view b
 if(a.size()+b.size()>max_size)too_long();
 String out=with_size(a.size()+b.size());
 char* d=out.mutable_data();
-if(!a.empty())std::memcpy(d,a.data(),a.size());
-if(!b.empty())std::memcpy(d+a.size(),b.data(),b.size());
+if(!a.empty())copy_bytes(d,a.data(),a.size());
+if(!b.empty())copy_bytes(d+a.size(),b.data(),b.size());
 if(!out.empty())out.rep_.meta=a.empty()?b_meta:joined_meta(a_meta,b_meta,b);
 return out;
 }
@@ -1076,14 +1254,13 @@ const std::uint32_t size=static_cast<std::uint32_t>(length)==size_bytes()?1:char
 return String(data()+offset,size,*p<0x80?1|meta_ascii:1);
 }
 
-std::expected<char32_t,StringError> String::code_at(int index) const
+std::expected<char32_t,StringError> String::multibyte_code_at(int index) const
 {
 const int length=this->length();
 if(index<0||index>=length)return std::unexpected(StringError::index_out_of_range);
 const byte* begin=ubytes(data());
 const byte* p=begin+char_to_byte(static_cast<std::uint32_t>(index));
-const std::uint32_t size=static_cast<std::uint32_t>(length)==size_bytes()?1:char_size(p,begin+size_bytes());
-return decode(p,size);
+return decode(p,char_size(p,begin+size_bytes()));
 }
 
 std::expected<std::uint8_t,StringError> String::byte_at(int index) const
@@ -1097,6 +1274,11 @@ std::expected<int,StringError> String::find(std::string_view needle,int start) c
 const int length=this->length();
 if(start<0||start>length)return std::unexpected(StringError::index_out_of_range);
 if(needle.empty())return start;
+if(static_cast<std::uint32_t>(length)==size_bytes()){
+// Every character is one byte: indices are byte offsets and every offset is a character boundary.
+const std::size_t pos=search(bytes(),needle,static_cast<std::size_t>(start));
+return pos==npos?-1:static_cast<int>(pos);
+}
 const std::size_t pos=find_aligned(bytes(),needle,char_to_byte(static_cast<std::uint32_t>(start)));
 if(pos==npos)return -1;
 return static_cast<int>(byte_to_char(static_cast<std::uint32_t>(pos)));
@@ -1108,6 +1290,11 @@ const int length=this->length();
 if(start==-1)start=length;
 else if(start<0||start>length)return std::unexpected(StringError::index_out_of_range);
 if(needle.empty())return start;
+if(static_cast<std::uint32_t>(length)==size_bytes()){
+// Every character is one byte: indices are byte offsets and every offset is a character boundary.
+const std::size_t pos=bytes().rfind(needle,static_cast<std::size_t>(start));
+return pos==npos?-1:static_cast<int>(pos);
+}
 const std::size_t pos=rfind_aligned(bytes(),needle,char_to_byte(static_cast<std::uint32_t>(start)));
 if(pos==npos)return -1;
 return static_cast<int>(byte_to_char(static_cast<std::uint32_t>(pos)));
@@ -1224,11 +1411,11 @@ char* d=out.mutable_data();
 bool first=true;
 for(const String& part:parts){
 if(!first&&!separator.empty()){
-std::memcpy(d,separator.data(),separator.size());
+copy_bytes(d,separator.data(),separator.size());
 d+=separator.size();
 }
 first=false;
-std::memcpy(d,part.data(),part.size_bytes());
+copy_bytes(d,part.data(),part.size_bytes());
 d+=part.size_bytes();
 }
 return out;
@@ -1335,10 +1522,10 @@ if(static_cast<std::uint64_t>(size)*static_cast<std::uint64_t>(count)>max_size)t
 const std::uint32_t total=size*static_cast<std::uint32_t>(count);
 String out=with_size(total);
 char* d=out.mutable_data();
-std::memcpy(d,data(),size);
+copy_bytes(d,data(),size);
 for(std::uint32_t copied=size;copied<total;){
 const std::uint32_t chunk=std::min(copied,total-copied);
-std::memcpy(d+copied,d,chunk);
+copy_bytes(d+copied,d,chunk);
 copied+=chunk;
 }
 const std::uint32_t meta=load_meta();
@@ -1374,7 +1561,7 @@ ascii=false;
 n=char_size(p,end);
 valid=valid&&n!=1;
 }
-std::memcpy(d+size-at-n,p,n);
+copy_bytes(d+size-at-n,reinterpret_cast<const char*>(p),n);
 p+=n;
 ++count;
 }
@@ -1393,9 +1580,9 @@ if(text.size()>max_size-size)too_long();
 String out=with_size(size+text.size());
 char* d=out.mutable_data();
 const char* s=data();
-std::memcpy(d,s,at);
-if(!text.empty())std::memcpy(d+at,text.data(),text.size());
-std::memcpy(d+at+text.size(),s+at,size-at);
+copy_bytes(d,s,at);
+if(!text.empty())copy_bytes(d+at,text.data(),text.size());
+copy_bytes(d+at+text.size(),s+at,size-at);
 return out;
 }
 
@@ -1412,8 +1599,8 @@ const std::uint32_t begin=char_to_byte(static_cast<std::uint32_t>(start));
 const std::uint32_t end=n==available?size:char_to_byte(static_cast<std::uint32_t>(start)+n);
 String out=with_size(size-(end-begin));
 char* d=out.mutable_data();
-std::memcpy(d,data(),begin);
-std::memcpy(d+begin,data()+end,size-end);
+copy_bytes(d,data(),begin);
+copy_bytes(d+begin,data()+end,size-end);
 // The two parts keep their counts unless the second starts with a continuation byte that can join the first's end.
 if(!out.empty()&&(end==size||!is_continuation(static_cast<byte>(data()[end]))))out.rep_.meta=part_meta(static_cast<std::uint32_t>(length)-n);
 return out;

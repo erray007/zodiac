@@ -102,6 +102,29 @@ CHECK(error_of(fixture,"uint c=\"abc\".code_at(3);")=="index out of range");
 CHECK(error_of(fixture,"uint8 b=\"\xC5\x9F\".byte_at(2);")=="index out of range");
 }
 
+TEST_CASE("code_at and byte_at values stay correct however scripts combine them")
+{
+// Both return const references (the engine's fast call path): code_at into a table of code points, filled per block on
+// first use, byte_at into the string. Scripts must only ever see the values.
+ScriptFixture fixture;
+const std::string text="a\xC5\x9F\xE2\x82\xAC\xF0\x9F\x98\x80\xEF\xBF\xBD\xC4\xB1";
+const std::string source="string t=\""+text+"\";\n"
+"bool main(){\n"
+"if(t.code_at(0)!=0x61||t.code_at(1)!=0x15F||t.code_at(2)!=0x20AC||t.code_at(3)!=0x1F600||t.code_at(4)!=0xFFFD||t.code_at(5)!=0x131)return false;\n"
+"if(t.code_at(1)==t.code_at(2)||t.code_at(5)==t.code_at(4)||t.code_at(2)+t.code_at(3)!=0x20AC+0x1F600)return false;\n"
+"auto c=t.code_at(3);c+=1;if(c!=0x1F601||t.code_at(3)!=0x1F600)return false;\n"
+"uint8 b=t.byte_at(1);b+=1;if(b!=0xC6||t.byte_at(1)!=0xC5||t.byte_at(1)==t.byte_at(2))return false;\n"
+"uint sum=0;for(int i=0;i<t.length();++i)sum+=t.code_at(i);\n"
+"string s=\"x\";uint8 before=s.byte_at(0);s=\"a much longer text that moves to the heap\";\n"
+"return sum==0x61+0x15F+0x20AC+0x1F600+0xFFFD+0x131&&before==0x78&&s.byte_at(0)==0x61;\n"
+"}";
+REQUIRE(fixture.run(source.c_str(),"bool main()")==asEXECUTION_FINISHED);
+CHECK(fixture.context->GetReturnByte()!=0);
+CHECK(error_of(fixture,"uint c=\"\xC5\x9F\".code_at(1);")=="index out of range");
+CHECK(error_of(fixture,"uint c=\"\".code_at(0);")=="index out of range");
+CHECK(error_of(fixture,"uint8 b=\"a\".byte_at(-1);")=="index out of range");
+}
+
 TEST_CASE("search returns character indices")
 {
 ScriptFixture fixture;

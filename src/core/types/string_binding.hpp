@@ -6,7 +6,8 @@
 //   const, which throws "join needs an array of strings" for any other element type (a string separator does not compile
 //   for them).
 //   Script API (style C; indices and counts are characters): length, byte_length, empty, s[i] (read-only, one-character
-//   string), code_at, byte_at, find, rfind, contains, starts_with, ends_with, count, substr, left, right,
+//   string), code_at and byte_at (declared const uint &code_at(int) and const uint8 &byte_at(int), so the engine calls them
+//   through its fast asBC_Thiscall1 path; the references stay valid and unchanged, scripts see the values), find, rfind, contains, starts_with, ends_with, count, substr, left, right,
 //   split(delimiter, keep_empty=true), replace(old, new, all=true), trim, trim_left, trim_right, lower, upper,
 //   lower(locale), upper(locale), repeat, reverse, insert, erase(start, count=-1), normalize, to_number, to_int (int64),
 //   is_number, is_digits, hash (uint64); explicit constructors string(v) and assignment from every integer type, float,

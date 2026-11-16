@@ -37,6 +37,22 @@ jobs:
         run: python bootstrap.py
       - name: Build and test
         run: .tools/cmake/bin/cmake --workflow --preset windows
+      # The speed gate of spec 8.4 on an optimized build: Zodiac's types against the sample add-ons. A failing run is measured
+      # once more (shared runners are noisy) before the job fails; each run's table is in the log.
+      - name: Build the benchmark on the release preset
+        run: |
+          .tools/cmake/bin/cmake --preset windows-release
+          .tools/cmake/bin/cmake --build --preset windows-release --target bench_types
+      - name: Benchmark against the sample add-ons
+        shell: bash
+        run: |
+          bench=build/windows-release/tests/bench/bench_types.exe
+          "$bench" --out bench.json
+          if ! python -I tools/check_bench.py bench.json; then
+            echo "Measuring again once before failing."
+            "$bench" --out bench.json
+            python -I tools/check_bench.py bench.json
+          fi
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -87,6 +103,20 @@ jobs:
         env:
           ZODIAC_LONG_TESTS: "1"
         run: .tools/cmake/bin/cmake --workflow --preset linux
+      # The speed gate of spec 8.4 on an optimized build, as in the windows job.
+      - name: Build the benchmark on the release preset
+        run: |
+          .tools/cmake/bin/cmake --preset linux-release
+          .tools/cmake/bin/cmake --build --preset linux-release --target bench_types
+      - name: Benchmark against the sample add-ons
+        run: |
+          bench=build/linux-release/tests/bench/bench_types
+          "$bench" --out bench.json
+          if ! python -I tools/check_bench.py bench.json; then
+            echo "Measuring again once before failing."
+            "$bench" --out bench.json
+            python -I tools/check_bench.py bench.json
+          fi
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4

@@ -6,6 +6,16 @@ zodiac_target_warnings(${name})
 add_test(NAME ${name} COMMAND ${name})
 endfunction()
 zodiac_add_test(test_angelscript_smoke SOURCES test_angelscript_smoke.cpp LIBRARIES angelscript)
+# The AngelScript library games link holds no sample add-on (spec 8.4): on Windows the kit's staged lib/release/libangelscript.a
+# (zodiac_kit_stage, built with zodiac), elsewhere the angelscript archive itself.
+if(WIN32)
+set(ZODIAC_GAME_ANGELSCRIPT "${CMAKE_BINARY_DIR}/lib/release/libangelscript.a")
+else()
+set(ZODIAC_GAME_ANGELSCRIPT "$<TARGET_FILE:angelscript>")
+endif()
+add_test(NAME test_angelscript_has_no_sample_addons COMMAND "${CMAKE_COMMAND}" "-DNM=${CMAKE_NM}" "-DARCHIVE=${ZODIAC_GAME_ANGELSCRIPT}" -P "${CMAKE_CURRENT_SOURCE_DIR}/check_no_sample_addons.cmake")
+# The speed gate against the sample add-ons (spec 8.4): built with everything, run by CI on release presets, not by ctest.
+add_subdirectory(bench)
 add_library(test_plugin_header_c STATIC test_plugin_header_c.c)
 set_target_properties(test_plugin_header_c PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 zodiac_target_warnings(test_plugin_header_c)

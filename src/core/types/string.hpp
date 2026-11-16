@@ -8,6 +8,8 @@
 //   (searches only match whole characters). code_at() of such a byte is U+FFFD.
 // - Layout (32 bytes): up to inline_capacity bytes live inside the object without allocation; longer text lives in one heap
 //   block (an 8-byte header for the sparse index, then the bytes). Copies of heap strings that fit are stored inline.
+//   Blocks of up to 256 bytes come in 16-byte size classes (the capacity is all the class holds) and are recycled through
+//   a per-thread cache of at most 32 blocks per class, freed when the thread ends; any thread may free any string.
 // - Metadata is computed lazily and invalidated on every mutation (or carried over exactly when an operation provably
 //   cannot change the character count): the character count with an all-ASCII flag (one word-at-a-time scan), the 64-bit
 //   hash (cached for heap strings; inline strings hash their at most 23 bytes on each call), and for non-ASCII heap text
@@ -83,7 +85,18 @@ String(std::string_view bytes)
 init(bytes.data(),bytes.size(),meta_unknown);
 }
 String(const char* text):String(std::string_view(text)) {}
-String(const String& other);
+// Copies read other's caches atomically: other may be read (and its caches filled) by other threads at the same time.
+// The inline buffer and the sizes are never written by const members. Inline text is copied here, heap text out of line.
+String(const String& other)
+{
+if(other.is_heap()){
+copy_heap(other);
+return;
+}
+rep_.storage=other.rep_.storage;
+rep_.size=other.rep_.size;
+rep_.meta=other.load_meta();
+}
 String(String&& other) noexcept:rep_(other.rep_)
 {
 other.init_empty();
@@ -180,7 +193,23 @@ void reserve(int bytes);
 void clear() noexcept;
 
 std::expected<String,StringError> char_at(int index) const;
-std::expected<char32_t,StringError> code_at(int index) const;
+std::expected<char32_t,StringError> code_at(int index) const
+{
+const int length=this->length();
+if(static_cast<std::uint32_t>(length)!=size_bytes())return multibyte_code_at(index);
+// Every character is one byte: an ASCII byte is its own code point, any other is an invalid byte (U+FFFD).
+if(static_cast<unsigned>(index)>=static_cast<unsigned>(length))return std::unexpected(StringError::index_out_of_range);
+const auto byte=static_cast<unsigned char>(data()[index]);
+return byte<0x80?char32_t{byte}:char32_t{0xFFFD};
+}
+// The code at index when the cached metadata already shows the text is ASCII (so indices are byte offsets); -1 otherwise
+// (code_at then has the answer). Never scans, so callers can use it as a leaf fast path.
+int known_ascii_code_at(int index) const noexcept
+{
+const std::uint32_t meta=load_meta();
+if(meta==meta_unknown||(meta&meta_ascii)==0||static_cast<std::uint32_t>(index)>=size_bytes())return -1;
+return static_cast<unsigned char>(data()[index]);
+}
 std::expected<std::uint8_t,StringError> byte_at(int index) const;
 
 // Character index of the first match at or after start; an empty needle matches at start.
@@ -375,6 +404,8 @@ rep_.size=0;
 rep_.meta=meta_ascii;
 }
 void init(const char* bytes,std::size_t size,std::uint32_t meta);
+// The copy constructor for heap text (other.is_heap()).
+void copy_heap(const String& other);
 void release() noexcept;
 void free_index() noexcept;
 int scan() const noexcept;
@@ -387,6 +418,9 @@ void reallocate(std::uint32_t capacity);
 char* raw_reserve(std::size_t capacity);
 void raw_set_size(std::uint32_t size,std::uint32_t meta) noexcept;
 String& append_raw(const char* bytes,std::size_t size,std::uint32_t meta);
+// append_raw's paths for a full block and for text with a sparse index, kept out of line so its common path stays small.
+[[gnu::noinline]] String& append_grown(const char* bytes,std::size_t size,std::uint32_t meta);
+[[gnu::noinline]] void update_index(bool joins);
 String& append_signed(long long value);
 String& append_unsigned(unsigned long long value);
 static String concat(std::string_view a,std::uint32_t a_meta,std::string_view b,std::uint32_t b_meta);
@@ -396,6 +430,8 @@ bool is_simple() const noexcept
 return static_cast<std::uint32_t>(length())==size_bytes();
 }
 const std::uint32_t* index() const;
+// code_at for text with multibyte characters (length() differs from the byte length).
+std::expected<char32_t,StringError> multibyte_code_at(int index) const;
 std::uint32_t char_to_byte(std::uint32_t index) const;
 std::uint32_t byte_to_char(std::uint32_t offset) const;
 // The meta of a part of this string with length characters (known whenever this string's count is known).

@@ -4,6 +4,7 @@
 #include <core/types/string.hpp>
 #include <core/types/unicode.hpp>
 #include <doctest/doctest.h>
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <cmath>
@@ -445,6 +446,94 @@ CHECK(String("aaaa").count("aa")==2);
 CHECK(String("").find("")==0);
 CHECK(String("").rfind("")==0);
 CHECK(String("").find("a")==-1);
+}
+
+TEST_CASE("find agrees with std::string_view::find around the 16-byte search blocks")
+{
+// Texts over a small alphabet put matches, near misses (first and last byte equal) and block edges everywhere: every
+// start and needle length is checked against the standard library on one-byte-per-character text, and through count
+// and contains, which search the same way.
+std::mt19937 random(20261117);
+for(int round=0;round<200;++round){
+const std::size_t size=static_cast<std::size_t>(random()%80);
+std::string text;
+for(std::size_t i=0;i<size;++i)text.push_back(static_cast<char>('a'+random()%3));
+const String s(text);
+for(std::size_t n=1;n<=std::min<std::size_t>(size+1,20);++n){
+const std::size_t at=size>=n?static_cast<std::size_t>(random()%(size-n+1)):0;
+const std::string needle=size>=n&&random()%2?text.substr(at,n):std::string(n,static_cast<char>('a'+random()%3));
+for(std::size_t start=0;start<=size;++start){
+const std::size_t expected=std::string_view(text).find(needle,start);
+CAPTURE(text);
+CAPTURE(needle);
+CAPTURE(start);
+CHECK(s.find(needle,static_cast<int>(start))==(expected==std::string_view::npos?-1:static_cast<int>(expected)));
+}
+int matches=0;
+for(std::size_t pos=std::string_view(text).find(needle);pos!=std::string_view::npos;pos=std::string_view(text).find(needle,pos+n))++matches;
+CHECK(s.count(needle)==matches);
+CHECK(s.contains(needle)==(matches>0));
+}
+}
+}
+
+TEST_CASE("heap blocks are recycled per thread, across threads and size classes")
+{
+// Sizes around every 16-byte block class and past the cached range; blocks are dropped, reused, grown in place (the
+// rounded capacity), freed on another thread than the one that made them, and the threads end with full caches.
+std::vector<String> made;
+for(int size=20;size<=300;++size)made.emplace_back(std::string(static_cast<std::size_t>(size),static_cast<char>('a'+size%26)));
+for(int round=0;round<3;++round){
+std::vector<String> copies(made.begin(),made.end());
+for(std::size_t i=0;i<copies.size();++i){
+CHECK(copies[i]==made[i]);
+copies[i].append("!");
+CHECK(copies[i].byte_length()==made[i].byte_length()+1);
+CHECK(copies[i].bytes().substr(0,static_cast<std::size_t>(made[i].byte_length()))==made[i].bytes());
+CHECK(copies[i].capacity()>=copies[i].byte_length());
+}
+}
+std::vector<String> handed;
+std::thread maker([&handed]{
+for(int i=0;i<2000;++i)handed.emplace_back(std::string(static_cast<std::size_t>(24+i%200),'x'));
+});
+maker.join();
+std::thread freer([&handed]{
+for(String& s:handed)CHECK(s.byte_length()>=24);
+handed.clear();
+std::vector<String> local;
+for(int i=0;i<2000;++i)local.emplace_back(std::string(static_cast<std::size_t>(24+i%200),'y'));
+for(int i=0;i<2000;++i)CHECK(local[static_cast<std::size_t>(i)].bytes()==std::string(static_cast<std::size_t>(24+i%200),'y'));
+});
+freer.join();
+String grown;
+for(int i=0;i<500;++i)grown.append("0123456789");
+CHECK(grown.byte_length()==5000);
+CHECK(grown.count("0123456789")==500);
+}
+
+TEST_CASE("code_at on one-byte-per-character text, before and after the count is known")
+{
+const String ascii="a\x7F" "b";
+CHECK(ascii.known_ascii_code_at(0)==-1);
+CHECK(ascii.code_at(1)==char32_t{0x7F});
+CHECK(ascii.known_ascii_code_at(0)=='a');
+CHECK(ascii.known_ascii_code_at(1)==0x7F);
+CHECK(ascii.known_ascii_code_at(3)==-1);
+CHECK(ascii.known_ascii_code_at(-1)==-1);
+// One byte per character but an invalid byte: never the fast path, and code_at gives U+FFFD for it.
+const String text="a\x7F\xFF" "b";
+CHECK(text.code_at(2)==char32_t{0xFFFD});
+CHECK(text.length()==4);
+CHECK(text.known_ascii_code_at(0)==-1);
+CHECK(text.known_ascii_code_at(2)==-1);
+CHECK(text.code_at(0)==U'a');
+CHECK(text.code_at(3)==U'b');
+CHECK(text.code_at(4)==std::unexpected(StringError::index_out_of_range));
+CHECK(text.code_at(-1)==std::unexpected(StringError::index_out_of_range));
+const String turkish="ışık";
+CHECK(turkish.code_at(0)==U'ı');
+CHECK(turkish.known_ascii_code_at(2)==-1);
 }
 
 TEST_CASE("search never matches part of a UTF-8 sequence")

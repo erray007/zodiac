@@ -50,10 +50,6 @@ add_library(angelscript STATIC
 ${AS_CORE_SOURCES}
 "${AS_SRC}/as_callfunc.cpp"
 ${AS_CALLFUNC_SOURCES}
-"${AS_ADDON}/scriptstdstring/scriptstdstring.cpp"
-"${AS_ADDON}/scriptstdstring/scriptstdstring_utils.cpp"
-"${AS_ADDON}/scriptarray/scriptarray.cpp"
-"${AS_ADDON}/scriptdictionary/scriptdictionary.cpp"
 "${AS_ADDON}/scriptbuilder/scriptbuilder.cpp"
 "${AS_ADDON}/scripthelper/scripthelper.cpp"
 )
@@ -62,3 +58,13 @@ find_package(Threads REQUIRED)
 target_link_libraries(angelscript PUBLIC Threads::Threads)
 set_target_properties(angelscript PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_options(angelscript PRIVATE -w)
+# The sample add-ons Zodiac's string, array<T> and dictionary replace (spec 8.4). Only tests/bench links them, to measure Zodiac's types
+# against them; games, the core and the kit never get them (test_angelscript_has_no_sample_addons checks lib/release/libangelscript.a).
+add_library(angelscript_sample_addons STATIC
+"${AS_ADDON}/scriptstdstring/scriptstdstring.cpp"
+"${AS_ADDON}/scriptstdstring/scriptstdstring_utils.cpp"
+"${AS_ADDON}/scriptarray/scriptarray.cpp"
+"${AS_ADDON}/scriptdictionary/scriptdictionary.cpp"
+)
+target_link_libraries(angelscript_sample_addons PUBLIC angelscript)
+target_compile_options(angelscript_sample_addons PRIVATE -w)

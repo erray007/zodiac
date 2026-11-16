@@ -241,13 +241,77 @@ return value_or_raise(self.char_at(index),self);
 }
 
 // Methods.
-std::uint32_t code_at(const String& self,int index)
+// code_at and byte_at are registered as const uint &code_at(int) and const uint8 &byte_at(int): the engine calls methods of
+// the form `type &f(int)` through asBC_Thiscall1, which costs about half of the general asBC_CALLSYS path (the add-on's
+// uint8 &opIndex(uint) is called that way). Scripts copy the value out at once, so the reference only has to stay valid and
+// unchanged while they do: byte_at refers to the byte inside the string (as the add-on's opIndex does), code_at to entry c
+// of a table whose entry c holds c. The table's first block (U+0000-U+07FF: every one- and two-byte character) is constant;
+// every other block is filled on first use and published once with a compare-and-swap, then never changed or freed.
+constexpr std::uint32_t code_block_bits=11;
+constexpr std::uint32_t code_block_size=1u<<code_block_bits;
+constexpr std::uint32_t code_block_count=0x110000u>>code_block_bits;
+struct CodeBlock {
+std::uint32_t codes[code_block_size];
+};
+constexpr CodeBlock make_low_codes() noexcept
 {
-return static_cast<std::uint32_t>(value_or_raise(self.code_at(index),self));
+CodeBlock block{};
+for(std::uint32_t code=0;code<code_block_size;++code)block.codes[code]=code;
+return block;
 }
-std::uint8_t byte_at(const String& self,int index)
+constexpr CodeBlock low_codes=make_low_codes();
+// Blocks 1 to code_block_count-1, null until first used; read and published with atomic builtins.
+CodeBlock* high_codes[code_block_count];
+constexpr std::uint8_t zero_byte=0;
+// Fills and publishes the block holding value (out of line, so the lookups below stay small). Throws std::bad_alloc.
+[[gnu::noinline]] CodeBlock* publish_code_block(std::uint32_t value)
 {
-return value_or_raise(self.byte_at(index),self);
+auto* built=new CodeBlock;
+const std::uint32_t first=value&~(code_block_size-1);
+for(std::uint32_t offset=0;offset<code_block_size;++offset)built->codes[offset]=first+offset;
+CodeBlock* expected=nullptr;
+if(__atomic_compare_exchange_n(&high_codes[value>>code_block_bits],&expected,built,false,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))return built;
+delete built;
+return expected;
+}
+// Entry code of the table; code is a code point (String never decodes anything above U+10FFFF). Throws std::bad_alloc.
+inline const std::uint32_t& code_entry(char32_t code)
+{
+const auto value=static_cast<std::uint32_t>(code);
+if(value<code_block_size)return low_codes.codes[value];
+CodeBlock* block=__atomic_load_n(&high_codes[value>>code_block_bits],__ATOMIC_ACQUIRE);
+if(!block)block=publish_code_block(value);
+return block->codes[value&(code_block_size-1)];
+}
+[[gnu::noinline]] const std::uint32_t& code_at_any(const String& self,int index) noexcept
+{
+try{
+const std::expected<char32_t,StringError> code=self.code_at(index);
+if(code)return code_entry(*code);
+raise_string_error(code.error(),self);
+}
+catch(...){
+raise_current_exception();
+}
+return low_codes.codes[0];
+}
+// A leaf for ASCII characters of text known to have one byte per character (a tail call otherwise).
+const std::uint32_t& code_at(const String& self,int index) noexcept
+{
+const int code=self.known_ascii_code_at(index);
+if(code>=0)return low_codes.codes[code];
+return code_at_any(self,index);
+}
+[[gnu::noinline]] const std::uint8_t& byte_out_of_range(const String& self) noexcept
+{
+raise_string_error(StringError::index_out_of_range,self);
+return zero_byte;
+}
+// A leaf in range (a tail call otherwise).
+const std::uint8_t& byte_at(const String& self,int index) noexcept
+{
+if(static_cast<std::uint32_t>(index)<static_cast<std::uint32_t>(self.byte_length()))return *reinterpret_cast<const std::uint8_t*>(self.data()+index);
+return byte_out_of_range(self);
 }
 int find(const String& self,const String& needle,int start)
 {
@@ -522,8 +586,8 @@ r.value<bool>("bool");
 r.method("int length() const",asMETHOD(String,length),asCALL_THISCALL);
 r.method("int byte_length() const",asMETHOD(String,byte_length),asCALL_THISCALL);
 r.method("bool empty() const",asMETHOD(String,empty),asCALL_THISCALL);
-r.method("uint code_at(int) const",asFUNCTION(guarded<&code_at>::call));
-r.method("uint8 byte_at(int) const",asFUNCTION(guarded<&byte_at>::call));
+r.method("const uint &code_at(int) const",asFUNCTION(code_at));
+r.method("const uint8 &byte_at(int) const",asFUNCTION(byte_at));
 r.method("int find(const string &in needle, int start = 0) const",asFUNCTION(guarded<&find>::call));
 r.method("int rfind(const string &in needle, int start = -1) const",asFUNCTION(guarded<&rfind>::call));
 r.method("bool contains(const string &in) const",asFUNCTION(contains));
