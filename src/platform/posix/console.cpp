@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <cerrno>
 #include <cstddef>
+#include <cstdio>
 
 namespace zodiac::platform {
 namespace {
@@ -48,6 +49,8 @@ write_line(STDERR_FILENO,line);
 }
 void write_stdout_line(std::string_view line) noexcept
 {
+// Text modules buffered with stdio comes first, so the line lands after it.
+std::fflush(stdout);
 write_line(STDOUT_FILENO,line);
 }
 }

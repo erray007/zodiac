@@ -11,8 +11,16 @@ TEST_MODULE_DIR = os.environ["ZODIAC_TEST_MODULE_DIR"]
 VERSION = os.environ.get("ZODIAC_VERSION", "")
 
 
+def no_desktop_env():
+    """The environment with the documented test hook ZODIAC_FORCE_NO_DESKTOP=1: has_interactive_desktop() reports no desktop, so a failed
+    zodiac run prints its summary on the console instead of opening the result window, and no test can wait on a window."""
+    env = dict(os.environ)
+    env["ZODIAC_FORCE_NO_DESKTOP"] = "1"
+    return env
+
+
 def zodiac(*args, cwd=None):
-    result = subprocess.run([EXE, *args], capture_output=True, cwd=cwd, timeout=60)
+    result = subprocess.run([EXE, *args], capture_output=True, cwd=cwd, env=no_desktop_env(), timeout=60)
     return result.returncode, result.stdout.decode("utf-8"), result.stderr.decode("utf-8")
 
 
@@ -150,11 +158,12 @@ class CliTest(unittest.TestCase):
         write(project / "ayar.txt", '[game]\nmain = "main.zs"\n')
         code, out, err = zodiac("run", str(project), "--config", str(project / "ayar.txt"))
         self.assertEqual((code, out, err.splitlines()), (2, "", ["error: --config cannot be combined with a project folder"]))
+        # The run starts with loading the project, so its errors are summed up; command line mistakes are not.
         code, out, err = zodiac("run", "--config", "yok.txt", cwd=project)
-        self.assertEqual((code, out, err.splitlines()), (2, "", ['error: config file "%s" does not exist' % (project / "yok.txt")]))
+        self.assertEqual((code, out.splitlines(), err.splitlines()), (2, ["Run failed: 1 error"], ['error: config file "%s" does not exist' % (project / "yok.txt")]))
         write(project / "bozuk.txt", "[game\n")
         code, out, err = zodiac("run", "--config", str(project / "bozuk.txt"))
-        self.assertEqual(code, 2)
+        self.assertEqual((code, out.splitlines()), (2, ["Run failed: 1 error"]))
         self.assertTrue(err.startswith("bozuk.txt:1:"), err)
         code, out, err = zodiac("run", "--config")
         self.assertEqual((code, err.splitlines()), (2, ["error: --config needs a value"]))
@@ -168,7 +177,7 @@ class CliTest(unittest.TestCase):
     def test_run_missing_script_exit_2(self):
         missing = self.root / "yok.zs"
         code, out, err = zodiac("run", str(missing), "--module-dir", MODULE_DIR)
-        self.assertEqual((code, out), (2, ""))
+        self.assertEqual((code, out.splitlines()), (2, ["Run failed: 1 error"]))
         self.assertEqual(err.splitlines(), ['error: script "%s" does not exist' % missing])
 
     def test_missing_module_exit_2(self):
@@ -176,15 +185,42 @@ class CliTest(unittest.TestCase):
         self.make_project(project, ["no_such_module"], "void main()\n{\n}\n")
         code, out, err = zodiac("run", str(project), "--module-dir", MODULE_DIR)
         self.assertEqual(code, 2)
-        self.assertEqual(out, "")
+        self.assertEqual(out.splitlines(), ["Run failed: 1 error"])
         self.assertEqual(len(err.splitlines()), 1)
         self.assertIn('module "no_such_module" not found', err)
+
+    def test_failed_run_summary_is_the_last_stdout_line(self):
+        project = self.root / "game"
+        self.make_project(project, ["example"], 'void main()\n{\nexample_print("before");\nint zero = 0;\nint x = 1 / zero;\nexample_print("after");\n}\n')
+        code, out, err = zodiac("run", str(project), "--module-dir", MODULE_DIR)
+        self.assertEqual(code, 1)
+        self.assertIn("main.zs:5: runtime error:", err)
+        self.assertEqual(out.splitlines(), ["before", "Run failed: 1 error"])
+
+    def test_no_window_run_never_prints_the_summary(self):
+        project = self.root / "game"
+        self.make_project(project, ["no_such_module"], "void main()\n{\n}\n")
+        code, out, err = zodiac("run", str(project), "--no-window", "--module-dir", MODULE_DIR)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn('module "no_such_module" not found', err)
+        clean = self.root / "clean"
+        self.make_project(clean, ["example"], 'void main()\n{\nexample_print("ok");\n}\n')
+        code, out, err = zodiac("run", "--no-window", str(clean), "--module-dir", MODULE_DIR)
+        self.assertEqual((code, out.splitlines(), err), (0, ["ok"], ""))
+        code, out, err = zodiac("run", str(clean), "--output", str(self.root / "out"))
+        self.assertEqual((code, out, err.splitlines()), (2, "", ["error: --output applies to build only; run zodiac help"]))
 
     def test_main_return_value_is_exit_code(self):
         project = self.root / "game"
         self.make_project(project, [], "int main()\n{\nreturn 7;\n}\n")
         code, out, err = zodiac("run", str(project), "--module-dir", MODULE_DIR)
         self.assertEqual((code, out, err), (7, "", ""))
+
+    def test_game_exit_code_1_without_an_engine_error_prints_no_summary(self):
+        project = self.root / "game"
+        self.make_project(project, [], "int main()\n{\nreturn 1;\n}\n")
+        code, out, err = zodiac("run", str(project), "--module-dir", MODULE_DIR)
+        self.assertEqual((code, out, err), (1, "", ""))
 
     def test_main_return_value_out_of_range_warns_and_exits_1(self):
         project = self.root / "game"
@@ -205,13 +241,14 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("main.zs:3:", err)
         self.assertIn("error", err)
+        self.assertRegex(out, r"^Run failed: [1-9][0-9]* errors?\r?\n$")
 
     def test_project_error_exit_2(self):
         project = self.root / "broken"
         project.mkdir()
         write(project / "zodiac.toml", "[game\n")
         code, out, err = zodiac("run", str(project))
-        self.assertEqual(code, 2)
+        self.assertEqual((code, out.splitlines()), (2, ["Run failed: 1 error"]))
         self.assertTrue(err.startswith("zodiac.toml"), err)
         self.assertEqual(len(err.splitlines()), 1)
 

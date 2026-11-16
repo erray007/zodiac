@@ -47,10 +47,12 @@ constexpr int exit_build_error=2;
 // What a build produced, also when it failed part way: the executable's path (empty until known) and the game's name (empty until the project loads).
 // used_lone_file, static_modules and dynamic_modules are set once the project loads: true when a lone script was built without a project file,
 // and the modules linked statically and dynamically (for a lone script, every installed module, split as split_lone_modules decides), so the
-// result window can offer a project file listing them.
+// result window can offer a project file listing them; root and main_script (absolute) are where that file goes and the script it names.
 struct BuildOutcome{
 std::filesystem::path exe;
 std::string game_name;
+std::filesystem::path root;
+std::filesystem::path main_script;
 bool used_lone_file=false;
 std::vector<std::string> static_modules;
 std::vector<std::string> dynamic_modules;
@@ -521,6 +523,8 @@ const KitLayout kit=kit_layout(kit_exe);
 auto project=project_of(options,kit,diagnostics);
 if(!project)return project.error();
 outcome.game_name=project->name;
+outcome.root=project->root;
+outcome.main_script=project->main_script;
 outcome.used_lone_file=project->file.empty();
 outcome.static_modules=project->static_modules;
 outcome.dynamic_modules=project->dynamic_modules;
@@ -545,23 +549,12 @@ diagnostics.report(ZODIAC_LOG_ERROR,"error: release builds are not supported on 
 return exit_build_error;
 }
 #endif
-
-// The last element of the target's absolute path ("game" for ".", "main.zs" for a script), for a window title when no project loaded.
-std::string target_name(const std::filesystem::path& target)
-{
-std::error_code ec;
-std::filesystem::path path=std::filesystem::absolute(target.empty()?std::filesystem::path("."):target,ec);
-if(ec)path=target;
-path=path.lexically_normal();
-if(!path.has_filename()&&path.has_relative_path())path=path.parent_path();
-return path_to_utf8(path.filename());
-}
 }
 
 int build_project(const BuildOptions& options,Diagnostics& diagnostics)
 {
-auto owned=std::make_unique<BuildReport>();
-const BuildReport& report=*owned;
+auto owned=std::make_unique<ResultReport>(ResultVerb::build);
+const ResultReport& report=*owned;
 diagnostics.add_sink(std::move(owned));
 BuildOutcome outcome;
 const int code=build_release(options,diagnostics,outcome);
@@ -573,7 +566,16 @@ if(options.no_window||!platform::has_interactive_desktop())return code;
 const std::filesystem::path& named=options.target.empty()&&!options.config.empty()?options.config.parent_path():options.target;
 const std::string name=outcome.game_name.empty()?target_name(named):outcome.game_name;
 const std::filesystem::path folder=outcome.exe.parent_path();
-platform::show_result_window("Zodiac build - "+name,report.text(succeeded,outcome.exe),succeeded,succeeded?&folder:nullptr);
+// A lone script's build offers the project file it could have had: that script as main, the modules as they were linked (decision 2).
+platform::ResultAction create;
+if(outcome.used_lone_file){
+create.label=L"Create &project file";
+create.run=[&outcome]{
+const std::string script=path_to_utf8(outcome.main_script.filename());
+return create_project_file(outcome.root,outcome.game_name,script,outcome.static_modules,outcome.dynamic_modules);
+};
+}
+platform::show_result_window("Zodiac build - "+name,L"&Build output",report.text(succeeded,outcome.exe),succeeded,succeeded?&folder:nullptr,outcome.used_lone_file?&create:nullptr);
 return code;
 }
 }

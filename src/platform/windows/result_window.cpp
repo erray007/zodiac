@@ -1,4 +1,4 @@
-// The build result window on Windows (see platform/result_window.hpp): a modeless dialog (window class #32770, so DefDlgProc supplies the
+// The result window on Windows (see platform/result_window.hpp): a modeless dialog (window class #32770, so DefDlgProc supplies the
 // dialog manager: default button, WM_NEXTDLGCTL, focus restored on reactivation, Esc and the close box as IDCANCEL) driven by this file's
 // IsDialogMessageW loop. Its children are plain STATIC, EDIT and BUTTON controls created in tab order, so screen readers expose them through
 // their standard MSAA/UIA proxies and name the edit after the label in front of it.
@@ -22,6 +22,7 @@ constexpr int id_label=100;
 constexpr int id_output=101;
 constexpr int id_copy=102;
 constexpr int id_open=103;
+constexpr int id_action=104;
 // Close carries IDCANCEL, so the dialog manager routes Esc and the close box (WM_CLOSE) to it.
 constexpr int id_close=IDCANCEL;
 constexpr UINT message_dpi_changed=0x02E0;
@@ -98,8 +99,12 @@ return result;
 
 struct Window{
 std::wstring title;
+std::wstring label_text;
+std::wstring action_label;
+// Exactly the edit's text, so its length is where an appended line starts and Copy all copies what is shown.
 std::wstring text;
 const std::filesystem::path* folder=nullptr;
+const ResultAction* action=nullptr;
 DpiApi api;
 UINT dpi=base_dpi;
 HFONT font=nullptr;
@@ -108,9 +113,11 @@ int line_height=0;
 HWND label=nullptr;
 HWND output=nullptr;
 HWND copy=nullptr;
+HWND act=nullptr;
 HWND open=nullptr;
 HWND close=nullptr;
 int copy_width=0;
+int act_width=0;
 int open_width=0;
 int close_width=0;
 WNDPROC edit_proc=nullptr;
@@ -161,7 +168,7 @@ const BOOL got=window.api.parameters_for_dpi?window.api.parameters_for_dpi(SPI_G
 HFONT font=got?CreateFontIndirectW(&metrics.lfMessageFont):nullptr;
 const bool owned=font!=nullptr;
 if(!font)font=static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-for(HWND control:{window.label,window.output,window.copy,window.open,window.close})if(control)SendMessageW(control,WM_SETFONT,reinterpret_cast<WPARAM>(font),FALSE);
+for(HWND control:{window.label,window.output,window.copy,window.act,window.open,window.close})if(control)SendMessageW(control,WM_SETFONT,reinterpret_cast<WPARAM>(font),FALSE);
 free_font(window);
 window.font=font;
 window.owns_font=owned;
@@ -172,6 +179,7 @@ TEXTMETRICW metric{};
 GetTextMetricsW(dc,&metric);
 window.line_height=metric.tmHeight;
 window.copy_width=button_width(window,dc,window.copy);
+window.act_width=button_width(window,dc,window.act);
 window.open_width=button_width(window,dc,window.open);
 window.close_width=button_width(window,dc,window.close);
 SelectObject(dc,previous);
@@ -185,6 +193,7 @@ int button_height(const Window& window) noexcept{return std::max(window.scaled(2
 int buttons_width(const Window& window) noexcept
 {
 int width=window.copy_width+window.close_width+gap(window);
+if(window.act)width+=window.act_width+gap(window);
 if(window.open)width+=window.open_width+gap(window);
 return width;
 }
@@ -199,7 +208,7 @@ const int buttons_y=height-edge-button_height(window);
 const int output_y=edge+window.line_height+window.scaled(4);
 const int output_height=std::max(0,buttons_y-space-output_y);
 const int inner_width=std::max(0,width-2*edge);
-HDWP batch=BeginDeferWindowPos(5);
+HDWP batch=BeginDeferWindowPos(6);
 const auto place=[&batch](HWND control,int x,int y,int cx,int cy){
 if(control&&batch)batch=DeferWindowPos(batch,control,nullptr,x,y,cx,cy,SWP_NOZORDER|SWP_NOACTIVATE);
 };
@@ -208,6 +217,10 @@ place(window.output,edge,output_y,inner_width,output_height);
 int x=width-edge-buttons_width(window);
 place(window.copy,x,buttons_y,window.copy_width,button_height(window));
 x+=window.copy_width+space;
+if(window.act){
+place(window.act,x,buttons_y,window.act_width,button_height(window));
+x+=window.act_width+space;
+}
 if(window.open){
 place(window.open,x,buttons_y,window.open_width,button_height(window));
 x+=window.open_width+space;
@@ -303,10 +316,11 @@ const HICON icon=LoadIconW(nullptr,MAKEINTRESOURCEW(32512));
 SendMessageW(hwnd,WM_SETICON,ICON_BIG,reinterpret_cast<LPARAM>(icon));
 SendMessageW(hwnd,WM_SETICON,ICON_SMALL,reinterpret_cast<LPARAM>(icon));
 // Creation order is z-order and tab order: the label comes right before the edit it names.
-window.label=create_control(hwnd,L"STATIC",L"&Build output",SS_LEFT,0,id_label);
+window.label=create_control(hwnd,L"STATIC",window.label_text.c_str(),SS_LEFT,0,id_label);
 // No word wrap (ES_AUTOHSCROLL|WS_HSCROLL): every diagnostic stays one line, so each arrow press reads one whole message.
 window.output=create_control(hwnd,L"EDIT",L"",ES_MULTILINE|ES_READONLY|ES_AUTOHSCROLL|WS_VSCROLL|WS_HSCROLL|WS_TABSTOP,WS_EX_CLIENTEDGE,id_output);
 window.copy=create_control(hwnd,L"BUTTON",L"&Copy all",BS_PUSHBUTTON|WS_TABSTOP,0,id_copy);
+if(window.action)window.act=create_control(hwnd,L"BUTTON",window.action_label.c_str(),BS_PUSHBUTTON|WS_TABSTOP,0,id_action);
 if(window.folder)window.open=create_control(hwnd,L"BUTTON",L"&Open output folder",BS_PUSHBUTTON|WS_TABSTOP,0,id_open);
 // DM_SETDEFID below makes Close the default button (BS_DEFPUSHBUTTON, which screen readers report as "default").
 window.close=create_control(hwnd,L"BUTTON",L"Close",BS_PUSHBUTTON|WS_TABSTOP,0,id_close);
@@ -322,6 +336,35 @@ apply_font(window,hwnd);
 place_window(window,hwnd);
 // Focus is set once the window is shown (show_result_window).
 return FALSE;
+}
+
+// The action's button: runs the action once and appends its line as the edit's new last line, then reads it to the user by putting the caret
+// at its start and the focus in the edit. The button is disabled last, so the dialog manager never sees the focused control go away.
+void press_action(HWND hwnd,Window& window) noexcept
+{
+if(!window.act||!IsWindowEnabled(window.act))return;
+// Where the appended line starts: after the old text and the "\r\n" in front of the new line.
+const std::size_t start=window.text.size()+2;
+try{
+std::wstring line=L"\r\n";
+line.append(widen(window.action->run()));
+// The edit shows one line per message: a stray line break from the action becomes a space.
+for(std::size_t at=2;at<line.size();++at)if(line[at]==L'\r'||line[at]==L'\n')line[at]=L' ';
+window.text.append(line);
+const int end=static_cast<int>(std::min<std::size_t>(start-2,INT_MAX));
+SendMessageW(window.output,EM_SETSEL,static_cast<WPARAM>(end),end);
+SendMessageW(window.output,EM_REPLACESEL,FALSE,reinterpret_cast<LPARAM>(line.c_str()));
+}
+catch(...){
+MessageBeep(MB_ICONERROR);
+return;
+}
+const int caret=static_cast<int>(std::min<std::size_t>(start,INT_MAX));
+SendMessageW(window.output,EM_SETSEL,static_cast<WPARAM>(caret),caret);
+SendMessageW(window.output,EM_SCROLLCARET,0,0);
+// The edit takes no DLGC_HASSETSEL (output_proc), so moving the focus there keeps the caret where it was just put.
+SendMessageW(hwnd,WM_NEXTDLGCTL,reinterpret_cast<WPARAM>(window.output),TRUE);
+EnableWindow(window.act,FALSE);
 }
 
 INT_PTR CALLBACK dialog_proc(HWND hwnd,UINT message,WPARAM wparam,LPARAM lparam)
@@ -340,6 +383,9 @@ if(HIWORD(wparam)==BN_CLICKED&&!copy_to_clipboard(hwnd,window->text))MessageBeep
 return TRUE;
 case id_open:
 if(HIWORD(wparam)==BN_CLICKED&&window->folder&&!open_folder(*window->folder))MessageBeep(MB_ICONERROR);
+return TRUE;
+case id_action:
+if(HIWORD(wparam)==BN_CLICKED)press_action(hwnd,*window);
 return TRUE;
 default:
 return FALSE;
@@ -416,6 +462,9 @@ bool initialized_;
 
 void run_window(Window& window,bool succeeded)
 {
+// A quit left pending by a window that is already gone (a game's, in zodiac run) would end the loop below at once.
+MSG stale;
+PeekMessageW(&stale,nullptr,WM_QUIT,WM_QUIT,PM_REMOVE);
 DialogTemplate dialog_template{};
 dialog_template.header.style=WS_POPUP|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_CLIPCHILDREN;
 dialog_template.header.dwExtendedStyle=WS_EX_APPWINDOW;
@@ -470,12 +519,17 @@ if(!GetUserObjectInformationW(station,UOI_FLAGS,&flags,sizeof flags,nullptr))ret
 return (flags.dwFlags&WSF_VISIBLE)!=0;
 }
 
-void show_result_window(std::string_view title,std::string_view text,bool succeeded,const std::filesystem::path* output_folder)
+void show_result_window(std::string_view title,std::wstring_view output_label,std::string_view text,bool succeeded,const std::filesystem::path* output_folder,const ResultAction* action)
 {
 Window window;
 window.title=widen(title);
+window.label_text=output_label;
 window.text=edit_text(text);
 window.folder=output_folder;
+if(action&&action->run){
+window.action=action;
+window.action_label=action->label;
+}
 window.api=load_dpi_api();
 const ComScope com;
 {

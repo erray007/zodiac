@@ -1,6 +1,7 @@
 // The zodiac command line: new, run, build, modules, help and --version. A thin front end over zodiac_core; the platform layer owns the entry point.
-// Normal output (help, listings, --version, the build summary) goes to standard output through platform::write_stdout_line; every error goes through Diagnostics.
+// Normal output (help, listings, --version, the build summary, a failed run's summary) goes to standard output through platform::write_stdout_line; every error goes through Diagnostics.
 #include <cli/build_command.hpp>
+#include <cli/build_report.hpp>
 #include <cli/templates.hpp>
 #include <core/diagnostics.hpp>
 #include <core/dynamic_library.hpp>
@@ -11,6 +12,7 @@
 #include <core/text.hpp>
 #include <platform/console.hpp>
 #include <platform/process.hpp>
+#include <platform/result_window.hpp>
 #include <zodiac/plugin.h>
 #include <algorithm>
 #include <exception>
@@ -43,9 +45,10 @@ std::vector<fs::path> module_dirs;
 fs::path log_file;
 // run and build: --config, already absolute (resolved against the working directory zodiac started in); empty when not given.
 fs::path config;
-// build only: --output and --no-window.
+// build only: --output.
 fs::path output;
 bool output_given=false;
+// run and build: --no-window.
 bool no_window=false;
 // Set when the command line is malformed; reported through Diagnostics once it exists.
 std::string error;
@@ -154,7 +157,8 @@ platform::write_stdout_line("zodiac help: show this list");
 platform::write_stdout_line("zodiac --version: show the version");
 platform::write_stdout_line("options for run, build and modules: --module-dir <dir> adds a module directory (repeatable), --log-file <path> also writes messages to a file");
 platform::write_stdout_line("options for run and build: --config <file> (or --config=<file>) names the project file, of any name; its folder is the project root, and a script given with it replaces main");
-platform::write_stdout_line("options for build: --output <dir> writes the release there, --no-window reports the result on the console only");
+platform::write_stdout_line("options for run and build: --no-window reports on the console only (without it, build always and run after an error also show the result in a window when a desktop is available)");
+platform::write_stdout_line("options for build: --output <dir> writes the release there");
 platform::write_stdout_line("exit codes: 0 success, 1 script error, 2 usage/project/module error, otherwise the value returned by int main() (0-255)");
 return exit_ok;
 }
@@ -179,15 +183,9 @@ fail(diagnostics,"error: --config cannot be combined with a project folder");
 return false;
 }
 
-int run_project(const Options& options,Diagnostics& diagnostics)
+// Loads, builds and runs the game; game_name is set once the project loads. The caller has checked the command line and opened --log-file.
+int run_game(const Options& options,Diagnostics& diagnostics,std::string& game_name)
 {
-if(options.positional.size()>1){
-fail(diagnostics,"error: run takes at most one project directory or script; run zodiac help");
-return exit_usage_error;
-}
-if(!check_config_target(options,diagnostics))return exit_usage_error;
-// --log-file goes first so that a project file error is captured as well.
-if(!add_log_file(diagnostics,options.log_file))return exit_usage_error;
 const fs::path directory=options.positional.empty()?fs::path("."):path_from_utf8(options.positional.front());
 const std::vector<fs::path> dirs=search_dirs(options);
 std::expected<Project,std::string> project=std::unexpected(std::string());
@@ -210,6 +208,7 @@ if(!project){
 fail(diagnostics,project.error());
 return exit_usage_error;
 }
+game_name=project->name;
 if(options.log_file.empty()&&!project->diagnostics.file.empty()&&!diagnostics.add_file_sink(project->diagnostics.file))return exit_usage_error;
 // Every path from the command line is resolved (the module directories) or already used (the log file is open, the project root is absolute)
 // before the project root becomes the working directory, which happens before any module registers or script code runs, exactly as in a release.
@@ -217,6 +216,34 @@ ScriptRuntime runtime(diagnostics,ModuleSearchPaths{dirs});
 if(const int code=enter_root(project->root,diagnostics);code!=0)return code;
 if(const int code=runtime.build(*project);code!=0)return code;
 return exit_code_of(runtime.run(),diagnostics);
+}
+
+// zodiac run. Once the command line is checked, every message of the run (project loading, modules, compile, the game, the shutdown) is also
+// tallied; when at least one ERROR-level message was reported (only engine errors are: a game's own non-zero exit code is none), the summary
+// "Run failed: <N> errors" is the last line on standard output and, with an interactive desktop, the result window shows it with every message,
+// titled "Zodiac run - <game name>" (the target's own name when no project loaded), without "Open output folder" and without an action.
+// --no-window keeps the run as it was: console only, no summary. The exit code is the run's in every case.
+int run_project(const Options& options,Diagnostics& diagnostics)
+{
+if(options.positional.size()>1){
+fail(diagnostics,"error: run takes at most one project directory or script; run zodiac help");
+return exit_usage_error;
+}
+if(!check_config_target(options,diagnostics))return exit_usage_error;
+// --log-file goes first so that a project file error is captured as well.
+if(!add_log_file(diagnostics,options.log_file))return exit_usage_error;
+std::string game_name;
+if(options.no_window)return run_game(options,diagnostics,game_name);
+auto owned=std::make_unique<ResultReport>(ResultVerb::run);
+const ResultReport& report=*owned;
+diagnostics.add_sink(std::move(owned));
+const int code=run_game(options,diagnostics,game_name);
+if(report.errors()==0)return code;
+platform::write_stdout_line(report.summary(false,{}));
+if(!platform::has_interactive_desktop())return code;
+if(game_name.empty())game_name=target_name(!options.positional.empty()?path_from_utf8(options.positional.front()):!options.config.empty()?options.config.parent_path():fs::path());
+platform::show_result_window("Zodiac run - "+game_name,L"&Run output",report.text(false,{}),false,nullptr,nullptr);
+return code;
 }
 
 int build_release(const Options& options,Diagnostics& diagnostics)
@@ -369,8 +396,12 @@ if(options.command.empty()){
 fail(diagnostics,"error: no command given; run zodiac help");
 return exit_usage_error;
 }
-if((options.output_given||options.no_window)&&options.command!="build"){
-fail(diagnostics,"error: --output and --no-window apply to build only; run zodiac help");
+if(options.output_given&&options.command!="build"){
+fail(diagnostics,"error: --output applies to build only; run zodiac help");
+return exit_usage_error;
+}
+if(options.no_window&&options.command!="run"&&options.command!="build"){
+fail(diagnostics,"error: --no-window applies to run and build only; run zodiac help");
 return exit_usage_error;
 }
 if(!options.config.empty()&&options.command!="run"&&options.command!="build"){

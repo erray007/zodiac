@@ -16,6 +16,7 @@ void setup_utf8_console() noexcept;
 // Writes line (UTF-8, without terminator) plus a newline to the process's standard error in one write. A console gets the text as Unicode,
 // a redirected stream (file or pipe) gets the UTF-8 bytes unchanged. Failures are ignored. Callers serialize concurrent calls.
 void write_stderr_line(std::string_view line) noexcept;
-// Same as write_stderr_line, for the process's standard output (normal program output such as help or listings).
+// Same as write_stderr_line, for the process's standard output (normal program output such as help or listings). It first flushes the C runtime's
+// stdout, so text a module wrote with stdio before the call comes before the line.
 void write_stdout_line(std::string_view line) noexcept;
 }

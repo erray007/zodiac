@@ -189,7 +189,7 @@ class BuildTest(unittest.TestCase):
                 continue
             with self.subTest(fixture=fixture.name):
                 # The system's reason in some messages (missing_include) is UTF-8 like the rest, so both sides decode strictly.
-                run_code, run_out, run_err = zodiac("run", str(fixture), "--module-dir", MODULE_DIR)
+                run_code, run_out, run_err = zodiac("run", str(fixture), "--no-window", "--module-dir", MODULE_DIR)
                 output = self.root / fixture.name
                 build_code, build_out, build_err = zodiac("build", str(fixture), "--no-window", "--module-dir", MODULE_DIR, "--output", str(output))
                 if build_code != 0:
@@ -204,6 +204,19 @@ class BuildTest(unittest.TestCase):
                 self.assertEqual(exe_err.splitlines(), run_err.splitlines())
                 self.assertEqual(exe_out, run_out)
         self.assertEqual(built, BUILDABLE_FIXTURES)
+
+    def test_run_error_summary_only_in_zodiac_run(self):
+        # Without --no-window and with no desktop, zodiac run sums its engine errors up on the console; the built game never does.
+        fixture = SCRIPT_FIXTURES / "runtime_error"
+        run_code, run_out, run_err = zodiac("run", str(fixture), "--module-dir", MODULE_DIR, env=no_desktop_env())
+        self.assertEqual(run_code, 1)
+        self.assertIn("runtime error", run_err)
+        self.assertEqual(run_out.splitlines(), ["Run failed: 1 error"])
+        output = self.root / "out"
+        code, out, err = self.build(str(fixture), "--output", str(output))
+        self.assertEqual(code, 0, err)
+        exe_code, exe_out, exe_err = run_exe(output / "runtime_error.exe")
+        self.assertEqual((exe_code, exe_out, exe_err.splitlines()), (1, "", run_err.splitlines()))
 
     def test_build_paths_with_space_and_unicode(self):
         project = self.new_project(self.root / "Kanka şövalye oyunu", static=["example"], script='int main()\n{\nexample_print("şövalye ğüşiöç");\nreturn 3;\n}\n')
@@ -587,8 +600,10 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(err.splitlines(), ["error: build takes at most one project directory or script; run zodiac help"])
         code, out, err = zodiac("build", "--output")
         self.assertEqual((code, err.splitlines()), (2, ["error: --output needs a value"]))
-        code, out, err = zodiac("run", "--no-window")
-        self.assertEqual((code, err.splitlines()), (2, ["error: --output and --no-window apply to build only; run zodiac help"]))
+        code, out, err = zodiac("run", "--output", str(self.root / "out"))
+        self.assertEqual((code, out, err.splitlines()), (2, "", ["error: --output applies to build only; run zodiac help"]))
+        code, out, err = zodiac("modules", "--no-window")
+        self.assertEqual((code, out, err.splitlines()), (2, "", ["error: --no-window applies to run and build only; run zodiac help"]))
 
 
 if __name__ == "__main__":

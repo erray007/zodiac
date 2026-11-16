@@ -122,6 +122,8 @@ write_line(stream_handle(2,STD_ERROR_HANDLE),line);
 }
 void write_stdout_line(std::string_view line) noexcept
 {
+// Text modules buffered with stdio (the same UCRT) comes first, so the line lands after it.
+std::fflush(stdout);
 write_line(stream_handle(1,STD_OUTPUT_HANDLE),line);
 }
 }

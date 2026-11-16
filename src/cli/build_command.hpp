@@ -35,10 +35,13 @@
 //    output folder are never removed.
 // Exit codes: 0 success, 1 script error, 2 project, module, link or file error. On hosts other than Windows the only result is
 // "error: release builds are not supported on this host yet" (exit 2).
-// Result (spec 8.2a): every message goes to the console as it happens, and the last line on standard output is the summary BuildReport::summary
-// gives. Without no_window, when platform::has_interactive_desktop() holds, the result window (platform/result_window.hpp) then opens, titled
-// "Zodiac build - <game name>" (when no project loaded, the target's own name, or the config file's folder without a target), holding BuildReport::text, with "Open output folder" for the
-// executable's folder after a success; build_project returns once it is closed. Without a desktop it ends as a --no-window build does.
+// Result (spec 8.2a): every message goes to the console as it happens, and the last line on standard output is the summary ResultReport::summary
+// (verb build) gives. Without no_window, when platform::has_interactive_desktop() holds, the result window (platform/result_window.hpp) then
+// opens, titled "Zodiac build - <game name>" (when no project loaded, the target's own name, or the config file's folder without a target),
+// labeled "Build output", holding ResultReport::text, with "Open output folder" for the executable's folder after a success, and, when a lone
+// script was built (step 1, success or failure), "Create project file": create_project_file (cli/build_report.hpp) for the script's folder with
+// the game name, the script's file name and the static and dynamic module lists step 1 chose. build_project returns once the window is closed.
+// Without a desktop it ends as a --no-window build does.
 // Threads: main thread only; changes the working directory.
 #pragma once
 #include <core/diagnostics.hpp>
