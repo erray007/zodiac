@@ -1,6 +1,6 @@
 # Zodiac Core Types and Library — Design
 
-Status: draft for owner approval. First half of plan 4 (core platform) in the series of `docs/superpowers/specs/2026-11-14-bgdk-design.md`, following the naming rules of `docs/superpowers/specs/2026-11-16-zodiac-script-api-design.md` (8.1, style C). The second half of plan 4 (frame loop, `wait()`, coroutines, workers, threads, `verbose`, crash handler, diagnostics change) is designed there and is not part of this document.
+Status: approved by the owner (2026-11-16). First half of plan 4 (core platform) in the series of `docs/superpowers/specs/2026-11-14-bgdk-design.md`, following the naming rules of `docs/superpowers/specs/2026-11-16-zodiac-script-api-design.md` (8.1, style C). The second half of plan 4 (frame loop, `wait()`, coroutines, workers, threads, `verbose`, crash handler, diagnostics change) is designed there and is not part of this document.
 
 ## 1. Intent
 
