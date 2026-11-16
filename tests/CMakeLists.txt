@@ -129,6 +129,16 @@ target_include_directories(test_static_modules_compile PRIVATE ${PROJECT_SOURCE_
 target_link_libraries(test_static_modules_compile PRIVATE zodiac_plugin_abi)
 zodiac_target_warnings(test_static_modules_compile)
 endif()
+if(WIN32)
+# Links and runs real release executables from the build tree's kit layout, so it needs everything zodiac_kit_stage puts there.
+zodiac_add_test(test_linker SOURCES test_linker.cpp LIBRARIES zodiac_cli_linker)
+target_compile_definitions(test_linker PRIVATE
+"ZODIAC_TEST_KIT_EXE=\"$<TARGET_FILE:zodiac>\""
+"ZODIAC_TEST_SCRIPT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/scripts\""
+"ZODIAC_TEST_MODULE_DIR=\"${CMAKE_BINARY_DIR}/modules\""
+)
+add_dependencies(test_linker zodiac_kit_stage zodiac_mod_example)
+endif()
 find_package(Python3 3.9 COMPONENTS Interpreter)
 if(NOT Python3_FOUND)
 message(FATAL_ERROR "Python 3.9 or newer is required for the end-to-end tests: install Python 3.9+ and make it findable.")

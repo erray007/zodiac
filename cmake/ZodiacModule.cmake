@@ -4,6 +4,7 @@
 # name is identical on every platform apart from the extension), written to ${CMAKE_BINARY_DIR}/modules by default.
 # Also creates zodiac_mod_<name>_static (STATIC, compiled with ZODIAC_MODULE_STATIC and ZODIAC_MODULE_ID=<name>) for hosts that link modules in:
 # its ZODIAC_DEFINE_MODULE emits the record zodiac_static_module_<name>, which the final link must force in with -u zodiac_static_module_<name>.
+# Every static variant's name is appended to the global property ZODIAC_STATIC_MODULES; zodiac_kit_stage stages them as modules/static/zodiac_mod_<name>.a.
 # DEPENDS names other zodiac modules: it only orders the builds, the runtime dependency comes from the module info.
 include_guard(GLOBAL)
 function(zodiac_add_module name)
@@ -43,5 +44,6 @@ zodiac_target_warnings(${static})
 foreach(dependency IN LISTS ZM_DEPENDS)
 add_dependencies(${static} zodiac_mod_${dependency}_static)
 endforeach()
+set_property(GLOBAL APPEND PROPERTY ZODIAC_STATIC_MODULES ${name})
 endif()
 endfunction()
