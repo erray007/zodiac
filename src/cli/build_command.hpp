@@ -12,18 +12,21 @@
 // 3. The scripts compile exactly as in zodiac run (errors exit 1), in the project root as working directory, and the bytecode is saved
 //    (without debug info when [build] strip_debug_info is set).
 // 4. The payload (kit_version ZODIAC_VERSION; requested: static then dynamic names as the runtime loads them; modules: registration order with versions)
-//    is written as <output>/<name>.zodpay.obj and linked by link_release to <output>/<name>.exe.tmp, which is renamed over <output>/<name>.exe.
-//    A rename that fails because another process holds the old executable open (a sharing or lock violation):
-//    "error: cannot replace "<exe>": it is in use (is the game still running?)"; any other failure (a read-only file, a folder of that name):
-//    "error: cannot replace "<exe>": <system reason>" (exit 2). A build that fails up to and including the replace leaves the old executable untouched,
-//    and no temporary file (.tmp, .obj, .rsp) is left behind, whatever happened.
-// 5. Every dynamic module (a registered module not listed as static, so also an undeclared dependency) is copied next to the executable from the
-//    folder it was loaded from; the expanded [build] assets are copied keeping their project-relative paths, except files inside the output folder
-//    (compared case-insensitively, as Windows does). A failure from here on (step 5 or 6) leaves the new executable in place, with the files copied
-//    before the failure (each copy replaces its file whole) and the rest as an earlier build left them.
-// 6. With [build.sign] command, the command runs once per executable and copied DLL with {file} replaced by the file's path; the program is an absolute
-//    path, a path relative to the project root, or a name searched on PATH. Failure: "error: signing "<file>" failed" followed by the tool's
-//    output, each line indented by two spaces (exit 2).
+//    is written as <output>/<name>.zodpay.obj and linked by link_release to <output>/<name>.exe.tmp.
+// 5. With [build.sign] command, the command runs on <name>.exe.tmp with {file} replaced by that temporary path; the program is an absolute path,
+//    a path relative to the project root, or a name searched on PATH. Every dynamic module (a registered module not listed as static, so also an
+//    undeclared dependency) is then copied from the folder it was loaded from to <output>/<dll>.tmp and signed the same way. A failed signing:
+//    "error: signing "<final file>" failed" (the .exe or .dll path the file is built for) followed by the tool's output, each line indented by
+//    two spaces (exit 2).
+// 6. <name>.exe.tmp is renamed over <output>/<name>.exe, then each <dll>.tmp over its DLL. A rename that fails because another process holds the
+//    old file open (a sharing or lock violation): "error: cannot replace "<file>": it is in use (is the game still running?)"; any other failure
+//    (a read-only file, a folder of that name): "error: cannot replace "<file>": <system reason>" (exit 2). A build that fails up to and including
+//    the executable's replace (a link, copy or signing failure included) leaves the old executable and DLLs untouched, and no temporary file
+//    (.tmp, .obj, .rsp) is left behind, whatever happened.
+// 7. The expanded [build] assets are copied keeping their project-relative paths, except files inside the output folder (compared
+//    case-insensitively, as Windows does). A failure from the DLL renames on leaves the new executable in place, with the files replaced
+//    before the failure (each copy replaces its file whole) and the rest as an earlier build left them. Stale files of earlier builds in the
+//    output folder are never removed.
 // Exit codes: 0 success, 1 script error, 2 project, module, link or file error. On hosts other than Windows the only result is
 // "error: release builds are not supported on this host yet" (exit 2).
 // Result (spec 8.2a): every message goes to the console as it happens, and the last line on standard output is the summary BuildReport::summary

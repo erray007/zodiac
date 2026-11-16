@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <deque>
 #include <expected>
 #include <fstream>
 #include <iterator>
@@ -339,16 +340,28 @@ text.remove_prefix(end+1);
 }
 }
 
-int sign(const std::vector<std::string>& command,const fs::path& file,const fs::path& root,Diagnostics& diagnostics)
+// Renames the finished temporary file over target. Returns 0 or 2.
+int replace_file(const fs::path& temporary,const fs::path& target,Diagnostics& diagnostics)
 {
-const std::string shown=path_to_utf8(file);
+std::error_code ec;
+fs::rename(temporary,target,ec);
+if(!ec)return exit_ok;
+if(is_in_use(target,ec))return fail(diagnostics,"error: cannot replace "+quoted_path(target)+": it is in use (is the game still running?)");
+return fail(diagnostics,"error: cannot replace "+quoted_path(target)+": "+error_text(ec));
+}
+
+// Runs the sign command on file (a temporary name) and, on failure, reports it under shown, the path the file is built for.
+int sign(const std::vector<std::string>& command,const fs::path& file,const fs::path& shown_as,const fs::path& root,Diagnostics& diagnostics)
+{
+const std::string path=path_to_utf8(file);
 std::vector<std::string> argv;
 argv.reserve(command.size());
 for(const std::string& part:command){
 std::string argument=part;
-for(std::size_t at=argument.find("{file}");at!=std::string::npos;at=argument.find("{file}",at+shown.size()))argument.replace(at,6,shown);
+for(std::size_t at=argument.find("{file}");at!=std::string::npos;at=argument.find("{file}",at+path.size()))argument.replace(at,6,path);
 argv.push_back(std::move(argument));
 }
+const std::string shown=path_to_utf8(shown_as);
 const auto program=find_program(argv.front(),root);
 std::expected<platform::ProcessResult,std::string> ran=std::unexpected(std::string());
 if(program){
@@ -361,7 +374,8 @@ report_indented(diagnostics,!program?program.error():!ran?ran.error():ran->outpu
 return exit_build_error;
 }
 
-// Everything after the compile: the payload object, the link, the rename, the copies and the signing. Returns 0 or 2.
+// Everything after the compile: the payload object, the link and the signing of the executable and the DLL copies under
+// temporary names, the renames, then the assets. Returns 0 or 2.
 int write_release(const Project& project,const ScriptRuntime& runtime,const KitLayout& kit,const std::vector<StaticLibrary>& libraries,const std::vector<fs::path>& module_dirs,const fs::path& output,const fs::path& exe,Diagnostics& diagnostics)
 {
 auto bytecode=runtime.save_bytecode(project.build.strip_debug_info);
@@ -388,29 +402,39 @@ request.inputs.push_back(kit.release_lib/"libzodiac_core_release.a");
 request.inputs.push_back(kit.release_lib/"libangelscript.a");
 // link_release reports its own failures.
 if(!link_release(kit,request,diagnostics))return exit_build_error;
-fs::rename(tmp.path(),exe,ec);
-if(ec){
-if(is_in_use(exe,ec))return fail(diagnostics,"error: cannot replace "+quoted_path(exe)+": it is in use (is the game still running?)");
-return fail(diagnostics,"error: cannot replace "+quoted_path(exe)+": "+error_text(ec));
+const bool signing=!project.build.sign_command.empty();
+if(signing){
+if(const int code=sign(project.build.sign_command,tmp.path(),exe,project.root,diagnostics))return code;
 }
-std::vector<fs::path> signed_files{exe};
+// The dynamic modules are copied (and signed) under temporary names too, so a failure up to here leaves the old release untouched.
+struct Library{
+Library(fs::path final_path,fs::path temporary_path,Diagnostics& sink):target(std::move(final_path)),copy(std::move(temporary_path),sink){}
+fs::path target;
+TemporaryFile copy;
+};
+// A deque never moves its elements, which TemporaryFile cannot do.
+std::deque<Library> copies;
 for(const PayloadModule& module:payload.modules){
 if(module.link!=LinkMode::dynamic_link)continue;
 const std::optional<fs::path> library=find_module_library(module.name,module_dirs,project.root);
 if(!library)return fail(diagnostics,"error: cannot find the library of module "+in_quotes(module.name)+" to copy it");
 fs::path target=output/library->filename();
-if(!copy_into(*library,target,diagnostics))return exit_build_error;
-signed_files.push_back(std::move(target));
+fs::path copy_path=target;
+copy_path+=".tmp";
+const Library& copy=copies.emplace_back(std::move(target),std::move(copy_path),diagnostics);
+if(!copy_into(*library,copy.copy.path(),diagnostics))return exit_build_error;
+if(signing){
+if(const int code=sign(project.build.sign_command,copy.copy.path(),copy.target,project.root,diagnostics))return code;
 }
+}
+if(const int code=replace_file(tmp.path(),exe,diagnostics))return code;
+for(const Library& copy:copies)if(const int code=replace_file(copy.copy.path(),copy.target,diagnostics))return code;
 auto assets=expand_assets(project);
 if(!assets)return fail(diagnostics,assets.error());
 for(const fs::path& asset:*assets){
 // An output folder inside the project never feeds a later build's assets.
 if(is_inside(asset,output))continue;
 if(!copy_into(asset,output/asset.lexically_relative(project.root),diagnostics))return exit_build_error;
-}
-if(!project.build.sign_command.empty()){
-for(const fs::path& file:signed_files)if(const int code=sign(project.build.sign_command,file,project.root,diagnostics))return code;
 }
 return exit_ok;
 }

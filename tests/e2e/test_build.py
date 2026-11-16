@@ -278,15 +278,45 @@ class BuildTest(unittest.TestCase):
         self.append_toml(project, "\n[build.sign]\ncommand = [%s, \"--marker\", %s, \"{file}\"]\n" % (toml_literal(ECHO_ARGS), toml_literal(str(marker))))
         release = project / "release"
         self.assert_built(self.build(str(project)), release / "game.exe")
+        # The files are signed under their temporary names, before they replace the earlier build's.
         signed = marker.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(sorted(signed), sorted([str(release / "game.exe"), str(release / "zodiac_mod_example.dll")]))
-        # echo_args without --marker exits with its argument count (1): the build fails naming the file.
+        self.assertEqual(signed, [str(release / "game.exe.tmp"), str(release / "zodiac_mod_example.dll.tmp")])
+        self.assertEqual(sorted(p.name for p in release.iterdir()), ["game.exe", "zodiac_mod_example.dll"])
+        # echo_args without --marker exits with its argument count (1): the build fails naming the file, and leaves nothing behind.
         failing = self.new_project(self.root / "failing")
         self.append_toml(failing, "\n[build.sign]\ncommand = [%s, \"{file}\"]\n" % toml_literal(ECHO_ARGS))
         code, out, err = self.build(str(failing))
         self.assertEqual(code, 2, err)
         self.assertIn('error: signing "%s" failed' % (failing / "release" / "failing.exe"), err.splitlines())
         self.assertEqual(out.splitlines()[-1], "Build failed: 1 error")
+        self.assertEqual(list((failing / "release").iterdir()), [])
+
+    def test_build_failed_signing_keeps_the_earlier_release(self):
+        project = self.new_project(self.root / "game", dynamic=["example"])
+        release = project / "release"
+        exe = release / "game.exe"
+        dll = release / "zodiac_mod_example.dll"
+        self.assert_built(self.build(str(project)), exe)
+        before = exe.read_bytes()
+        dll.write_bytes(b"earlier build")
+        # The marker of the DLL's temporary copy is a folder, so signing the executable works and signing the DLL fails.
+        (release / "zodiac_mod_example.dll.tmp.m").mkdir()
+        self.append_toml(project, "\n[build.sign]\ncommand = [%s, \"--marker\", \"{file}.m\", \"{file}\"]\n" % toml_literal(ECHO_ARGS))
+        code, out, err = self.build(str(project))
+        self.assertEqual(code, 2, err)
+        self.assertIn('error: signing "%s" failed' % dll, err.splitlines())
+        self.assertEqual(exe.read_bytes(), before)
+        self.assertEqual(dll.read_bytes(), b"earlier build")
+        self.assertEqual(sorted(p.name for p in release.iterdir()), ["game.exe", "game.exe.tmp.m", "zodiac_mod_example.dll", "zodiac_mod_example.dll.tmp.m"])
+        # Signing the executable itself fails: still nothing replaced.
+        (release / "game.exe.tmp.m").unlink()
+        (release / "game.exe.tmp.m").mkdir()
+        code, out, err = self.build(str(project))
+        self.assertEqual(code, 2, err)
+        self.assertIn('error: signing "%s" failed' % exe, err.splitlines())
+        self.assertEqual(exe.read_bytes(), before)
+        self.assertEqual(dll.read_bytes(), b"earlier build")
+        self.assertEqual(sorted(p.name for p in release.iterdir()), ["game.exe", "game.exe.tmp.m", "zodiac_mod_example.dll", "zodiac_mod_example.dll.tmp.m"])
 
     def test_build_without_project(self):
         alone = self.root / "alone"
