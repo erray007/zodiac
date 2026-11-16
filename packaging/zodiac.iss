@@ -16,7 +16,7 @@ AppId={{98CB20B5-1340-41F1-80E7-8FD0E99FA8BC}
 AppName=Zodiac Game Toolkit
 AppVersion={#ZodiacVersion}
 AppVerName=Zodiac Game Toolkit {#ZodiacVersion}
-AppPublisher=Zodiac
+AppPublisher=Zodiac Team
 VersionInfoVersion={#ZodiacVersion}
 VersionInfoDescription=Zodiac setup
 ; "Only for me" by default (no administrator rights); the first page lets the user choose "for all users" instead.

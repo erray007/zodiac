@@ -225,7 +225,7 @@ jobs:
           $systemPath = $env:PATH
           function Get-RawUserPath { (Get-Item -LiteralPath 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames') }
           function Set-RawUserPath([string]$value) { Set-ItemProperty -LiteralPath 'HKCU:\Environment' -Name Path -Value $value -Type ExpandString }
-          function Install-Zodiac([string]$tasks, [string]$round, [string]$file = $setup.FullName, [string]$expectedName = 'Zodiac Game Toolkit') {
+          function Install-Zodiac([string]$tasks, [string]$round, [string]$file = $setup.FullName, [string]$expectedName = 'Zodiac Game Toolkit', [string]$expectedPublisher = 'Zodiac Team') {
             $log = Join-Path $env:RUNNER_TEMP "zodiac-setup-$round.log"
             $process = Start-Process -FilePath $file -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', "/TASKS=`"$tasks`"", "/LOG=`"$log`"" -Wait -PassThru
             if ($process.ExitCode -ne 0) { Get-Content -LiteralPath $log; throw "The setup failed with exit code $($process.ExitCode)" }
@@ -233,7 +233,9 @@ jobs:
             if (-not (Test-Path -LiteralPath (Join-Path $app 'bin\zodiac.exe'))) { throw "$app\bin\zodiac.exe is missing" }
             $displayName = (Get-ItemProperty -LiteralPath $uninstallKey).DisplayName
             if ($displayName -ne $expectedName) { throw "The uninstall entry is listed as '$displayName', not $expectedName" }
-            Write-Host "Round ${round}: installed into $app, listed as $displayName"
+            $publisher = (Get-ItemProperty -LiteralPath $uninstallKey).Publisher
+            if ($publisher -ne $expectedPublisher) { throw "The uninstall entry's publisher is '$publisher', not $expectedPublisher" }
+            Write-Host "Round ${round}: installed into $app, listed as $displayName by $publisher"
             $app
           }
           function Uninstall-Zodiac([string]$app) {
@@ -305,7 +307,7 @@ jobs:
           $oldSetup = Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\zodiac-old-setup" -Filter 'zodiac-old-setup-*.exe' | Select-Object -First 1
           if (-not $oldSetup) { throw "The old-named setup is missing from the artifact" }
           $pathBefore = Get-RawUserPath
-          $app = Install-Zodiac 'addtopath,associate,buildmenu,shortcuts' 3 $oldSetup.FullName "Zodiac $version"
+          $app = Install-Zodiac 'addtopath,associate,buildmenu,shortcuts' 3 $oldSetup.FullName "Zodiac $version" 'Zodiac'
           foreach ($shortcut in 'Zodiac manual.lnk', 'Zodiac examples.lnk') {
             if (-not (Test-Path -LiteralPath (Join-Path $oldMenu $shortcut))) { throw "The old setup did not make the shortcut $oldMenu\$shortcut" }
           }
