@@ -13,6 +13,7 @@ OutputMode console=OutputMode::automatic;
 // Absolute (project root / configured file), or empty when no log file is configured.
 std::filesystem::path file;
 OutputMode dialog=OutputMode::automatic;
+bool operator==(const DiagnosticsConfig&) const=default;
 };
 struct BuildConfig{
 // Glob patterns relative to the project root with '/' separators (see glob_match), in file order.

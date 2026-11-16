@@ -14,6 +14,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <fstream>
 #include <ios>
@@ -72,6 +73,46 @@ throw std::runtime_error("cannot create the AngelScript engine");
 }
 return engine;
 }
+// Collects SaveByteCode output in a string.
+class StringWriteStream final:public asIBinaryStream{
+public:
+explicit StringWriteStream(std::string& out) noexcept:out_(out){}
+int Write(const void* ptr,asUINT size) override
+{
+if(!size)return 0;
+try{
+out_.append(static_cast<const char*>(ptr),size);
+return 0;
+}
+catch(...){
+return -1;
+}
+}
+int Read(void*,asUINT) override{return -1;}
+private:
+std::string& out_;
+};
+// Feeds LoadByteCode from a view. A read past the end zero-fills the destination and fails, which makes the load fail instead of reading outside the view.
+class StringReadStream final:public asIBinaryStream{
+public:
+explicit StringReadStream(std::string_view bytes) noexcept:rest_(bytes){}
+int Read(void* ptr,asUINT size) override
+{
+if(size>rest_.size()){
+std::memset(ptr,0,size);
+rest_={};
+return -1;
+}
+if(size){
+std::memcpy(ptr,rest_.data(),size);
+rest_.remove_prefix(size);
+}
+return 0;
+}
+int Write(const void*,asUINT) override{return -1;}
+private:
+std::string_view rest_;
+};
 // Appends "namespace::Object::name" of a script function.
 void append_function_name(std::string& text,const asIScriptFunction& function)
 {
@@ -149,7 +190,8 @@ append_number(line,info.col);
 line.append(": ");
 }
 line.append(kind).append(": ").append(message);
-diagnostics_.report(level,line);
+if(held_messages_)held_messages_->emplace_back(level,std::move(line));
+else diagnostics_.report(level,line);
 }
 catch(...){
 }
@@ -189,7 +231,7 @@ const fs::path file=((root_/from_utf8(from)).parent_path()/from_utf8(requested))
 return add_section(file,section_name(file),builder,from,requested);
 }
 
-int ScriptRuntime::load_modules(const Project& project)
+int ScriptRuntime::load_modules(const Project& project,std::span<const zodiac_module_info* const> linked)
 {
 std::vector<std::string> names;
 names.reserve(project.static_modules.size()+project.dynamic_modules.size());
@@ -199,7 +241,7 @@ if(names.empty())return 0;
 ModuleSearchPaths search=search_paths_;
 fs::path plugins=project.root/"plugins";
 if(std::ranges::find(search.dirs,plugins)==search.dirs.end())search.dirs.push_back(std::move(plugins));
-if(auto loaded=registry_.load(names,search);!loaded){
+if(auto loaded=registry_.load(names,search,linked);!loaded){
 diagnostics_.report(ZODIAC_LOG_ERROR,loaded.error());
 return 2;
 }
@@ -210,14 +252,21 @@ return 2;
 return 0;
 }
 
-int ScriptRuntime::build(const Project& project)
+int ScriptRuntime::prepare(const Project& project,std::span<const zodiac_module_info* const> linked)
 {
 main_=nullptr;
+debug_info_stripped_=false;
 if(context_)context_->Unprepare();
 root_=project.root;
-if(const int modules=load_modules(project))return modules;
+if(const int modules=load_modules(project,linked))return modules;
 main_section_=section_name(project.main_script);
 included_.clear();
+return 0;
+}
+
+int ScriptRuntime::build(const Project& project)
+{
+if(const int prepared=prepare(project,{}))return prepared;
 CScriptBuilder builder;
 builder.SetIncludeCallback(&RuntimeCallbacks::include,this);
 if(builder.StartNewModule(engine_,kModuleName)<0){
@@ -226,6 +275,50 @@ return 1;
 }
 if(add_section(project.main_script,main_section_,builder,main_section_,{})<0)return 1;
 if(builder.BuildModule()<0)return 1;
+return find_main();
+}
+
+std::expected<std::string,std::string> ScriptRuntime::save_bytecode(bool strip_debug_info) const
+{
+if(!main_)return std::unexpected(std::string("error: no script has been built"));
+const asIScriptModule* module=engine_->GetModule(kModuleName,asGM_ONLY_IF_EXISTS);
+std::string bytecode;
+StringWriteStream stream(bytecode);
+if(!module||module->SaveByteCode(&stream,strip_debug_info)<0)return std::unexpected(std::string("error: cannot save the compiled scripts"));
+return bytecode;
+}
+
+int ScriptRuntime::load_bytecode(const Project& project,std::string_view bytecode,std::span<const zodiac_module_info* const> linked)
+{
+if(const int prepared=prepare(project,linked))return prepared;
+asIScriptModule* module=engine_->GetModule(kModuleName,asGM_ALWAYS_CREATE);
+if(!module){
+diagnostics_.report(ZODIAC_LOG_ERROR,"error: cannot create the script module");
+return 1;
+}
+StringReadStream stream(bytecode);
+std::vector<std::pair<zodiac_log_level,std::string>> held;
+held_messages_=&held;
+bool stripped=false;
+const int loaded=module->LoadByteCode(&stream,&stripped);
+held_messages_=nullptr;
+if(loaded==asINIT_GLOBAL_VARS_FAILED){
+// The interface matched; a global variable initializer failed, which the engine has described like build() would.
+for(const auto& [level,line]:held)diagnostics_.report(level,line);
+return 1;
+}
+if(loaded<0){
+// The reader's own messages ("LoadByteCode failed...", missing registered functions) mean nothing to a player; the cause is always a mismatched or incomplete build.
+diagnostics_.report(ZODIAC_LOG_ERROR,"error: the game data does not match the modules it was built with");
+return 1;
+}
+for(const auto& [level,line]:held)diagnostics_.report(level,line);
+debug_info_stripped_=stripped;
+return find_main();
+}
+
+int ScriptRuntime::find_main()
+{
 asIScriptModule* module=engine_->GetModule(kModuleName);
 asIScriptFunction* entry=module->GetFunctionByDecl("int main()");
 if(!entry)entry=module->GetFunctionByDecl("void main()");
@@ -241,10 +334,13 @@ const char* section=nullptr;
 int row=0;
 int col=0;
 function->GetDeclaredAt(&section,&row,&col);
-line.append(section?section:main_section_).push_back(':');
+line.append(section?section:main_section_);
+if(row>0){
+line.push_back(':');
 append_number(line,row);
 line.push_back(':');
 append_number(line,col);
+}
 line.append(": error: main() must be declared as \"void main()\" or \"int main()\"");
 break;
 }
@@ -267,6 +363,7 @@ line.push_back(':');
 append_number(line,row);
 }
 line.append(": runtime error: ").append(exception&&*exception?exception:"unknown exception");
+if(row<=0&&debug_info_stripped_)line.append(" (line unknown)");
 diagnostics_.report(ZODIAC_LOG_ERROR,line);
 const asUINT frames=context_->GetCallstackSize();
 for(asUINT i=0;i<frames;++i){

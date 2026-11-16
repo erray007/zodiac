@@ -84,6 +84,8 @@ zodiac_add_test(test_process SOURCES test_process.cpp LIBRARIES zodiac_core)
 target_compile_definitions(test_process PRIVATE "ZODIAC_TEST_ECHO_ARGS=\"$<TARGET_FILE:echo_args>\"")
 add_dependencies(test_process echo_args)
 zodiac_add_test(test_kit_layout SOURCES test_kit_layout.cpp LIBRARIES zodiac_core)
+zodiac_add_test(test_payload SOURCES test_payload.cpp LIBRARIES zodiac_core)
+zodiac_add_test(test_coff_object SOURCES test_coff_object.cpp LIBRARIES zodiac_core)
 # Compile-only check that the static ZODIAC_DEFINE_MODULE variant is valid C on every platform.
 add_library(test_plugin_header_c_static OBJECT test_plugin_header_c.c)
 set_target_properties(test_plugin_header_c_static PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
