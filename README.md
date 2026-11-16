@@ -11,6 +11,7 @@ Download the kit from the project's GitHub releases page. There are two ways to 
   - open `.zs` files with Zodiac;
   - add "Build with Zodiac" to the right-click menu of `.zs` files;
   - Start menu shortcuts to the Zodiac manual and the examples.
+  The setup is listed as "Zodiac Game Toolkit" in Settings, Apps, and the shortcuts are in the "Zodiac Game Toolkit" Start menu folder; the install folder is still named Zodiac.
   Installing a newer version over an older one replaces the kit in place and keeps the options you chose. The upgrade deletes the kit's bin, lib, modules and include folders before it copies the new ones, so anything you added there yourself is lost: keep your own files and modules outside the kit folder. Uninstalling (Settings, Apps) removes the kit folder and everything the setup added, and nothing else.
 - The portable zip, `zodiac-<version>-windows-x86_64.zip`. Unzip the Zodiac folder anywhere; it changes nothing on your system. Its README.txt explains how to add its bin folder to your PATH yourself.
 

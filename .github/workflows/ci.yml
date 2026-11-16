@@ -201,7 +201,7 @@ jobs:
           "Setup size: $($setup.Length) bytes."
           $version = $setup.BaseName -replace '^zodiac-setup-', ''
           $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{98CB20B5-1340-41F1-80E7-8FD0E99FA8BC}_is1'
-          $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'Zodiac'
+          $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'Zodiac Game Toolkit'
           $systemPath = $env:PATH
           function Get-RawUserPath { (Get-Item -LiteralPath 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames') }
           function Set-RawUserPath([string]$value) { Set-ItemProperty -LiteralPath 'HKCU:\Environment' -Name Path -Value $value -Type ExpandString }
@@ -211,7 +211,9 @@ jobs:
             if ($process.ExitCode -ne 0) { Get-Content -LiteralPath $log; throw "The setup failed with exit code $($process.ExitCode)" }
             $app = (Get-ItemProperty -LiteralPath $uninstallKey).InstallLocation.TrimEnd('\')
             if (-not (Test-Path -LiteralPath (Join-Path $app 'bin\zodiac.exe'))) { throw "$app\bin\zodiac.exe is missing" }
-            Write-Host "Round ${round}: installed into $app"
+            $displayName = (Get-ItemProperty -LiteralPath $uninstallKey).DisplayName
+            if ($displayName -ne 'Zodiac Game Toolkit') { throw "The uninstall entry is listed as '$displayName', not Zodiac Game Toolkit" }
+            Write-Host "Round ${round}: installed into $app, listed as $displayName"
             $app
           }
           function Uninstall-Zodiac([string]$app) {

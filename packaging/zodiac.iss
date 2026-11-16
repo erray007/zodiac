@@ -13,9 +13,9 @@
 [Setup]
 ; Fixed forever: upgrades find the earlier install through it and replace it in place.
 AppId={{98CB20B5-1340-41F1-80E7-8FD0E99FA8BC}
-AppName=Zodiac
+AppName=Zodiac Game Toolkit
 AppVersion={#ZodiacVersion}
-AppVerName=Zodiac {#ZodiacVersion}
+AppVerName=Zodiac Game Toolkit {#ZodiacVersion}
 AppPublisher=Zodiac
 VersionInfoVersion={#ZodiacVersion}
 VersionInfoDescription=Zodiac setup
@@ -32,7 +32,7 @@ MinVersion=10.0
 ChangesEnvironment=yes
 ChangesAssociations=yes
 UsePreviousTasks=yes
-UninstallDisplayName=Zodiac {#ZodiacVersion}
+UninstallDisplayName=Zodiac Game Toolkit
 UninstallDisplayIcon={app}\bin\zodiac.exe
 OutputBaseFilename=zodiac-setup-{#ZodiacVersion}
 Compression=lzma2/max
@@ -58,6 +58,10 @@ Type: filesandordirs; Name: "{app}\bin"; Check: IsUpgradeInPlace
 Type: filesandordirs; Name: "{app}\lib"; Check: IsUpgradeInPlace
 Type: filesandordirs; Name: "{app}\modules"; Check: IsUpgradeInPlace
 Type: filesandordirs; Name: "{app}\include"; Check: IsUpgradeInPlace
+; Earlier versions put the shortcuts in a Start menu folder named Zodiac: remove those two shortcuts, and the folder only when nothing else is in it.
+Type: files; Name: "{autoprograms}\Zodiac\Zodiac manual.lnk"; Check: IsUpgradeInPlace
+Type: files; Name: "{autoprograms}\Zodiac\Zodiac examples.lnk"; Check: IsUpgradeInPlace
+Type: dirifempty; Name: "{autoprograms}\Zodiac"; Check: IsUpgradeInPlace
 
 [Files]
 Source: "{#KitDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -80,8 +84,8 @@ Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.zs\shell\zodiacbuil
 Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.zs\shell\zodiacbuild\command"; ValueType: string; ValueName: ""; ValueData: """{app}\bin\zodiacw.exe"" build ""%1"""; Tasks: buildmenu
 
 [Icons]
-Name: "{autoprograms}\Zodiac\Zodiac manual"; Filename: "{app}\docs"; Tasks: shortcuts
-Name: "{autoprograms}\Zodiac\Zodiac examples"; Filename: "{app}\examples"; Tasks: shortcuts
+Name: "{autoprograms}\Zodiac Game Toolkit\Zodiac manual"; Filename: "{app}\docs"; Tasks: shortcuts
+Name: "{autoprograms}\Zodiac Game Toolkit\Zodiac examples"; Filename: "{app}\examples"; Tasks: shortcuts
 
 [Code]
 // Undoing exactly what was added (spec 8.7):
