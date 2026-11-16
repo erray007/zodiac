@@ -40,6 +40,6 @@ std::vector<std::filesystem::path> workers;
 };
 std::expected<Project,std::string> load_project(const std::filesystem::path& dir);
 // Every regular file under project.root matching any of project.build.assets, as absolute paths, sorted and without duplicates.
-// zodiac.toml in the root and everything under <root>/release are never returned. A pattern matching nothing is not an error; an unreadable directory is.
+// zodiac.toml in the root and everything under <root>/release are never returned. A pattern matching nothing is not an error; a missing or unreadable directory is: the error is one line, `zodiac.toml: error: cannot read directory "<path>": <reason>`.
 std::expected<std::vector<std::filesystem::path>,std::string> expand_assets(const Project& project);
 }

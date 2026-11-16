@@ -11,7 +11,7 @@ std::string one_line(std::string_view text);
 // True when one_line(text) would return text unchanged, so callers can skip the copy.
 bool is_one_line(std::string_view text) noexcept;
 // Matches a project-relative path against a glob pattern, both with '/' separators and compared case-sensitively byte by byte.
-// "*" matches any run of characters inside one segment, "?" exactly one character of a segment, and a "**" segment any number of whole segments (including none).
+// "*" matches any run of characters inside one segment, "?" exactly one character of a segment (a whole UTF-8 sequence, not one byte), and a "**" segment any number of whole segments (including none).
 // Uses no regular expressions and never allocates.
 bool glob_match(std::string_view pattern,std::string_view path) noexcept;
 // The system's description of code without trailing line breaks, spaces or full stop, for use after "...: " in a message.

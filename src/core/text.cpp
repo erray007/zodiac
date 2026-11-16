@@ -9,6 +9,13 @@ bool needs_escape(char c) noexcept
 const unsigned char byte=static_cast<unsigned char>(c);
 return byte<0x20||byte==0x7F;
 }
+// Length in bytes of the UTF-8 character starting at text[index]: the lead byte plus its continuation bytes (10xxxxxx).
+std::size_t character_length(std::string_view text,std::size_t index) noexcept
+{
+std::size_t end=index+1;
+while(end<text.size()&&(static_cast<unsigned char>(text[end])&0xC0)==0x80)++end;
+return end-index;
+}
 // Matches one path segment (no '/') against one pattern segment with '*' and '?'.
 bool segment_match(std::string_view pattern,std::string_view text) noexcept
 {
@@ -23,7 +30,12 @@ if(p<pattern.size()&&pattern[p]=='*')
 star=p++;
 mark=t;
 }
-else if(p<pattern.size()&&(pattern[p]=='?'||pattern[p]==text[t]))
+else if(p<pattern.size()&&pattern[p]=='?')
+{
+++p;
+t+=character_length(text,t);
+}
+else if(p<pattern.size()&&pattern[p]==text[t])
 {
 ++p;
 ++t;
@@ -31,7 +43,8 @@ else if(p<pattern.size()&&(pattern[p]=='?'||pattern[p]==text[t]))
 else if(star!=std::string_view::npos)
 {
 p=star+1;
-t=++mark;
+mark+=character_length(text,mark);
+t=mark;
 }
 else return false;
 }

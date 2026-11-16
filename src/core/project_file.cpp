@@ -251,11 +251,10 @@ if(project.build.assets.empty())return files;
 const fs::path release_dir=project.root/"release";
 const fs::path manifest=project.root/"zodiac.toml";
 std::error_code ec;
-fs::recursive_directory_iterator it(project.root,fs::directory_options::skip_permission_denied,ec);
-if(ec)return fail("zodiac.toml: error: cannot list \""+one_line(path_to_utf8(project.root))+"\": "+one_line(error_text(ec)));
+fs::recursive_directory_iterator it(project.root,fs::directory_options::none,ec);
+if(ec)return fail("zodiac.toml: error: cannot read directory \""+one_line(path_to_utf8(project.root))+"\": "+one_line(error_text(ec)));
 for(const fs::recursive_directory_iterator end;it!=end;it.increment(ec))
 {
-if(ec)return fail("zodiac.toml: error: cannot list \""+one_line(path_to_utf8(project.root))+"\": "+one_line(error_text(ec)));
 const fs::path& path=it->path();
 if(path==release_dir)
 {
@@ -271,6 +270,8 @@ const std::u8string relative=path.lexically_relative(project.root).generic_u8str
 const std::string_view text(reinterpret_cast<const char*>(relative.data()),relative.size());
 if(std::ranges::any_of(project.build.assets,[text](const std::string& pattern){return glob_match(pattern,text);}))files.push_back(path);
 }
+// A failed increment turns the iterator into end and leaves the reason in ec.
+if(ec)return fail("zodiac.toml: error: cannot read directory \""+one_line(path_to_utf8(project.root))+"\": "+one_line(error_text(ec)));
 std::ranges::sort(files);
 files.erase(std::ranges::unique(files).begin(),files.end());
 return files;

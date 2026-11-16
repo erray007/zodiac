@@ -367,6 +367,23 @@ REQUIRE(empty.has_value());
 CHECK(empty->empty());
 }
 
+TEST_CASE("expand_assets reports an unreadable root")
+{
+TempProject project;
+zodiac::Project missing;
+missing.root=project.dir()/"does_not_exist";
+missing.build.assets={"**"};
+const auto result=zodiac::expand_assets(missing);
+REQUIRE_FALSE(result.has_value());
+CHECK(result.error().starts_with("zodiac.toml: error: cannot read directory \""+zodiac::path_to_utf8(missing.root)+"\": "));
+CHECK(result.error().find('\n')==std::string::npos);
+zodiac::Project not_a_directory;
+project.main_script();
+not_a_directory.root=project.dir()/"main.zs";
+not_a_directory.build.assets={"**"};
+CHECK_FALSE(zodiac::expand_assets(not_a_directory).has_value());
+}
+
 TEST_CASE("echoed user text stays on one line")
 {
 TempProject project;
