@@ -51,6 +51,20 @@ const fs::path inner=full.lexically_relative(root);
 if(inner.empty()||inner==fs::path(".")||*inner.begin()==fs::path(".."))return std::nullopt;
 return full;
 }
+// False for an asset pattern that could never match a project-relative '/' path: one with a backslash, an absolute one
+// (leading '/' or a drive letter "C:") or one with a ".." segment.
+bool usable_asset_pattern(std::string_view pattern) noexcept
+{
+if(pattern.contains('\\')||pattern.starts_with('/'))return false;
+if(pattern.size()>=2&&pattern[1]==':'&&((pattern[0]>='A'&&pattern[0]<='Z')||(pattern[0]>='a'&&pattern[0]<='z')))return false;
+for(std::size_t start=0;;)
+{
+const std::size_t cut=pattern.find('/',start);
+if(pattern.substr(start,cut==std::string_view::npos?std::string_view::npos:cut-start)=="..")return false;
+if(cut==std::string_view::npos)return true;
+start=cut+1;
+}
+}
 // Returns the table under key, an empty pointer when absent, or an error when it is something else.
 std::expected<const toml::table*,std::string> section(const toml::table& root,std::string_view key)
 {
@@ -205,6 +219,10 @@ project.diagnostics.file=std::move(*file);
 const auto build=section(root,"build");
 if(!build)return fail(std::move(build.error()));
 if(auto result=string_array(*build,"build","assets",project.build.assets);!result)return fail(std::move(result.error()));
+for(const std::string& pattern:project.build.assets)
+{
+if(!usable_asset_pattern(pattern))return fail("zodiac.toml: error: [build] assets \""+one_line(pattern)+"\" must use / and stay inside the project");
+}
 if(*build)
 {
 if(const toml::node* strip_node=(*build)->get("strip_debug_info"))
@@ -299,11 +317,23 @@ if(path==release_dir)
 it.disable_recursion_pending();
 continue;
 }
-if(path==manifest||!it->is_regular_file(ec))
+if(path==manifest)continue;
+fs::file_status status=it->status(ec);
+// The entry's cached type does not follow every kind of link (a Windows junction is cached as a folder, even when its
+// target is gone), so a folder is asked again through the filesystem before the walk enters it.
+if(!ec&&fs::is_directory(status))status=fs::status(path,ec);
+if(ec)
 {
+// Only a link whose target is gone (nothing to copy) is skipped; any other unreadable entry stops the build.
+if(status.type()!=fs::file_type::not_found)return fail("zodiac.toml: error: cannot read \""+one_line(path_to_utf8(path))+"\": "+one_line(error_text(ec)));
 ec.clear();
+}
+if(status.type()==fs::file_type::not_found)
+{
+it.disable_recursion_pending();
 continue;
 }
+if(!fs::is_regular_file(status))continue;
 const std::u8string relative=path.lexically_relative(project.root).generic_u8string();
 const std::string_view text(reinterpret_cast<const char*>(relative.data()),relative.size());
 if(std::ranges::any_of(project.build.assets,[text](const std::string& pattern){return glob_match(pattern,text);}))files.push_back(path);

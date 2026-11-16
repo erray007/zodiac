@@ -18,7 +18,8 @@ OutputMode dialog=OutputMode::automatic;
 bool operator==(const DiagnosticsConfig&) const=default;
 };
 struct BuildConfig{
-// Glob patterns relative to the project root with '/' separators (see glob_match), in file order.
+// Glob patterns relative to the project root with '/' separators (see glob_match), in file order. load_project refuses a
+// pattern with a backslash, an absolute pattern (leading '/' or a drive letter) and one with a ".." segment, since none could ever match.
 std::vector<std::string> assets;
 bool strip_debug_info=false;
 // Program and arguments run on the built executable; empty when signing is not configured. When not empty, at least one element contains {file}.
@@ -51,5 +52,6 @@ std::optional<std::filesystem::path> find_project_root(const std::filesystem::pa
 std::expected<Project,std::string> load_project_for_script(const std::filesystem::path& script_file,std::span<const std::string> installed_modules);
 // Every regular file under project.root matching any of project.build.assets, as absolute paths, sorted and without duplicates.
 // zodiac.toml in the root and everything under <root>/release are never returned. A pattern matching nothing is not an error; a missing or unreadable directory is: the error is one line, `zodiac.toml: error: cannot read directory "<path>": <reason>`.
+// A link whose target no longer exists is skipped (there is nothing to copy); any other entry whose type cannot be read is an error: `zodiac.toml: error: cannot read "<entry path>": <reason>`.
 std::expected<std::vector<std::filesystem::path>,std::string> expand_assets(const Project& project);
 }

@@ -1,9 +1,11 @@
 #include <core/path_utf8.hpp>
 #include <core/project_file.hpp>
 #include <core/text.hpp>
+#include <platform/process.hpp>
 #include <doctest/doctest.h>
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -297,6 +299,30 @@ project.toml("[game]\nmain = \"main.zs\"\n[build]\nsign = 1\n");
 CHECK(error_of(project)=="zodiac.toml: error: [build.sign] must be a table");
 }
 
+TEST_CASE("asset patterns must use / and stay inside the project")
+{
+TempProject project;
+project.main_script();
+for(const std::string_view pattern:{"sounds\\*.ogg","/sounds/*.ogg","C:/sounds/*.ogg","c:sounds","../shared/*.ogg","sounds/../../x","sounds/.."})
+{
+CAPTURE(pattern);
+std::string escaped;
+for(const char c:pattern){
+if(c=='\\')escaped+='\\';
+escaped+=c;
+}
+project.toml("[game]\nmain = \"main.zs\"\n[build]\nassets = [\"data/*\", \""+escaped+"\"]\n");
+std::string shown(pattern);
+CHECK(error_of(project)=="zodiac.toml: error: [build] assets \""+shown+"\" must use / and stay inside the project");
+}
+// The refused pattern is echoed on one line.
+project.toml("[game]\nmain = \"main.zs\"\n[build]\nassets = [\"../x\\ny\"]\n");
+CHECK(error_of(project)=="zodiac.toml: error: [build] assets \"../x\\ny\" must use / and stay inside the project");
+// Dots inside a segment are fine.
+project.toml("[game]\nmain = \"main.zs\"\n[build]\nassets = [\"..data/*\", \"data../x..y\", \"**/*.ogg\"]\n");
+CHECK(zodiac::load_project(project.dir()).has_value());
+}
+
 TEST_CASE("worker scripts")
 {
 TempProject project;
@@ -374,6 +400,41 @@ REQUIRE(none.has_value());
 const auto empty=zodiac::expand_assets(*none);
 REQUIRE(empty.has_value());
 CHECK(empty->empty());
+}
+
+TEST_CASE("expand_assets skips a link whose target is gone")
+{
+TempProject project;
+project.main_script();
+project.write("data/kept.txt","");
+const fs::path link=project.dir()/"data"/"dangling";
+std::error_code ec;
+fs::create_symlink(project.dir()/"data"/"removed.txt",link,ec);
+#ifdef _WIN32
+if(ec){
+// Creating a symbolic link needs a privilege on Windows; a directory junction does not. Point one at a folder, then remove the folder.
+ec.clear();
+fs::create_directory(project.dir()/"gone");
+const char* const shell=std::getenv("ComSpec");
+REQUIRE(shell!=nullptr);
+const std::string command[]={shell,"/d","/c","mklink","/J",zodiac::path_to_utf8(link),zodiac::path_to_utf8(project.dir()/"gone")};
+const auto made=zodiac::platform::run_process(command);
+REQUIRE(made.has_value());
+REQUIRE(made->exit_code==0);
+fs::remove(project.dir()/"gone");
+}
+#endif
+REQUIRE_FALSE(ec);
+// The link itself is there (a junction is not reported as a symlink by every standard library), its target is not.
+REQUIRE(fs::symlink_status(link,ec).type()!=fs::file_type::not_found);
+REQUIRE(fs::status(link,ec).type()==fs::file_type::not_found);
+project.toml("[game]\nmain = \"main.zs\"\n[build]\nassets = [\"data/**\"]\n");
+const auto loaded=zodiac::load_project(project.dir());
+REQUIRE(loaded.has_value());
+const auto files=zodiac::expand_assets(*loaded);
+INFO((files.has_value()?std::string():files.error()));
+REQUIRE(files.has_value());
+CHECK(*files==std::vector<fs::path>{loaded->root/"data"/"kept.txt"});
 }
 
 TEST_CASE("expand_assets reports an unreadable root")
