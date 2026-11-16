@@ -26,14 +26,14 @@
 //    output, each line indented by two spaces (exit 2).
 // Exit codes: 0 success, 1 script error, 2 project, module, link or file error. On hosts other than Windows the only result is
 // "error: release builds are not supported on this host yet" (exit 2).
-// The last line on standard output is the summary BuildReport::summary gives. Threads: main thread only; changes the working directory.
+// Result (spec 8.2a): every message goes to the console as it happens, and the last line on standard output is the summary BuildReport::summary
+// gives. Without no_window, when platform::has_interactive_desktop() holds, the result window (platform/result_window.hpp) then opens, titled
+// "Zodiac build - <game name>" (the target's own name when no project loaded), holding BuildReport::text, with "Open output folder" for the
+// executable's folder after a success; build_project returns once it is closed. Without a desktop it ends as a --no-window build does.
+// Threads: main thread only; changes the working directory.
 #pragma once
 #include <core/diagnostics.hpp>
-#include <atomic>
-#include <cstddef>
 #include <filesystem>
-#include <string>
-#include <string_view>
 #include <vector>
 
 namespace zodiac::cli {
@@ -43,19 +43,8 @@ std::filesystem::path target;
 std::filesystem::path output;
 // The module search folders, absolute, in search order (zodiac run's: --module-dir folders, then the kit's modules folder).
 std::vector<std::filesystem::path> module_dirs;
-// Until the result window exists (plan task 9), a build without --no-window behaves as with it.
+// --no-window: report on the console only, never open the result window.
 bool no_window=false;
-};
-// The diagnostics sink that keeps a build's tally: an error is an ERROR-level line that does not start with two spaces (continuation lines,
-// such as a signing tool's output, do). summary() is the build's summary line: "Build succeeded: <exe>" (native path, UTF-8) or
-// "Build failed: <N> errors" ("1 error"). Threads: write() may be called from any thread.
-class BuildReport final:public DiagnosticSink{
-public:
-void write(zodiac_log_level level,std::string_view line) noexcept override;
-std::size_t errors() const noexcept{return errors_.load(std::memory_order_relaxed);}
-std::string summary(bool succeeded,const std::filesystem::path& exe) const;
-private:
-std::atomic<std::size_t> errors_{0};
 };
 int build_project(const BuildOptions& options,Diagnostics& diagnostics);
 }

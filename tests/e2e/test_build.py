@@ -1,5 +1,5 @@
 """End-to-end tests for zodiac build. Windows only: release builds link with the kit's ld.lld and llvm-mingw CRT subset.
-Needs ZODIAC_EXE, ZODIAC_MODULE_DIR, ZODIAC_TEST_MODULE_DIR and ZODIAC_ECHO_ARGS in the environment (CTest sets them, see tests/CMakeLists.txt)."""
+Needs ZODIAC_EXE, ZODIACW_EXE (the GUI-subsystem twin), ZODIAC_MODULE_DIR, ZODIAC_TEST_MODULE_DIR and ZODIAC_ECHO_ARGS in the environment (CTest sets them, see tests/CMakeLists.txt)."""
 import os
 import struct
 import subprocess
@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 EXE = os.environ.get("ZODIAC_EXE", "")
+GUI_EXE = os.environ.get("ZODIACW_EXE", "")
 MODULE_DIR = os.environ.get("ZODIAC_MODULE_DIR", "")
 TEST_MODULE_DIR = os.environ.get("ZODIAC_TEST_MODULE_DIR", "")
 ECHO_ARGS = os.environ.get("ZODIAC_ECHO_ARGS", "")
@@ -20,9 +21,24 @@ BUILDABLE_FIXTURES = {"int_main", "non_ascii_include", "runtime_error", "uses_mo
 SIZE_LIMIT = 3145728
 
 
-def zodiac(*args, cwd=None, errors="strict"):
-    result = subprocess.run([EXE, *args], capture_output=True, cwd=cwd, timeout=300)
+def zodiac(*args, cwd=None, errors="strict", exe=None, env=None):
+    result = subprocess.run([exe or EXE, *args], capture_output=True, cwd=cwd, env=env, timeout=300)
     return result.returncode, result.stdout.decode("utf-8", errors), result.stderr.decode("utf-8", errors)
+
+
+def no_desktop_env():
+    """The environment with the documented test hook set: has_interactive_desktop() reports no desktop, so a build without --no-window
+    reports on the console instead of opening the result window (whether a CI runner has a visible window station is not guaranteed)."""
+    env = dict(os.environ)
+    env["ZODIAC_FORCE_NO_DESKTOP"] = "1"
+    return env
+
+
+def pe_subsystem(path):
+    """The Subsystem field of a PE image's optional header (2 GUI, 3 console)."""
+    data = Path(path).read_bytes()
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    return struct.unpack_from("<H", data, pe + 24 + 68)[0]
 
 
 def run_exe(path, cwd=None, errors="strict"):
@@ -374,6 +390,32 @@ class BuildTest(unittest.TestCase):
         self.assertTrue(imports, "no imports found")
         for name in ("libc++.dll", "libunwind.dll", "libwinpthread-1.dll"):
             self.assertNotIn(name, imports)
+
+    def test_build_without_flag_and_no_desktop_prints_summary(self):
+        project = self.new_project(self.root / "hello")
+        exe = project / "release" / "hello.exe"
+        self.assert_built(zodiac("build", str(project), "--module-dir", MODULE_DIR, env=no_desktop_env()), exe)
+        broken = self.new_project(self.root / "broken", script="void main()\n{\nint(zz);\n}\n")
+        code, out, err = zodiac("build", str(broken), "--module-dir", MODULE_DIR, env=no_desktop_env())
+        self.assertEqual(code, 1)
+        self.assertIn("main.zs:3:", err)
+        self.assertRegex(out.splitlines()[-1], r"^Build failed: [1-9][0-9]* errors?$")
+
+    def test_zodiacw_is_a_gui_twin_reporting_to_redirected_streams(self):
+        self.assertTrue(GUI_EXE and Path(GUI_EXE).is_file(), "ZODIACW_EXE is not set or missing: %r" % GUI_EXE)
+        self.assertEqual(Path(GUI_EXE).parent, Path(EXE).parent)
+        self.assertEqual(pe_subsystem(GUI_EXE), 2)
+        self.assertEqual(pe_subsystem(EXE), 3)
+        project = self.new_project(self.root / "hello")
+        exe = project / "release" / "hello.exe"
+        self.assert_built(zodiac("build", str(project), "--module-dir", MODULE_DIR, exe=GUI_EXE, env=no_desktop_env()), exe)
+        self.assertEqual(run_exe(exe), (0, "", ""))
+        code, out, err = zodiac("build", str(project), "--no-window", "--module-dir", MODULE_DIR, "--output", str(self.root / "out"), exe=GUI_EXE)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out.splitlines()[-1], "Build succeeded: %s" % (self.root / "out" / "hello.exe"))
+        code, out, err = zodiac("build", "a", "b", exe=GUI_EXE)
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(err.splitlines(), ["error: build takes at most one project directory or script; run zodiac help"])
 
     def test_build_usage_errors(self):
         code, out, err = zodiac("build", "a", "b")

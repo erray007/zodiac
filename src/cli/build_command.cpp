@@ -1,9 +1,13 @@
 // zodiac::cli::build_project (see cli/build_command.hpp): loads, checks and compiles a project, then links, copies and signs its release.
 #include <cli/build_command.hpp>
+#include <cli/build_report.hpp>
 #include <core/path_utf8.hpp>
 #include <platform/console.hpp>
-#include <charconv>
+#include <platform/result_window.hpp>
 #include <memory>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 #ifdef _WIN32
 #include <cli/linker.hpp>
@@ -35,24 +39,14 @@
 #endif
 
 namespace zodiac::cli {
-void BuildReport::write(zodiac_log_level level,std::string_view line) noexcept
-{
-if(level==ZODIAC_LOG_ERROR&&!line.starts_with("  "))errors_.fetch_add(1,std::memory_order_relaxed);
-}
-
-std::string BuildReport::summary(bool succeeded,const std::filesystem::path& exe) const
-{
-if(succeeded)return "Build succeeded: "+path_to_utf8(exe);
-const std::size_t count=errors();
-char digits[24];
-const auto end=std::to_chars(digits,digits+sizeof digits,count).ptr;
-std::string line="Build failed: ";
-line.append(digits,end).append(count==1?" error":" errors");
-return line;
-}
-
 namespace {
 constexpr int exit_build_error=2;
+
+// What a build produced, also when it failed part way: the executable's path (empty until known) and the game's name (empty until the project loads).
+struct BuildOutcome{
+std::filesystem::path exe;
+std::string game_name;
+};
 
 #ifdef _WIN32
 namespace fs=std::filesystem;
@@ -421,20 +415,22 @@ for(const fs::path& file:signed_files)if(const int code=sign(project.build.sign_
 return exit_ok;
 }
 
-int build_release(const BuildOptions& options,Diagnostics& diagnostics,fs::path& exe)
+int build_release(const BuildOptions& options,Diagnostics& diagnostics,BuildOutcome& outcome)
 {
 const fs::path target=options.target.empty()?fs::path("."):options.target;
 const std::optional<fs::path> root=project_root_of(target);
 if(!root)return fail(diagnostics,"error: zodiac.toml not found; create a project with zodiac new");
 auto project=load_project(*root);
 if(!project)return fail(diagnostics,project.error());
+outcome.game_name=project->name;
 if(!usable_file_name(project->name))return fail(diagnostics,"error: the game name "+in_quotes(project->name)+" cannot be used as a file name; change [game] name in zodiac.toml");
 const fs::path kit_exe=platform::executable_path();
 if(kit_exe.empty())return fail(diagnostics,"error: cannot find the folder of the zodiac executable");
 const KitLayout kit=kit_layout(kit_exe);
 // Every path is absolute before the project root becomes the working directory.
 const fs::path output=options.output.empty()?project->root/"release":absolute_normal(options.output);
-exe=output/path_from_utf8(project->name+".exe");
+outcome.exe=output/path_from_utf8(project->name+".exe");
+const fs::path& exe=outcome.exe;
 ScriptRuntime runtime(diagnostics,ModuleSearchPaths{options.module_dirs});
 // As in zodiac run: global initializers run during the compile, so they see the same working directory as in run and in the release.
 if(const int code=enter_root(project->root,diagnostics))return code;
@@ -444,13 +440,24 @@ if(const int code=runtime.build(*project,check))return code;
 return write_release(*project,runtime,kit,libraries,options.module_dirs,output,exe,diagnostics);
 }
 #else
-int build_release(const BuildOptions&,Diagnostics& diagnostics,std::filesystem::path&)
+int build_release(const BuildOptions&,Diagnostics& diagnostics,BuildOutcome&)
 {
 // Release builds are Windows-only in this plan: the kit's link line, CRT subset and linker come from llvm-mingw.
 diagnostics.report(ZODIAC_LOG_ERROR,"error: release builds are not supported on this host yet");
 return exit_build_error;
 }
 #endif
+
+// The last element of the target's absolute path ("game" for ".", "main.zs" for a script), for a window title when no project loaded.
+std::string target_name(const std::filesystem::path& target)
+{
+std::error_code ec;
+std::filesystem::path path=std::filesystem::absolute(target.empty()?std::filesystem::path("."):target,ec);
+if(ec)path=target;
+path=path.lexically_normal();
+if(!path.has_filename()&&path.has_relative_path())path=path.parent_path();
+return path_to_utf8(path.filename());
+}
 }
 
 int build_project(const BuildOptions& options,Diagnostics& diagnostics)
@@ -458,10 +465,16 @@ int build_project(const BuildOptions& options,Diagnostics& diagnostics)
 auto owned=std::make_unique<BuildReport>();
 const BuildReport& report=*owned;
 diagnostics.add_sink(std::move(owned));
-std::filesystem::path exe;
-const int code=build_release(options,diagnostics,exe);
-// Plan task 9 shows the result window here unless options.no_window is set; until then every build is a --no-window build.
-platform::write_stdout_line(report.summary(code==0,exe));
+BuildOutcome outcome;
+const int code=build_release(options,diagnostics,outcome);
+const bool succeeded=code==0;
+// Spec 8.2a: the console gets the result in every case, so nothing is lost when the window is closed (or there is no window).
+platform::write_stdout_line(report.summary(succeeded,outcome.exe));
+if(options.no_window||!platform::has_interactive_desktop())return code;
+// A project that did not load leaves the cwd as it was, so the target still resolves as given.
+const std::string name=outcome.game_name.empty()?target_name(options.target):outcome.game_name;
+const std::filesystem::path folder=outcome.exe.parent_path();
+platform::show_result_window("Zodiac build - "+name,report.text(succeeded,outcome.exe),succeeded?&folder:nullptr);
 return code;
 }
 }
