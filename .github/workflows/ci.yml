@@ -138,6 +138,13 @@ jobs:
         env:
           ZODIAC_SIGNING_PASSWORD: ${{ secrets.ZODIAC_SIGNING_PASSWORD }}
         run: .tools/cmake/bin/cmake --build --preset windows-release --target zodiac_installer
+      # A setup built from the script as it was before the rename (a test fixture, never released): kit-clean-machine installs it and upgrades it with the real one.
+      - name: Build the old-named setup for the upgrade test
+        run: |
+          $setup = Get-ChildItem dist -Filter 'zodiac-setup-*.exe' | Select-Object -First 1
+          $version = $setup.BaseName -replace '^zodiac-setup-', ''
+          & .tools/innosetup/ISCC.exe "/DZodiacVersion=$version" "/DKitDir=$((Resolve-Path dist/Zodiac).Path)" "/O$((Resolve-Path dist).Path)" packaging/test/zodiac-old-name.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
       - name: Show package sizes
         run: |
           Get-ChildItem dist -File | ForEach-Object { "$($_.Name): $($_.Length) bytes" }
@@ -148,6 +155,7 @@ jobs:
           path: |
             dist/zodiac-*-windows-x86_64.zip
             dist/zodiac-setup-*.exe
+            dist/zodiac-old-setup-*.exe
           if-no-files-found: error
       - name: Upload logs on failure
         if: failure()
@@ -202,17 +210,18 @@ jobs:
           $version = $setup.BaseName -replace '^zodiac-setup-', ''
           $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{98CB20B5-1340-41F1-80E7-8FD0E99FA8BC}_is1'
           $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'Zodiac Game Toolkit'
+          $oldMenu = Join-Path ([Environment]::GetFolderPath('Programs')) 'Zodiac'
           $systemPath = $env:PATH
           function Get-RawUserPath { (Get-Item -LiteralPath 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames') }
           function Set-RawUserPath([string]$value) { Set-ItemProperty -LiteralPath 'HKCU:\Environment' -Name Path -Value $value -Type ExpandString }
-          function Install-Zodiac([string]$tasks, [string]$round) {
+          function Install-Zodiac([string]$tasks, [string]$round, [string]$file = $setup.FullName, [string]$expectedName = 'Zodiac Game Toolkit') {
             $log = Join-Path $env:RUNNER_TEMP "zodiac-setup-$round.log"
-            $process = Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', "/TASKS=`"$tasks`"", "/LOG=`"$log`"" -Wait -PassThru
+            $process = Start-Process -FilePath $file -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', "/TASKS=`"$tasks`"", "/LOG=`"$log`"" -Wait -PassThru
             if ($process.ExitCode -ne 0) { Get-Content -LiteralPath $log; throw "The setup failed with exit code $($process.ExitCode)" }
             $app = (Get-ItemProperty -LiteralPath $uninstallKey).InstallLocation.TrimEnd('\')
             if (-not (Test-Path -LiteralPath (Join-Path $app 'bin\zodiac.exe'))) { throw "$app\bin\zodiac.exe is missing" }
             $displayName = (Get-ItemProperty -LiteralPath $uninstallKey).DisplayName
-            if ($displayName -ne 'Zodiac Game Toolkit') { throw "The uninstall entry is listed as '$displayName', not Zodiac Game Toolkit" }
+            if ($displayName -ne $expectedName) { throw "The uninstall entry is listed as '$displayName', not $expectedName" }
             Write-Host "Round ${round}: installed into $app, listed as $displayName"
             $app
           }
@@ -251,6 +260,7 @@ jobs:
           foreach ($shortcut in 'Zodiac manual.lnk', 'Zodiac examples.lnk') {
             if (-not (Test-Path -LiteralPath (Join-Path $menu $shortcut))) { throw "The Start menu shortcut $menu\$shortcut is missing" }
           }
+          if (Test-Path -LiteralPath $oldMenu) { throw "A clean install made the old Start menu folder $oldMenu" }
           "Association, right-click verb and Start menu shortcuts are there."
           Uninstall-Zodiac $app
           $pathAfter = Get-RawUserPath
@@ -271,12 +281,46 @@ jobs:
           $pathBefore = Get-RawUserPath
           $app = Install-Zodiac 'addtopath' 2
           if ((Join-Path $app 'bin') -ne $bin) { throw "Round 2 installed into $app, not the default folder" }
+          if (Test-Path -LiteralPath $oldMenu) { throw "A clean install made the old Start menu folder $oldMenu" }
           if ((Get-RawUserPath) -ne $pathBefore) { throw "The setup changed a user PATH that already held $bin" }
           Uninstall-Zodiac $app
           if ((Get-RawUserPath) -ne $pathBefore) { throw "Uninstall removed the PATH entry $bin that the setup did not add" }
           if (Test-Path -LiteralPath 'HKCU:\Software\Classes\.zs') { throw "HKCU\Software\Classes\.zs exists although associate was not chosen" }
           Set-RawUserPath $original
           "Round 2: the PATH entry the user already had was kept."
+
+          # Round 3: the upgrade a user with the old-named setup really does. The old setup (packaging/test/zodiac-old-name.iss) installs everything, the user
+          # keeps a file in its Start menu folder, then the real setup installs over it: same AppId, so one uninstall entry, renamed, with the shortcuts moved.
+          $oldSetup = Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\zodiac-kit" -Filter 'zodiac-old-setup-*.exe' | Select-Object -First 1
+          if (-not $oldSetup) { throw "The old-named setup is missing from the artifact" }
+          $pathBefore = Get-RawUserPath
+          $app = Install-Zodiac 'addtopath,associate,buildmenu,shortcuts' 3 $oldSetup.FullName "Zodiac $version"
+          foreach ($shortcut in 'Zodiac manual.lnk', 'Zodiac examples.lnk') {
+            if (-not (Test-Path -LiteralPath (Join-Path $oldMenu $shortcut))) { throw "The old setup did not make the shortcut $oldMenu\$shortcut" }
+          }
+          if (Test-Path -LiteralPath $menu) { throw "The old setup made the new Start menu folder $menu" }
+          $notes = Join-Path $oldMenu 'my notes.txt'
+          Set-Content -LiteralPath $notes -Value 'The user put this here.'
+          $upgraded = Install-Zodiac 'addtopath,associate,buildmenu,shortcuts' 3 $setup.FullName 'Zodiac Game Toolkit'
+          if ($upgraded -ne $app) { throw "The upgrade went to $upgraded, not over $app" }
+          $uninstallRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+          $entries = @(Get-ChildItem -LiteralPath $uninstallRoot | Where-Object { $_.PSChildName -like '*98CB20B5-1340-41F1-80E7-8FD0E99FA8BC*' })
+          if ($entries.Count -ne 1) { throw "There are $($entries.Count) uninstall entries for the AppId after the upgrade, not 1" }
+          foreach ($shortcut in 'Zodiac manual.lnk', 'Zodiac examples.lnk') {
+            if (-not (Test-Path -LiteralPath (Join-Path $menu $shortcut))) { throw "The upgrade did not make the shortcut $menu\$shortcut" }
+            if (Test-Path -LiteralPath (Join-Path $oldMenu $shortcut)) { throw "The upgrade left the old shortcut $oldMenu\$shortcut" }
+          }
+          if (-not (Test-Path -LiteralPath $notes)) { throw "The upgrade deleted the user's file $notes" }
+          $bin = Join-Path $app 'bin'
+          if (@((Get-RawUserPath) -split ';' | Where-Object { $_ -eq $bin }).Count -ne 1) { throw "The user PATH does not hold $bin exactly once after the upgrade: $(Get-RawUserPath)" }
+          "Round 3: the upgrade renamed the entry, moved the shortcuts, kept one entry and the PATH entry once, and kept the user's file."
+          Remove-Item -LiteralPath $notes
+          Uninstall-Zodiac $app
+          if ((Get-RawUserPath) -ne $pathBefore) { throw "The user PATH is '$(Get-RawUserPath)' after uninstalling the upgraded kit, but was '$pathBefore' before the old setup" }
+          foreach ($key in $menu, $oldMenu, 'HKCU:\Software\Classes\.zs', 'HKCU:\Software\Classes\Zodiac.Script', 'HKCU:\Software\Classes\SystemFileAssociations\.zs') {
+            if (Test-Path -LiteralPath $key) { throw "$key is still there after uninstalling the upgraded kit" }
+          }
+          "Round 3: uninstall after the upgrade left neither Start menu folder, the PATH as before, and no .zs keys."
 
   # Tags v* publish the tested packages as a GitHub release.
   release:
