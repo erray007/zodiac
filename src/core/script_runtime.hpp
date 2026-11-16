@@ -8,8 +8,10 @@
 // The bytecode is only valid against an identical registered interface: the same modules, registered in the same order (see module_order()).
 // load_bytecode(): loads and registers modules exactly as build() does (names in linked use those infos, which must outlive the runtime), then loads bytecode
 // into the script module and finds main() the same way. When check is given, it runs after the modules are loaded and before any of them registers,
-// with the loaded infos in registration order (also when the project requests none); a non-zero result (reported by check itself) is returned and nothing more happens. Returns 0, 1 (the bytecode does not match the registered interface or is incomplete:
-// "error: the game data does not match the modules it was built with"; or a global variable failed to initialize) or 2 (module error).
+// with the loaded infos in registration order (also when the project requests none); a non-zero result (reported by check itself) is returned and nothing more happens.
+// Returns 0, 1 (a global variable failed to initialize, a script error reported as build() reports it) or 2 (module error, including bytecode that does not
+// match the registered interface or is incomplete, such as a module replaced by one with the same version but another interface:
+// "error: the game data does not match the modules it was built with").
 // Never reads outside bytecode, which only has to stay alive during the call.
 // run(): executes "int main()" or "void main()" and returns its value (0 for void), or 1 on an uncaught exception. Never exits the process.
 // Runtime errors are reported identically from source and from bytecode with debug info; from stripped bytecode, a location without a line ends with " (line unknown)".

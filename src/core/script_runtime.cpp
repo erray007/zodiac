@@ -302,10 +302,19 @@ return 1;
 }
 StringReadStream stream(bytecode);
 std::vector<std::pair<zodiac_log_level,std::string>> held;
-held_messages_=&held;
 bool stripped=false;
-const int loaded=module->LoadByteCode(&stream,&stripped);
-held_messages_=nullptr;
+int loaded=0;
+{
+// Points the message callback at held for exactly the LoadByteCode call, and back at diagnostics on every exit (an
+// exception from the engine or a module included), so no later message can land in the destroyed vector.
+struct HeldMessagesScope{
+std::vector<std::pair<zodiac_log_level,std::string>>*& target;
+~HeldMessagesScope(){target=nullptr;}
+};
+const HeldMessagesScope scope{held_messages_};
+held_messages_=&held;
+loaded=module->LoadByteCode(&stream,&stripped);
+}
 if(loaded==asINIT_GLOBAL_VARS_FAILED){
 // The interface matched; a global variable initializer failed, which the engine has described like build() would.
 for(const auto& [level,line]:held)diagnostics_.report(level,line);
@@ -314,7 +323,8 @@ return 1;
 if(loaded<0){
 // The reader's own messages ("LoadByteCode failed...", missing registered functions) mean nothing to a player; the cause is always a mismatched or incomplete build.
 diagnostics_.report(ZODIAC_LOG_ERROR,"error: the game data does not match the modules it was built with");
-return 1;
+// A module mismatch (exit 2), unlike a global initializer failure (a script error, exit 1).
+return 2;
 }
 for(const auto& [level,line]:held)diagnostics_.report(level,line);
 debug_info_stripped_=stripped;

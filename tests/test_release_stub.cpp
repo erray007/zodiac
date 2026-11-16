@@ -322,6 +322,35 @@ CHECK(started.code==2);
 CHECK(started.lines==std::vector<std::string>{"error: the modules were registered in a different order than when the game was built"});
 }
 
+TEST_CASE("start refuses a module whose interface changed without a new version")
+{
+const TempDir folder;
+// The payload stores example 0.1.0, as the DLL next to the executable reports, but its bytecode calls a function that
+// example does not register: what a DLL replaced by one with the same version and another interface looks like.
+zodiac::GamePayload payload=source_payload("\"example\"","int main(){return example_add(2,3);}\n");
+const zodiac::GamePayload other=source_payload("\"cwd_probe\"","int main(){return cwd().length()>0?0:3;}\n");
+payload.scripts=other.scripts;
+copy_module("example",from_utf8(ZODIAC_TEST_MODULE_DIR),folder.dir());
+const Started started=start_in(folder.dir(),payload);
+CHECK(started.code==2);
+CHECK(started.lines==std::vector<std::string>{"error: the game data does not match the modules it was built with"});
+}
+
+TEST_CASE("a global initializer failure while the bytecode loads is a script error")
+{
+const TempDir folder;
+const std::string expected=to_utf8(fs::canonical(folder.dir()));
+// The initializer only fails in the executable's folder, so the build that makes the payload succeeds.
+const zodiac::GamePayload payload=source_payload("\"cwd_probe\"","array<int> g_values;\nint g_first=cwd()==\""+expected+"\"?g_values[3]:0;\nint main(){return 0;}\n");
+copy_module("cwd_probe",from_utf8(ZODIAC_TEST_FIXTURE_DIR),folder.dir());
+const Started started=start_in(folder.dir(),payload);
+INFO(join(started.lines));
+CHECK(started.code==1);
+REQUIRE_FALSE(started.lines.empty());
+CHECK(started.lines[0]=="main.zs:2:5: error: Failed to initialize global variable 'g_first'");
+CHECK(std::ranges::none_of(started.lines,[](const std::string& line){return line.contains("does not match");}));
+}
+
 TEST_CASE("start runs a dynamic module from the executable's folder and keeps the module order")
 {
 const TempDir folder;

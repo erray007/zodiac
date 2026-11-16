@@ -503,7 +503,8 @@ CHECK(bytecode.lines[0].level==ZODIAC_LOG_ERROR);
 TEST_CASE("bytecode built against another module set is refused")
 {
 const BytecodeOutcome bytecode=execute_bytecode("int_main",bytecode_of("uses_module"));
-CHECK(bytecode.load==1);
+// A module error, not a script error.
+CHECK(bytecode.load==2);
 CHECK(texts(bytecode.lines)==std::vector<std::string>{"error: the game data does not match the modules it was built with"});
 }
 
@@ -514,7 +515,7 @@ for(const std::size_t size:{std::size_t{0},std::size_t{1},full.size()/2,full.siz
 const std::string truncated=full.substr(0,size);
 const BytecodeOutcome bytecode=execute_bytecode("runtime_error",truncated);
 INFO("size ",size);
-CHECK(bytecode.load==1);
+CHECK(bytecode.load==2);
 CHECK(texts(bytecode.lines)==std::vector<std::string>{"error: the game data does not match the modules it was built with"});
 }
 }
