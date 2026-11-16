@@ -13,10 +13,14 @@
 //    (without debug info when [build] strip_debug_info is set).
 // 4. The payload (kit_version ZODIAC_VERSION; requested: static then dynamic names as the runtime loads them; modules: registration order with versions)
 //    is written as <output>/<name>.zodpay.obj and linked by link_release to <output>/<name>.exe.tmp, which is renamed over <output>/<name>.exe.
-//    A rename that fails because the old executable is open: "error: cannot replace "<exe>": it is in use (is the game still running?)" (exit 2).
-//    The old executable is never touched by a failed build, and no temporary file (.tmp, .obj, .rsp) is left behind, whatever happened.
+//    A rename that fails because another process holds the old executable open (a sharing or lock violation):
+//    "error: cannot replace "<exe>": it is in use (is the game still running?)"; any other failure (a read-only file, a folder of that name):
+//    "error: cannot replace "<exe>": <system reason>" (exit 2). A build that fails up to and including the replace leaves the old executable untouched,
+//    and no temporary file (.tmp, .obj, .rsp) is left behind, whatever happened.
 // 5. Every dynamic module (a registered module not listed as static, so also an undeclared dependency) is copied next to the executable from the
-//    folder it was loaded from; the expanded [build] assets are copied keeping their project-relative paths.
+//    folder it was loaded from; the expanded [build] assets are copied keeping their project-relative paths, except files inside the output folder
+//    (compared case-insensitively, as Windows does). A failure from here on (step 5 or 6) leaves the new executable in place, with the files copied
+//    before the failure (each copy replaces its file whole) and the rest as an earlier build left them.
 // 6. With [build.sign] command, the command runs once per executable and copied DLL with {file} replaced by the file's path; the program is an absolute
 //    path, a path relative to the project root, or a name searched on PATH. Failure: "error: signing "<file>" failed" followed by the tool's
 //    output, each line indented by two spaces (exit 2).

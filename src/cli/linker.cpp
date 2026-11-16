@@ -90,12 +90,17 @@ lines.push_back(std::move(line));
 if(inputs!=1||outputs!=1)return std::unexpected(LinkLineError::damaged);
 return lines;
 }
-void report_lines(Diagnostics& diagnostics,zodiac_log_level level,std::string_view text)
+// Reports each non-empty line of text, prefixed by prefix (continuation lines of a failure are indented by two spaces).
+void report_lines(Diagnostics& diagnostics,zodiac_log_level level,std::string_view prefix,std::string_view text)
 {
+std::string line;
 while(!text.empty()){
 const std::size_t end=text.find('\n');
-const std::string_view line=text.substr(0,end);
-if(!line.empty())diagnostics.report(level,line);
+const std::string_view part=text.substr(0,end);
+if(!part.empty()){
+line.assign(prefix).append(part);
+diagnostics.report(level,line);
+}
 if(end==std::string_view::npos)break;
 text.remove_prefix(end+1);
 }
@@ -163,10 +168,10 @@ const auto ran=platform::run_process(argv);
 if(!ran)return fail(diagnostics,"error: cannot run the linker: "+ran.error());
 if(ran->exit_code!=0){
 auto failed=fail(diagnostics,"error: linking failed");
-report_lines(diagnostics,ZODIAC_LOG_ERROR,ran->output);
+report_lines(diagnostics,ZODIAC_LOG_ERROR,"  ",ran->output);
 return failed;
 }
-report_lines(diagnostics,ZODIAC_LOG_WARNING,ran->output);
+report_lines(diagnostics,ZODIAC_LOG_WARNING,{},ran->output);
 return {};
 }
 #else

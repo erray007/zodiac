@@ -116,8 +116,8 @@ class BuildTest(unittest.TestCase):
         toml = directory / "zodiac.toml"
         write(toml, toml.read_text(encoding="utf-8") + text)
 
-    def build(self, *args, cwd=None):
-        return zodiac("build", *args, "--no-window", "--module-dir", MODULE_DIR, cwd=cwd)
+    def build(self, *args, cwd=None, errors="strict"):
+        return zodiac("build", *args, "--no-window", "--module-dir", MODULE_DIR, cwd=cwd, errors=errors)
 
     def assert_built(self, result, exe):
         code, out, err = result
@@ -307,6 +307,61 @@ class BuildTest(unittest.TestCase):
         code, out, err = self.build(str(project), "--module-dir", TEST_MODULE_DIR)
         self.assertEqual((code, err.splitlines()), (2, [warning, stamp_error]))
         self.assertFalse((project / "release").exists())
+
+    def test_build_link_failure_counts_as_one_error(self):
+        project = self.new_project(self.root / "game", static=["gpl_static"])
+        static_dir = project / "plugins" / "static"
+        static_dir.mkdir(parents=True)
+        # A stamped plugin whose archive is not an archive: the stamp check passes and ld.lld refuses the input.
+        write(static_dir / "zodiac_mod_gpl_static.a", "not an archive\n")
+        toolchain = Path(EXE).resolve().parent.parent / "lib" / "release" / "toolchain.txt"
+        (static_dir / "zodiac_mod_gpl_static.stamp").write_bytes(toolchain.read_bytes())
+        code, out, err = self.build(str(project), "--module-dir", TEST_MODULE_DIR)
+        self.assertEqual(code, 2, err)
+        # The fixture module logs "gpl_static register" and "gpl_static shutdown" at info level; they are not part of the link report.
+        lines = [line for line in err.splitlines() if not line.startswith("gpl_static ")]
+        self.assertIn("error: linking failed", lines)
+        after = lines[lines.index("error: linking failed") + 1:]
+        # Every line of the linker's output is a continuation line, so the summary counts the failure once.
+        self.assertTrue(after and all(line.startswith("  ") for line in after), err)
+        self.assertEqual(out.splitlines()[-1], "Build failed: 1 error")
+        self.assertEqual(list((project / "release").iterdir()), [])
+
+    def test_build_replace_failure_that_is_not_a_lock(self):
+        import stat
+        exe = self.build_hello()
+        before = exe.read_bytes()
+        os.chmod(exe, stat.S_IREAD)
+        self.addCleanup(os.chmod, exe, stat.S_IREAD | stat.S_IWRITE)
+        # The system's reason is not always UTF-8 yet (see test_identity_with_run).
+        code, out, err = self.build(str(exe.parent.parent), errors="backslashreplace")
+        self.assertEqual(code, 2, err)
+        prefix = 'error: cannot replace "%s": ' % exe
+        lines = [line for line in err.splitlines() if line.startswith(prefix)]
+        self.assertEqual(len(lines), 1, err)
+        self.assertNotIn("in use", lines[0])
+        self.assertEqual(exe.read_bytes(), before)
+        self.assertEqual(sorted(p.name for p in exe.parent.iterdir()), ["hello.exe"])
+        # A folder in the executable's place is not "in use" either.
+        project = self.new_project(self.root / "folder")
+        (project / "release" / "folder.exe").mkdir(parents=True)
+        code, out, err = self.build(str(project), errors="backslashreplace")
+        self.assertEqual(code, 2, err)
+        prefix = 'error: cannot replace "%s": ' % (project / "release" / "folder.exe")
+        lines = [line for line in err.splitlines() if line.startswith(prefix)]
+        self.assertEqual(len(lines), 1, err)
+        self.assertNotIn("in use", lines[0])
+
+    def test_build_output_inside_project_is_not_an_asset(self):
+        project = self.new_project(self.root / "game")
+        self.append_toml(project, '\n[build]\nassets = ["**/*"]\n')
+        write(project / "data" / "a.txt", "a")
+        # The same folder spelled with a different case: Windows paths compare case-insensitively.
+        output = Path(str(project).upper()) / "Out"
+        for _ in range(2):
+            self.assert_built(self.build(str(project), "--output", str(output)), output / "game.exe")
+        files = sorted(p.relative_to(project / "out").as_posix() for p in (project / "out").rglob("*") if p.is_file())
+        self.assertEqual(files, ["data/a.txt", "game.exe", "main.zs"])
 
     def test_hello_size_gate(self):
         exe = self.build_hello()

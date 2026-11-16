@@ -25,6 +25,9 @@
 #include <optional>
 #include <span>
 #include <system_error>
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
 #endif
 
 #ifndef ZODIAC_VERSION
@@ -138,10 +141,23 @@ if(!result.has_filename()&&result.has_relative_path())result=result.parent_path(
 return result;
 }
 
+// Windows file names compare case-insensitively with the file system's own (ordinal, upper-case table) rule.
+bool same_name(const fs::path& a,const fs::path& b) noexcept
+{
+const std::wstring& left=a.native();
+const std::wstring& right=b.native();
+return CompareStringOrdinal(left.c_str(),static_cast<int>(left.size()),right.c_str(),static_cast<int>(right.size()),TRUE)==CSTR_EQUAL;
+}
+
+// True when path lies below dir; both absolute and normalized. Each element is compared as the file system does, so "D:\Game\Release" is inside "d:\game".
 bool is_inside(const fs::path& path,const fs::path& dir)
 {
-const fs::path relative=path.lexically_relative(dir);
-return !relative.empty()&&*relative.begin()!=fs::path("..");
+auto element=path.begin();
+for(const fs::path& part:dir){
+if(element==path.end()||!same_name(*element,part))return false;
+++element;
+}
+return element!=path.end();
 }
 
 // True when name+".exe" is a plain file name on Windows: no separators, reserved or control characters, no trailing dot or space, no device name.
@@ -263,17 +279,31 @@ fail(diagnostics,"error: cannot copy "+quoted_path(from)+" to "+quoted_path(to)+
 return false;
 }
 
-// A failed replace that means another process holds the old file open.
-bool is_in_use(const std::error_code& ec) noexcept
+// True when the failed replace of exe means another process holds the old file open (a sharing or lock violation).
+// MoveFileExW reports a target opened without sharing as ERROR_ACCESS_DENIED, like a read-only file or a folder, so access denied counts only
+// when exe is a writable regular file that cannot even be opened for update.
+bool is_in_use(const fs::path& exe,const std::error_code& ec)
 {
-if(ec.category()==std::system_category()){
 constexpr int access_denied=5;
 constexpr int sharing_violation=32;
 constexpr int lock_violation=33;
+bool denied=false;
+if(ec.category()==std::system_category()){
 const int value=ec.value();
-return value==access_denied||value==sharing_violation||value==lock_violation;
+if(value==sharing_violation||value==lock_violation)return true;
+denied=value==access_denied;
 }
-return ec==std::errc::permission_denied||ec==std::errc::text_file_busy||ec==std::errc::device_or_resource_busy||ec==std::errc::no_lock_available||ec==std::errc::operation_not_permitted;
+else{
+if(ec==std::errc::text_file_busy||ec==std::errc::device_or_resource_busy||ec==std::errc::no_lock_available)return true;
+denied=ec==std::errc::permission_denied;
+}
+if(!denied)return false;
+std::error_code status_error;
+const fs::file_status status=fs::status(exe,status_error);
+if(status_error||status.type()!=fs::file_type::regular||(status.permissions()&fs::perms::owner_write)==fs::perms::none)return false;
+// Opening for update ("r+b") changes nothing; it fails only when another process denies sharing.
+const std::fstream probe(exe,std::ios::in|std::ios::out|std::ios::binary);
+return !probe.is_open();
 }
 
 // The sign command's program: absolute as given, relative to the project root when it names a folder, otherwise searched on PATH (as given, then with .exe and .com).
@@ -366,7 +396,7 @@ request.inputs.push_back(kit.release_lib/"libangelscript.a");
 if(!link_release(kit,request,diagnostics))return exit_build_error;
 fs::rename(tmp.path(),exe,ec);
 if(ec){
-if(is_in_use(ec))return fail(diagnostics,"error: cannot replace "+quoted_path(exe)+": it is in use (is the game still running?)");
+if(is_in_use(exe,ec))return fail(diagnostics,"error: cannot replace "+quoted_path(exe)+": it is in use (is the game still running?)");
 return fail(diagnostics,"error: cannot replace "+quoted_path(exe)+": "+error_text(ec));
 }
 std::vector<fs::path> signed_files{exe};

@@ -12,7 +12,8 @@
 // (callers must not report it again):
 // - "error: cannot read the release link line "<link.txt>"" / "error: the release link line "<link.txt>" is damaged" (an expected line missing or repeated);
 // - "error: cannot write "<rsp>"", "error: cannot run the linker: <reason>";
-// - "error: linking failed" (ld.lld exited non-zero) followed by one line per non-empty line of the linker's output.
+// - "error: linking failed" (ld.lld exited non-zero) followed by one line per non-empty line of the linker's output, indented by two spaces
+//   (continuation lines, so a build counts the failure as one error).
 // A successful link reports each line of linker output as a warning. On hosts other than Windows the only result is
 // "error: release builds are not supported on this host yet".
 // Threads: call from one thread at a time per output path.

@@ -226,6 +226,8 @@ INFO(join(linked.lines));
 REQUIRE(linked.lines.size()>=2);
 CHECK(linked.lines[0]=="error: linking failed");
 CHECK(linked.lines[1].find("missing input.a")!=std::string::npos);
+// The linker's output follows as continuation lines.
+for(std::size_t i=1;i<linked.lines.size();++i)CHECK(linked.lines[i].starts_with("  "));
 CHECK(!fs::exists(folder.dir()/"game.exe"));
 CHECK(!fs::exists(folder.dir()/"game.exe.rsp"));
 }
