@@ -125,6 +125,26 @@ CHECK(error_of(fixture,"uint c=\"\".code_at(0);")=="index out of range");
 CHECK(error_of(fixture,"uint8 b=\"a\".byte_at(-1);")=="index out of range");
 }
 
+TEST_CASE("byte_at and code_at of temporary strings read the right text")
+{
+// byte_at refers into the string, so the engine must keep a temporary alive until the script has read the byte. The two
+// temporaries are heap strings of one block size class: had the first been freed before its byte was read, the second
+// would reuse its block (through the per-thread cache) and the first read would see the second's text.
+ScriptFixture fixture;
+const char* source="const string head_a=\"a fairly long text that has to live on the heap\";\n"
+"const string head_b=\"b fairly long text that has to live on the heap\";\n"
+"bool main(){\n"
+"uint8 x=(head_a+\"!\").byte_at(0);\n"
+"if(x!=0x61)return false;\n"
+"if((head_a+\"!\").byte_at(0)==(head_b+\"!\").byte_at(0))return false;\n"
+"if(uint((head_a+\"!\").byte_at(0))+uint((head_b+\"!\").byte_at(0))!=0x61+0x62)return false;\n"
+"if((head_a+\"\xC5\x9F\").code_at(47)!=0x15F||(head_b+\"!\").code_at(0)!=0x62)return false;\n"
+"return (head_a+\"!\").byte_at(47)==0x21&&(head_b+\"?\").byte_at(47)==0x3F;\n"
+"}";
+REQUIRE(fixture.run(source,"bool main()")==asEXECUTION_FINISHED);
+CHECK(fixture.context->GetReturnByte()!=0);
+}
+
 TEST_CASE("search returns character indices")
 {
 ScriptFixture fixture;

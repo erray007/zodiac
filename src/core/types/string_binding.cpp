@@ -166,7 +166,8 @@ void construct(void* memory) noexcept
 {
 ::new(memory) String();
 }
-void copy_construct(const String& other,void* memory) noexcept
+// A copy of heap text allocates and may throw.
+[[gnu::noinline]] void copy_construct_heap(const String& other,void* memory) noexcept
 {
 try{
 ::new(memory) String(other);
@@ -175,6 +176,15 @@ catch(...){
 ::new(memory) String();
 raise_current_exception();
 }
+}
+// Inline text is copied without allocating, so the common case is a leaf without an exception frame (a tail call otherwise).
+void copy_construct(const String& other,void* memory) noexcept
+{
+if(other.is_inline()){
+::new(memory) String(other);
+return;
+}
+copy_construct_heap(other,memory);
 }
 template<class T>
 void construct_from(T value,void* memory) noexcept

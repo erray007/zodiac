@@ -1,21 +1,27 @@
 // bench_types: the speed gate of spec 8.4. Measures Zodiac's script string, array<T> and dictionary against AngelScript's sample
 // add-ons (scriptstdstring, scriptarray, scriptdictionary) in one process.
 // Contract:
-// - Two engines: one with Zodiac's types (registered as ScriptRuntime does: array, string, dictionary), one with the add-ons
+// - Two kinds of engine: Zodiac's types (registered as ScriptRuntime does: array, string, dictionary), and the add-ons
 //   (RegisterStdString, RegisterScriptArray as the default array, RegisterStdStringUtils, RegisterScriptDictionary), both native.
 // - Every operation of spec 8.4 is a pair of AngelScript snippets with the same semantics, the add-on side written the way a
 //   script would have to write it with the add-ons (where the add-on has no such operation, e.g. character indexing on Turkish
 //   text, it is the script code doing the same work). Each snippet defines int64 run(int reps), which does ITEMS units of work
 //   reps times and returns a checksum, and may define void setup(), run once before timing. Both sides must return the same
 //   checksum; a difference is a bench bug and fails the run (exit code 3).
-// - Per operation: reps is calibrated so that one run of both sides together takes at least twice the target time, then the
-//   two sides run interleaved for the given rounds (the side that runs first alternates), each run timed alone on the next
-//   of kContexts contexts, with a full garbage collection after it (untimed). It prints one JSON line per operation to
-//   stdout (and to --out when given): {"op":name,"new_ns":n,"addon_ns":n,"ratio":r}, new_ns and addon_ns the median
-//   nanoseconds per unit of work of each side, ratio the median of the per-round ratios new/addon. tools/check_bench.py
-//   gates the lines (ratio at most 1.05).
-// - Usage: bench_types [--rounds N] [--target-ms N] [--op NAME]... [--out PATH] [--list]. Defaults: 31 rounds (at least 15
-//   are required, spec 8.4), 8 ms. --op (repeatable) measures only the named operations, --list prints the names.
+// - Every operation has its own engines on both sides (kEngines per side, see Side), so no operation's objects affect
+//   another's and no single engine placement decides a side. Per operation, reps is calibrated so that one run of both
+//   sides together takes at least twice the target time. Then come the rounds: each round runs every operation once, both
+//   sides back to back (the side that runs first alternates with the round), each run timed alone, with a full garbage
+//   collection after it (untimed). Taking the operations in turn spreads each one's rounds over the whole run: on a busy
+//   machine the relative speed of two code paths drifts by up to 20 % over a second or so while other programs come and
+//   go, and an operation measured in one stretch would read whatever that second's state was.
+// - Output: once every round is done, one JSON line per operation to stdout (and to --out when given):
+//   {"op":name,"new_ns":n,"addon_ns":n,"ratio":r}, new_ns and addon_ns the median nanoseconds per unit of work of each
+//   side, ratio the median of the per-round ratios new/addon. tools/check_bench.py gates the lines (ratio at most 1.05).
+//   Progress goes to stderr every 10 rounds.
+// - Usage: bench_types [--rounds N] [--target-ms N] [--op NAME]... [--out PATH] [--list]. Defaults: 101 rounds (at least
+//   15 are required, spec 8.4) of 1 ms per side: many short rounds pair the two sides closely in time, and the whole run
+//   takes about 45 s on the release preset. --op (repeatable) measures only the named operations, --list prints the names.
 // - Exit codes: 0 measured, 1 bad arguments, 2 a snippet did not build or run, 3 the two sides disagree on a checksum.
 // Not a ctest test (spec 8.4): CI runs it on release presets, and Task 7 reuses it to compare compiler flags.
 #include <angelscript.h>
@@ -34,6 +40,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -246,12 +253,14 @@ DictionarySnippets s;
 s.insert_name="dict_insert_"+count;
 s.lookup_name="dict_lookup_"+count;
 s.iterate_name="dict_iterate_"+count;
-// The keys, the table they fill and a shuffled copy of them (Fisher-Yates with next_random), the same on both sides.
+// The keys, the table they fill and a shuffled copy of them (Fisher-Yates with next_random), the same on both sides
+// (untimed). The keys array is reserved first: the add-on's insertLast grows its buffer by one element each time, which
+// makes filling 100 000 keys quadratic (two seconds per engine) for no part of what is measured.
 const std::string zodiac_setup="array<string> keys;array<string> probes;dictionary table;\n"
-"void setup(){for(int i=0;i<ITEMS;++i){keys.insert_last(\"key\"+i);table.set(keys[i],int64(i));}probes=keys;"
+"void setup(){keys.reserve(ITEMS);for(int i=0;i<ITEMS;++i){keys.insert_last(\"key\"+i);table.set(keys[i],int64(i));}probes=keys;"
 "for(int i=ITEMS-1;i>0;--i){int j=next_random()%(i+1);string t=probes[i];probes[i]=probes[j];probes[j]=t;}}\n";
 const std::string addon_setup="array<string> keys;array<string> probes;dictionary table;\n"
-"void setup(){for(int i=0;i<ITEMS;++i){keys.insertLast(\"key\"+i);table.set(keys[i],int64(i));}probes=keys;"
+"void setup(){keys.reserve(ITEMS);for(int i=0;i<ITEMS;++i){keys.insertLast(\"key\"+i);table.set(keys[i],int64(i));}probes=keys;"
 "for(int i=ITEMS-1;i>0;--i){int j=next_random()%(i+1);string t=probes[i];probes[i]=probes[j];probes[j]=t;}}\n";
 // set(key, int64) of ITEMS keys into a new dictionary.
 s.zodiac_insert=zodiac_setup+"int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r){dictionary d;for(int i=0;i<ITEMS;++i)d.set(keys[i],int64(i));n+=d.length();}return n;}";
@@ -317,77 +326,89 @@ RegisterScriptDictionary(engine);
 return engine;
 }
 
-// One side of an operation: its engine, its contexts and the built snippet. Runs take turns over kContexts contexts, each
-// with its own script stack at its own address, so no single stack placement (cache sets, 4K aliasing against the data)
-// biases a whole measurement; the medians span all of them.
+// One side of one operation: kEngines engines of its kind (Zodiac's types or the add-ons), each with kContexts contexts
+// and the operation's snippet built in a module. Two effects decide this layout (measured on the owner's machine):
+// - Isolation. The engine's state is part of what a run costs: the add-on's array<string>.find compares through nested
+//   calls on the active context, and with a 100 000-key dictionary of another operation alive in the same engine one of
+//   its runs took 90 s instead of 6 ms. So every operation gets engines of its own, as if it ran alone.
+// - Placement. Where a fresh engine's own objects land in memory (the descriptors and tables a native call reads, 4K
+//   aliasing, cache sets) moves an operation's speed by several percent with identical code: length() on ASCII text,
+//   a one-load leaf on both sides, read 0.93 to 1.05 across processes with one engine per side. So each side runs on
+//   kEngines engines, run k on engine k % kEngines and on the next of its contexts (each with its own script stack at its
+//   own address), and the medians span all those placements, the same way on both sides.
+constexpr int kEngines=4;
 constexpr int kContexts=4;
 class Side {
 public:
-Side(asIScriptEngine* engine,const char* label):engine_(engine),label_(label)
+// Builds job's snippet on kEngines new engines and runs its setup() on each (untimed).
+Side(bool zodiac_types,const Job& job,std::string_view prelude,const std::string& snippet):name_(job.name+(zodiac_types?" (zodiac)":" (add-on)"))
 {
-for(asIScriptContext*& context:contexts_){
-context=engine_->CreateContext();
+std::string source(kCommonPrelude);
+source.append(prelude).append("const int ITEMS=").append(std::to_string(job.items)).append(";\n").append(snippet);
+for(Instance& instance:instances_){
+instance.engine=make_engine(zodiac_types);
+for(asIScriptContext*& context:instance.contexts){
+context=instance.engine->CreateContext();
 if(!context)fail(2,"cannot create a script context");
 }
+asIScriptModule* module=instance.engine->GetModule(name_.c_str(),asGM_ALWAYS_CREATE);
+if(module->AddScriptSection(name_.c_str(),source.data(),source.size())<0||module->Build()<0)fail(2,name_+" does not build");
+instance.run=module->GetFunctionByDecl("int64 run(int)");
+if(!instance.run)fail(2,name_+" has no int64 run(int)");
+if(asIScriptFunction* setup=module->GetFunctionByDecl("void setup()")){
+context_=instance.contexts[0];
+if(context_->Prepare(setup)<0||context_->Execute()!=asEXECUTION_FINISHED)fail(2,name_+": setup() failed"+exception());
+context_->Unprepare();
 }
+}
+}
+// The contexts are released before their engine shuts down (which discards the module).
 ~Side()
 {
-for(asIScriptContext* context:contexts_)context->Release();
+for(Instance& instance:instances_){
+for(asIScriptContext* context:instance.contexts)context->Release();
+instance.engine->ShutDownAndRelease();
+}
 }
 Side(const Side&)=delete;
 Side& operator=(const Side&)=delete;
-void build(const Job& job,std::string_view prelude,const std::string& snippet)
-{
-context_=contexts_[0];
-const std::string section=job.name+" ("+label_+")";
-module_=engine_->GetModule(section.c_str(),asGM_ALWAYS_CREATE);
-std::string source(kCommonPrelude);
-source.append(prelude).append("const int ITEMS=").append(std::to_string(job.items)).append(";\n").append(snippet);
-if(module_->AddScriptSection(section.c_str(),source.data(),source.size())<0||module_->Build()<0)fail(2,section+" does not build");
-run_=module_->GetFunctionByDecl("int64 run(int)");
-if(!run_)fail(2,section+" has no int64 run(int)");
-if(asIScriptFunction* setup=module_->GetFunctionByDecl("void setup()")){
-if(context_->Prepare(setup)<0||context_->Execute()!=asEXECUTION_FINISHED)fail(2,section+": setup() failed"+exception());
-}
-}
-// Runs run(reps) once; returns its checksum and stores the time taken in nanoseconds. The garbage collection after it is untimed.
+// Runs run(reps) once on the next engine and context; returns its checksum and stores the time taken in nanoseconds.
+// The garbage collection after it is untimed.
 std::int64_t run(int reps,double& ns)
 {
-context_=contexts_[next_];
-next_=(next_+1)%kContexts;
-if(context_->Prepare(run_)<0)fail(2,label_+": cannot prepare run()");
+Instance& instance=instances_[next_engine_];
+next_engine_=(next_engine_+1)%kEngines;
+context_=instance.contexts[instance.next_context];
+instance.next_context=(instance.next_context+1)%kContexts;
+if(context_->Prepare(instance.run)<0)fail(2,name_+": cannot prepare run()");
 context_->SetArgDWord(0,static_cast<asDWORD>(reps));
 const auto start=std::chrono::steady_clock::now();
 const int result=context_->Execute();
 const auto stop=std::chrono::steady_clock::now();
-if(result!=asEXECUTION_FINISHED)fail(2,std::string(module_->GetName())+": run() failed"+exception());
+if(result!=asEXECUTION_FINISHED)fail(2,name_+": run() failed"+exception());
 ns=std::chrono::duration<double,std::nano>(stop-start).count();
 const std::int64_t checksum=static_cast<std::int64_t>(context_->GetReturnQWord());
 context_->Unprepare();
-engine_->GarbageCollect(asGC_FULL_CYCLE);
+instance.engine->GarbageCollect(asGC_FULL_CYCLE);
 return checksum;
 }
-void discard()
-{
-if(module_)module_->Discard();
-module_=nullptr;
-run_=nullptr;
-engine_->GarbageCollect(asGC_FULL_CYCLE);
-}
 private:
+struct Instance {
+asIScriptEngine* engine=nullptr;
+asIScriptContext* contexts[kContexts]={};
+int next_context=0;
+asIScriptFunction* run=nullptr;
+};
 std::string exception() const
 {
 if(context_->GetState()!=asEXECUTION_EXCEPTION)return "";
 const char* text=context_->GetExceptionString();
 return std::string(": ")+(text?text:"");
 }
-asIScriptEngine* engine_;
-asIScriptContext* contexts_[kContexts];
+std::string name_;
+Instance instances_[kEngines];
 asIScriptContext* context_=nullptr;
-int next_=0;
-std::string label_;
-asIScriptModule* module_=nullptr;
-asIScriptFunction* run_=nullptr;
+int next_engine_=0;
 };
 
 double median(std::vector<double> values)
@@ -406,56 +427,71 @@ const auto end=std::to_chars(digits,digits+sizeof digits,value,std::chars_format
 out.append(digits,end);
 }
 
-std::string measure(const Job& job,Side& zodiac,Side& addon,int rounds,double target_ns)
+// One operation under measurement: its two sides, its calibrated reps and the times of its rounds.
+struct Measurement {
+Measurement(const Job& job_,int rounds):job(&job_),zodiac(true,job_,kZodiacPrelude,job_.zodiac),addon(false,job_,kAddonPrelude,job_.addon)
 {
-zodiac.build(job,kZodiacPrelude,job.zodiac);
-addon.build(job,kAddonPrelude,job.addon);
-auto check=[&job](std::int64_t zodiac_sum,std::int64_t addon_sum,int reps){
-if(zodiac_sum!=addon_sum)fail(3,job.name+": Zodiac's checksum "+std::to_string(zodiac_sum)+" differs from the add-on's "+std::to_string(addon_sum)+" at reps "+std::to_string(reps));
-};
-// Calibration: grow reps until one run of both sides takes at least twice the target (each run doubles as a warm-up).
-int reps=1;
-for(;;){
-double zodiac_ns=0,addon_ns=0;
-const std::int64_t zodiac_sum=zodiac.run(reps,zodiac_ns);
-const std::int64_t addon_sum=addon.run(reps,addon_ns);
-check(zodiac_sum,addon_sum,reps);
-const double total=zodiac_ns+addon_ns;
-if(total>=2*target_ns||reps>=(1<<24))break;
-const double scale=total>0?2*target_ns/total*1.1:16;
-reps=static_cast<int>(std::min<double>(1<<24,std::max<double>(reps*2.0,reps*scale)));
-}
-std::vector<double> zodiac_times,addon_times,ratios;
 zodiac_times.reserve(static_cast<std::size_t>(rounds));
 addon_times.reserve(static_cast<std::size_t>(rounds));
 ratios.reserve(static_cast<std::size_t>(rounds));
-for(int round=0;round<rounds;++round){
+}
+const Job* job;
+Side zodiac;
+Side addon;
+int reps=1;
+std::vector<double> zodiac_times,addon_times,ratios;
+};
+
+void check(const Measurement& m,std::int64_t zodiac_sum,std::int64_t addon_sum)
+{
+if(zodiac_sum!=addon_sum)fail(3,m.job->name+": Zodiac's checksum "+std::to_string(zodiac_sum)+" differs from the add-on's "+std::to_string(addon_sum)+" at reps "+std::to_string(m.reps));
+}
+
+// Grows reps until one run of both sides takes at least twice the target (each run doubles as a warm-up).
+void calibrate(Measurement& m,double target_ns)
+{
+for(;;){
+double zodiac_ns=0,addon_ns=0;
+const std::int64_t zodiac_sum=m.zodiac.run(m.reps,zodiac_ns);
+const std::int64_t addon_sum=m.addon.run(m.reps,addon_ns);
+check(m,zodiac_sum,addon_sum);
+const double total=zodiac_ns+addon_ns;
+if(total>=2*target_ns||m.reps>=(1<<24))return;
+const double scale=total>0?2*target_ns/total*1.1:16;
+m.reps=static_cast<int>(std::min<double>(1<<24,std::max<double>(m.reps*2.0,m.reps*scale)));
+}
+}
+
+// One round of m: both sides back to back, the side that runs first alternating with the round.
+void measure_round(Measurement& m,int round)
+{
 double zodiac_ns=0,addon_ns=0;
 std::int64_t zodiac_sum,addon_sum;
 if(round%2==0){
-zodiac_sum=zodiac.run(reps,zodiac_ns);
-addon_sum=addon.run(reps,addon_ns);
+zodiac_sum=m.zodiac.run(m.reps,zodiac_ns);
+addon_sum=m.addon.run(m.reps,addon_ns);
 }
 else{
-addon_sum=addon.run(reps,addon_ns);
-zodiac_sum=zodiac.run(reps,zodiac_ns);
+addon_sum=m.addon.run(m.reps,addon_ns);
+zodiac_sum=m.zodiac.run(m.reps,zodiac_ns);
 }
-check(zodiac_sum,addon_sum,reps);
-zodiac_times.push_back(zodiac_ns);
-addon_times.push_back(addon_ns);
-ratios.push_back(zodiac_ns/addon_ns);
+check(m,zodiac_sum,addon_sum);
+m.zodiac_times.push_back(zodiac_ns);
+m.addon_times.push_back(addon_ns);
+m.ratios.push_back(zodiac_ns/addon_ns);
 }
-zodiac.discard();
-addon.discard();
-const double units=static_cast<double>(reps)*job.items;
+
+std::string result_line(const Measurement& m)
+{
+const double units=static_cast<double>(m.reps)*m.job->items;
 std::string line="{\"op\":\"";
-line.append(job.name).append("\",\"new_ns\":");
-append_number(line,median(zodiac_times)/units);
+line.append(m.job->name).append("\",\"new_ns\":");
+append_number(line,median(m.zodiac_times)/units);
 line.append(",\"addon_ns\":");
-append_number(line,median(addon_times)/units);
+append_number(line,median(m.addon_times)/units);
 line.append(",\"ratio\":");
 char digits[32];
-line.append(digits,std::to_chars(digits,digits+sizeof digits,median(ratios),std::chars_format::fixed,4).ptr);
+line.append(digits,std::to_chars(digits,digits+sizeof digits,median(m.ratios),std::chars_format::fixed,4).ptr);
 line.append("}\n");
 return line;
 }
@@ -482,8 +518,8 @@ while(std::chrono::steady_clock::now()<until)spin=spin+1;
 
 int main(int argc,char** argv)
 {
-int rounds=31;
-int target_ms=8;
+int rounds=101;
+int target_ms=1;
 std::vector<std::string> only;
 const char* out_path=nullptr;
 bool list=false;
@@ -517,24 +553,28 @@ if(!out)fail(1,std::string("cannot write ")+out_path+": "+std::strerror(errno));
 }
 quiet_process();
 asPrepareMultithread();
-asIScriptEngine* zodiac_engine=make_engine(true);
-asIScriptEngine* addon_engine=make_engine(false);
 const double target_ns=target_ms*1e6;
 {
-// The sides release their contexts before the engines shut down.
-Side zodiac(zodiac_engine,"zodiac");
-Side addon(addon_engine,"add-on");
+// Each measurement's sides shut their engines down when the deque goes out of scope (a deque never moves its elements).
+std::deque<Measurement> measurements;
 for(const Job& job:jobs){
 if(!only.empty()&&std::find(only.begin(),only.end(),job.name)==only.end())continue;
-const std::string line=measure(job,zodiac,addon,rounds,target_ns);
-std::fwrite(line.data(),1,line.size(),stdout);
-std::fflush(stdout);
-if(out&&(std::fwrite(line.data(),1,line.size(),out)!=line.size()||std::fflush(out)!=0))fail(1,std::string("cannot write ")+out_path);
+measurements.emplace_back(job,rounds);
 }
+for(Measurement& m:measurements)calibrate(m,target_ns);
+// The rounds go over every operation in turn, so each operation's rounds spread over the whole run (see the contract).
+for(int round=0;round<rounds;++round){
+for(Measurement& m:measurements)measure_round(m,round);
+if((round+1)%10==0||round+1==rounds)std::fprintf(stderr,"bench_types: round %d of %d\n",round+1,rounds);
+}
+for(const Measurement& m:measurements){
+const std::string line=result_line(m);
+std::fwrite(line.data(),1,line.size(),stdout);
+if(out&&std::fwrite(line.data(),1,line.size(),out)!=line.size())fail(1,std::string("cannot write ")+out_path);
+}
+std::fflush(stdout);
 }
 if(out&&std::fclose(out)!=0)fail(1,std::string("cannot write ")+out_path);
-zodiac_engine->ShutDownAndRelease();
-addon_engine->ShutDownAndRelease();
 asUnprepareMultithread();
 return 0;
 }

@@ -150,6 +150,11 @@ std::string_view bytes() const noexcept
 {
 return {data(),size_bytes()};
 }
+// True when the text lives inside the object (no heap block): copying such a string never allocates, so it cannot throw.
+bool is_inline() const noexcept
+{
+return !is_heap();
+}
 int byte_length() const noexcept
 {
 return static_cast<int>(size_bytes());
