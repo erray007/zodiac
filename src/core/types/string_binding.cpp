@@ -323,9 +323,23 @@ const std::uint8_t& byte_at(const String& self,int index) noexcept
 if(static_cast<std::uint32_t>(index)<static_cast<std::uint32_t>(self.byte_length()))return *reinterpret_cast<const std::uint8_t*>(self.data()+index);
 return byte_out_of_range(self);
 }
-int find(const String& self,const String& needle,int start)
+[[gnu::noinline]] int find_any(const String& self,const String& needle,int start) noexcept
 {
+try{
 return value_or_raise(self.find(needle.bytes(),start),self);
+}
+catch(...){
+raise_current_exception();
+}
+return -1;
+}
+// Text with one byte per character and a valid start goes straight to find_simple, without an exception frame (it
+// never allocates); everything else (multibyte text, which may build its index, or a bad start) takes find_any.
+int find(const String& self,const String& needle,int start) noexcept
+{
+const int length=self.length();
+if(length==self.byte_length()&&static_cast<unsigned>(start)<=static_cast<unsigned>(length))return self.find_simple(needle.data(),static_cast<std::size_t>(needle.byte_length()),start);
+return find_any(self,needle,start);
 }
 int rfind(const String& self,const String& needle,int start)
 {
@@ -598,7 +612,7 @@ r.method("int byte_length() const",asMETHOD(String,byte_length),asCALL_THISCALL)
 r.method("bool empty() const",asMETHOD(String,empty),asCALL_THISCALL);
 r.method("const uint &code_at(int) const",asFUNCTION(code_at));
 r.method("const uint8 &byte_at(int) const",asFUNCTION(byte_at));
-r.method("int find(const string &in needle, int start = 0) const",asFUNCTION(guarded<&find>::call));
+r.method("int find(const string &in needle, int start = 0) const",asFUNCTION(find));
 r.method("int rfind(const string &in needle, int start = -1) const",asFUNCTION(guarded<&rfind>::call));
 r.method("bool contains(const string &in) const",asFUNCTION(contains));
 r.method("bool starts_with(const string &in) const",asFUNCTION(starts_with));

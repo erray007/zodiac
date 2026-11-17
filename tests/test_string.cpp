@@ -477,6 +477,52 @@ CHECK(s.contains(needle)==(matches>0));
 }
 }
 
+TEST_CASE("one-byte find agrees with std::string_view::find at every length, start and position")
+{
+// A one-byte needle takes its own 16-byte scan with an overlapping, shifted last block: the byte is placed at every
+// position of texts up to 70 bytes and searched from every start, with and without a second copy after it.
+for(std::size_t size=0;size<=70;++size){
+for(std::size_t at=0;at<=size;++at){
+std::string text(size,'a');
+if(at<size)text[at]='z';
+if(at+5<size)text[at+5]='z';
+const String s(text);
+for(std::size_t start=0;start<=size;++start){
+const std::size_t expected=std::string_view(text).find('z',start);
+CAPTURE(size);
+CAPTURE(at);
+CAPTURE(start);
+CHECK(s.find("z",static_cast<int>(start))==(expected==std::string_view::npos?-1:static_cast<int>(expected)));
+}
+}
+}
+}
+
+TEST_CASE("copies, appends and concatenations keep every byte at every length")
+{
+// The inline copy handles each size class (1, 2-3, 4-7, 8-15, 16-32, 33-64 bytes) with overlapping loads and stores, and
+// memcpy above; every length up to 130 is checked byte for byte, inline and on the heap, at odd offsets as well.
+std::string source;
+for(int i=0;i<140;++i)source.push_back(static_cast<char>('!'+(i*7)%90));
+for(std::size_t n=0;n<=130;++n){
+CAPTURE(n);
+const std::string_view piece=std::string_view(source).substr(3,n);
+const String text(piece);
+CHECK(text.bytes()==piece);
+const String copy(text);
+CHECK(copy.bytes()==piece);
+String assigned("x");
+assigned=text;
+CHECK(assigned.bytes()==piece);
+String appended("ab");
+appended.append(piece);
+CHECK(appended.bytes()==std::string("ab")+std::string(piece));
+const String joined=text+String(piece);
+CHECK(joined.bytes()==std::string(piece)+std::string(piece));
+CHECK(joined.c_str()[joined.byte_length()]=='\0');
+}
+}
+
 TEST_CASE("heap blocks are recycled per thread, across threads and size classes")
 {
 // Sizes around every 16-byte block class and past the cached range; blocks are dropped, reused, grown in place (the

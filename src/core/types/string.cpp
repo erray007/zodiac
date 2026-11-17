@@ -48,25 +48,38 @@ inline void store_word(char* p,std::uint64_t word) noexcept
 {
 std::memcpy(p,&word,8);
 }
-// memcpy for ranges that do not overlap. Up to 32 bytes are copied inline with overlapping word loads that stay inside the
-// source (the C runtime's memcpy costs a call through the import table, more than the copy itself for the short pieces
-// scripts concatenate); longer ranges go to memcpy.
+// memcpy for ranges that do not overlap. Up to 64 bytes are copied inline with overlapping loads that stay inside the
+// source, all done before the stores (the C runtime's memcpy costs a call through the import table or the PLT, more than
+// the copy itself for the short pieces scripts copy and concatenate); longer ranges go to memcpy.
 inline void copy_bytes(char* d,const char* s,std::size_t n) noexcept
 {
-if(n>32){
+if(n>64){
 std::memcpy(d,s,n);
 return;
 }
 const byte* from=ubytes(s);
-if(n>=8){
-if(n>16){
-const std::uint64_t a=load_word(from),b=load_word(from+8),c=load_word(from+n-16),e=load_word(from+n-8);
-store_word(d,a);
-store_word(d+8,b);
-store_word(d+n-16,c);
-store_word(d+n-8,e);
+if(n>=16){
+#if defined(__SSE2__)
+const __m128i a=_mm_loadu_si128(reinterpret_cast<const __m128i*>(from));
+const __m128i b=_mm_loadu_si128(reinterpret_cast<const __m128i*>(from+n-16));
+if(n>32){
+const __m128i c=_mm_loadu_si128(reinterpret_cast<const __m128i*>(from+16));
+const __m128i e=_mm_loadu_si128(reinterpret_cast<const __m128i*>(from+n-32));
+_mm_storeu_si128(reinterpret_cast<__m128i*>(d),a);
+_mm_storeu_si128(reinterpret_cast<__m128i*>(d+16),c);
+_mm_storeu_si128(reinterpret_cast<__m128i*>(d+n-32),e);
+_mm_storeu_si128(reinterpret_cast<__m128i*>(d+n-16),b);
 return;
 }
+_mm_storeu_si128(reinterpret_cast<__m128i*>(d),a);
+_mm_storeu_si128(reinterpret_cast<__m128i*>(d+n-16),b);
+return;
+#else
+std::memcpy(d,s,n);
+return;
+#endif
+}
+if(n>=8){
 const std::uint64_t a=load_word(from),b=load_word(from+n-8);
 store_word(d,a);
 store_word(d+n-8,b);
@@ -254,47 +267,120 @@ if(!is_continuation(*start))return static_cast<std::ptrdiff_t>(char_size(start,e
 }
 return e-1;
 }
-// Byte offset of the first occurrence of needle at or after from, or npos (std::string_view::find's result).
-// With SSE2 (every x86-64 target) it tests 16 candidate starts per step against the needle's first and last bytes and
-// compares the bytes between only where both match; inline compares replace libc++'s memchr and memcmp calls, which
-// dominate for the short needles and texts scripts search. Other targets use std::string_view::find.
-std::size_t search(std::string_view text,std::string_view needle,std::size_t from) noexcept
+// Substring search. libc++'s find is a memchr for the first byte and a memcmp per hit, two calls that dominate for the
+// short needles and texts scripts search (glibc's are fast, the Windows C runtime's are not). With SSE2 (every x86-64
+// target) search tests 16 candidate starts per step against the needle's first and last bytes, compares a candidate
+// with overlapping word loads, and ends on an overlapping block masked to the candidates not yet tested instead of a
+// byte loop; texts too short for one block are scanned byte by byte. Every load stays inside the text and the needle.
+// Other targets use std::string_view::find. Its arguments are four scalars so both x86-64 ABIs pass them in registers.
+inline std::uint32_t load_u32(const byte* p) noexcept
+{
+std::uint32_t value;
+std::memcpy(&value,p,4);
+return value;
+}
+inline std::uint16_t load_u16(const byte* p) noexcept
+{
+std::uint16_t value;
+std::memcpy(&value,p,2);
+return value;
+}
+// same_bytes for n > 16, out of line: long needles are rare, and keeping their loop out of search leaves its scan with
+// few live registers.
+[[gnu::noinline]] bool same_long_bytes(const byte* a,const byte* b,std::size_t n) noexcept
 {
 #if defined(__SSE2__)
-const std::size_t size=text.size();
-const std::size_t n=needle.size();
-if(from>size||n>size-from)return npos;
-if(n==0)return from;
-const byte* t=ubytes(text.data());
-const byte* s=ubytes(needle.data());
-// Candidate starts are [from, stop); every load below stays inside the text.
+for(std::size_t k=0;k+16<n;k+=16){
+const __m128i x=_mm_loadu_si128(reinterpret_cast<const __m128i*>(a+k));
+const __m128i y=_mm_loadu_si128(reinterpret_cast<const __m128i*>(b+k));
+if(_mm_movemask_epi8(_mm_cmpeq_epi8(x,y))!=0xFFFF)return false;
+}
+const __m128i x=_mm_loadu_si128(reinterpret_cast<const __m128i*>(a+n-16));
+const __m128i y=_mm_loadu_si128(reinterpret_cast<const __m128i*>(b+n-16));
+return _mm_movemask_epi8(_mm_cmpeq_epi8(x,y))==0xFFFF;
+#else
+return std::memcmp(a,b,n)==0;
+#endif
+}
+// True when the n bytes at a and b are equal (n >= 2).
+inline bool same_bytes(const byte* a,const byte* b,std::size_t n) noexcept
+{
+if(n>16)return same_long_bytes(a,b,n);
+if(n>=8)return ((load_word(a)^load_word(b))|(load_word(a+n-8)^load_word(b+n-8)))==0;
+if(n>=4)return ((load_u32(a)^load_u32(b))|(load_u32(a+n-4)^load_u32(b+n-4)))==0;
+return ((load_u16(a)^load_u16(b))|(load_u16(a+n-2)^load_u16(b+n-2)))==0;
+}
+#if defined(__SSE2__)
+// Bit k set when the candidate start at p+k has the needle's first byte there and its last byte at last+k.
+inline unsigned candidates(const byte* p,const byte* last,__m128i first_byte,__m128i last_byte) noexcept
+{
+const __m128i a=_mm_cmpeq_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p)),first_byte);
+const __m128i b=_mm_cmpeq_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(last)),last_byte);
+return static_cast<unsigned>(_mm_movemask_epi8(_mm_and_si128(a,b)));
+}
+// Offset of the first byte c in t[0, size), or npos. Out of line, so search's one-byte case is a tail call that does not
+// pay for the registers of its other loops.
+[[gnu::noinline]] std::size_t find_byte(const byte* t,std::size_t size,byte c) noexcept
+{
+const __m128i v=_mm_set1_epi8(static_cast<char>(c));
+std::size_t i=0;
+for(;i+16<=size;i+=16){
+const auto mask=static_cast<unsigned>(_mm_movemask_epi8(_mm_cmpeq_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(t+i)),v)));
+if(mask)return i+static_cast<std::size_t>(std::countr_zero(mask));
+}
+if(i==size)return npos;
+if(size>=16){
+// The last block overlaps the one before; the shift drops the i-base bytes already tested.
+const std::size_t base=size-16;
+const auto mask=static_cast<unsigned>(_mm_movemask_epi8(_mm_cmpeq_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(t+base)),v)))>>(i-base);
+return mask?i+static_cast<std::size_t>(std::countr_zero(mask)):npos;
+}
+for(;i<size;++i)if(t[i]==c)return i;
+return npos;
+}
+#endif
+// Offset of the first occurrence of s[0, n) in t[0, size), or npos; an empty needle matches at 0.
+std::size_t search(const byte* t,std::size_t size,const byte* s,std::size_t n) noexcept
+{
+if(n>size)return npos;
+if(n==0)return 0;
+#if defined(__SSE2__)
+if(n==1)return find_byte(t,size,s[0]);
+// Candidate starts are [0, stop); candidate k's last byte is last[k].
 const std::size_t stop=size-n+1;
-std::size_t i=from;
-const byte head=s[0];
-const byte tail=s[n-1];
-auto matches_inside=[t,s,n](std::size_t at) noexcept{
-for(std::size_t k=1;k+1<n;++k)if(t[at+k]!=s[k])return false;
-return true;
-};
-if(stop-i>=16){
-const __m128i first=_mm_set1_epi8(static_cast<char>(head));
-const __m128i last=_mm_set1_epi8(static_cast<char>(tail));
+const byte* last=t+n-1;
+const __m128i first_byte=_mm_set1_epi8(static_cast<char>(s[0]));
+const __m128i last_byte=_mm_set1_epi8(static_cast<char>(s[n-1]));
+std::size_t i=0;
 for(;i+16<=stop;i+=16){
-const __m128i a=_mm_loadu_si128(reinterpret_cast<const __m128i*>(t+i));
-const __m128i b=_mm_loadu_si128(reinterpret_cast<const __m128i*>(t+i+n-1));
-auto mask=static_cast<unsigned>(_mm_movemask_epi8(_mm_and_si128(_mm_cmpeq_epi8(a,first),_mm_cmpeq_epi8(b,last))));
-while(mask){
+for(unsigned mask=candidates(t+i,last+i,first_byte,last_byte);mask;mask&=mask-1){
 const std::size_t at=i+static_cast<std::size_t>(std::countr_zero(mask));
-if(matches_inside(at))return at;
-mask&=mask-1;
+if(same_bytes(t+at,s,n))return at;
 }
 }
+if(i==stop)return npos;
+if(stop>=16){
+// The last block overlaps the one before (its loads end at the text's last byte); the shift drops the candidates
+// already tested.
+const std::size_t base=stop-16;
+for(unsigned mask=candidates(t+base,last+base,first_byte,last_byte)>>(i-base);mask;mask&=mask-1){
+const std::size_t at=i+static_cast<std::size_t>(std::countr_zero(mask));
+if(same_bytes(t+at,s,n))return at;
 }
-for(;i<stop;++i)if(t[i]==head&&t[i+n-1]==tail&&matches_inside(i))return i;
+return npos;
+}
+for(;i<stop;++i)if(t[i]==s[0]&&last[i]==s[n-1]&&same_bytes(t+i,s,n))return i;
 return npos;
 #else
-return text.find(needle,from);
+return std::string_view(reinterpret_cast<const char*>(t),size).find(std::string_view(reinterpret_cast<const char*>(s),n));
 #endif
+}
+// Byte offset of the first occurrence of needle at or after from, or npos (std::string_view::find's result).
+inline std::size_t search(std::string_view text,std::string_view needle,std::size_t from) noexcept
+{
+if(from>text.size())return npos;
+const std::size_t pos=search(ubytes(text.data())+from,text.size()-from,ubytes(needle.data()),needle.size());
+return pos==npos?npos:pos+from;
 }
 // Byte offset of the first match at or after from that covers whole characters.
 std::size_t find_aligned(std::string_view text,std::string_view needle,std::size_t from) noexcept
@@ -1269,16 +1355,16 @@ if(index<0||index>=byte_length())return std::unexpected(StringError::index_out_o
 return static_cast<std::uint8_t>(data()[index]);
 }
 
-std::expected<int,StringError> String::find(std::string_view needle,int start) const
+int String::find_simple(const char* needle,std::size_t size,int start) const noexcept
 {
-const int length=this->length();
-if(start<0||start>length)return std::unexpected(StringError::index_out_of_range);
-if(needle.empty())return start;
-if(static_cast<std::uint32_t>(length)==size_bytes()){
-// Every character is one byte: indices are byte offsets and every offset is a character boundary.
-const std::size_t pos=search(bytes(),needle,static_cast<std::size_t>(start));
-return pos==npos?-1:static_cast<int>(pos);
+const auto from=static_cast<std::size_t>(start);
+const std::size_t pos=search(ubytes(data())+from,std::size_t{size_bytes()}-from,ubytes(needle),size);
+return pos==npos?-1:static_cast<int>(pos+from);
 }
+
+std::expected<int,StringError> String::find_multibyte(std::string_view needle,int start) const
+{
+if(needle.empty())return start;
 const std::size_t pos=find_aligned(bytes(),needle,char_to_byte(static_cast<std::uint32_t>(start)));
 if(pos==npos)return -1;
 return static_cast<int>(byte_to_char(static_cast<std::uint32_t>(pos)));
