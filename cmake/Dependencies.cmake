@@ -53,18 +53,26 @@ ${AS_CALLFUNC_SOURCES}
 "${AS_ADDON}/scriptbuilder/scriptbuilder.cpp"
 "${AS_ADDON}/scripthelper/scripthelper.cpp"
 )
-target_include_directories(angelscript SYSTEM PUBLIC "${angelscript_sdk_SOURCE_DIR}/angelscript/include" "${AS_ADDON}")
+# Users of angelscript see only the headers of the add-ons it holds (scriptbuilder, scripthelper), copied into an include
+# directory of their own; the add_on directory itself, with the sample add-ons' headers, is public only on
+# angelscript_sample_addons below.
+set(AS_ADDON_INCLUDE "${CMAKE_BINARY_DIR}/angelscript_addon_include")
+foreach(header scriptbuilder/scriptbuilder.h scripthelper/scripthelper.h)
+configure_file("${AS_ADDON}/${header}" "${AS_ADDON_INCLUDE}/${header}" COPYONLY)
+endforeach()
+target_include_directories(angelscript SYSTEM PUBLIC "${angelscript_sdk_SOURCE_DIR}/angelscript/include" "${AS_ADDON_INCLUDE}")
 find_package(Threads REQUIRED)
 target_link_libraries(angelscript PUBLIC Threads::Threads)
 set_target_properties(angelscript PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_options(angelscript PRIVATE -w)
 # The sample add-ons Zodiac's string, array<T> and dictionary replace (spec 8.4). Only tests/bench links them, to measure Zodiac's types
-# against them; games, the core and the kit never get them (test_angelscript_has_no_sample_addons checks lib/release/libangelscript.a).
+# against them; games, the core and the kit never get them (test_angelscript_has_no_sample_addons checks every archive of lib/release).
 add_library(angelscript_sample_addons STATIC
 "${AS_ADDON}/scriptstdstring/scriptstdstring.cpp"
 "${AS_ADDON}/scriptstdstring/scriptstdstring_utils.cpp"
 "${AS_ADDON}/scriptarray/scriptarray.cpp"
 "${AS_ADDON}/scriptdictionary/scriptdictionary.cpp"
 )
+target_include_directories(angelscript_sample_addons SYSTEM PUBLIC "${AS_ADDON}")
 target_link_libraries(angelscript_sample_addons PUBLIC angelscript)
 target_compile_options(angelscript_sample_addons PRIVATE -w)

@@ -17,7 +17,8 @@
 //   go, and an operation measured in one stretch would read whatever that second's state was.
 // - Output: once every round is done, one JSON line per operation to stdout (and to --out when given):
 //   {"op":name,"new_ns":n,"addon_ns":n,"ratio":r}, new_ns and addon_ns the median nanoseconds per unit of work of each
-//   side, ratio the median of the per-round ratios new/addon. tools/check_bench.py gates the lines (ratio at most 1.05).
+//   side, ratio the median of the per-round ratios new/addon. tools/check_bench.py gates the lines (ratio at most 1.05,
+//   and exactly the operations --list prints, the one list of them).
 //   Progress goes to stderr every 10 rounds.
 // - Usage: bench_types [--rounds N] [--target-ms N] [--op NAME]... [--out PATH] [--detail] [--list]. Defaults: 101 rounds
 //   (at least 15 are required, spec 8.4) of 1 ms per side: many short rounds pair the two sides closely in time, and the

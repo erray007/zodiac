@@ -1,27 +1,60 @@
-# cmake -DNM=<nm> -DARCHIVE=<libangelscript.a> -P check_no_sample_addons.cmake
+# cmake -DNM=<nm> [-DARCHIVE_DIR=<dir>] [-DARCHIVES=<a.a|b.a>] -P check_no_sample_addons.cmake
 #
-# The test test_angelscript_has_no_sample_addons (spec 8.4): fails unless ARCHIVE, the AngelScript library games link (the kit's
-# lib/release/libangelscript.a on Windows), defines asCreateScriptEngine (so nm read its symbols) and holds no symbol of the sample add-ons
-# Zodiac's types replace: scriptstdstring (RegisterStdString*), scriptarray (RegisterScriptArray, CScriptArray) and scriptdictionary
+# The test test_angelscript_has_no_sample_addons (spec 8.4): the archives games link hold no symbol of the sample add-ons Zodiac's types
+# replace: scriptstdstring (RegisterStdString*), scriptarray (RegisterScriptArray, CScriptArray) and scriptdictionary
 # (RegisterScriptDictionary*, CScriptDictionary, CScriptDictValue). Those live in angelscript_sample_addons, which only tests/bench links.
-foreach(variable NM ARCHIVE)
-if(NOT DEFINED ${variable} OR "${${variable}}" STREQUAL "")
-message(FATAL_ERROR "check_no_sample_addons: ${variable} is not set")
+# The archives checked are every *.a directly in ARCHIVE_DIR (the kit's lib/release on Windows: libangelscript.a,
+# libzodiac_core_release.a, libzodiac_release_stub.a and any other the kit stages there; lib/release/crt holds the toolchain's own runtime
+# and is not ours) plus every file in ARCHIVES. It fails unless at least one archive is checked, nm reads every one of them (each lists
+# defined symbols), one of them defines asCreateScriptEngine (so the AngelScript library is among them), and none holds an add-on symbol;
+# each offending archive is named with its symbols.
+if(NOT DEFINED NM OR "${NM}" STREQUAL "")
+message(FATAL_ERROR "check_no_sample_addons: NM is not set")
 endif()
-endforeach()
-if(NOT EXISTS "${ARCHIVE}")
-message(FATAL_ERROR "check_no_sample_addons: ${ARCHIVE} does not exist")
+set(archives "")
+if(DEFINED ARCHIVE_DIR AND NOT "${ARCHIVE_DIR}" STREQUAL "")
+if(NOT IS_DIRECTORY "${ARCHIVE_DIR}")
+message(FATAL_ERROR "check_no_sample_addons: ${ARCHIVE_DIR} is not a directory")
 endif()
-execute_process(COMMAND "${NM}" "${ARCHIVE}" RESULT_VARIABLE result OUTPUT_VARIABLE symbols ERROR_VARIABLE errors)
+file(GLOB staged LIST_DIRECTORIES false "${ARCHIVE_DIR}/*.a")
+list(APPEND archives ${staged})
+endif()
+if(DEFINED ARCHIVES)
+# Separated by | so the list survives add_test's command line.
+string(REPLACE "|" ";" listed "${ARCHIVES}")
+list(APPEND archives ${listed})
+endif()
+list(REMOVE_DUPLICATES archives)
+if(NOT archives)
+message(FATAL_ERROR "check_no_sample_addons: no archive to check (set ARCHIVE_DIR or ARCHIVES)")
+endif()
+set(engine_found FALSE)
+set(failures "")
+foreach(archive IN LISTS archives)
+if(NOT EXISTS "${archive}")
+message(FATAL_ERROR "check_no_sample_addons: ${archive} does not exist")
+endif()
+execute_process(COMMAND "${NM}" "${archive}" RESULT_VARIABLE result OUTPUT_VARIABLE symbols ERROR_VARIABLE errors)
 if(NOT result EQUAL 0)
-message(FATAL_ERROR "check_no_sample_addons: ${NM} failed on ${ARCHIVE} (${result}): ${errors}")
+message(FATAL_ERROR "check_no_sample_addons: ${NM} failed on ${archive} (${result}): ${errors}")
 endif()
-if(NOT symbols MATCHES "asCreateScriptEngine")
-message(FATAL_ERROR "check_no_sample_addons: ${ARCHIVE} does not define asCreateScriptEngine, so its symbols were not read")
+if(NOT symbols MATCHES "[\r\n][0-9a-fA-F]* *[TDBR] ")
+message(FATAL_ERROR "check_no_sample_addons: ${NM} listed no defined symbol in ${archive}, so its symbols were not read")
+endif()
+if(symbols MATCHES " T _?asCreateScriptEngine[\r\n]")
+set(engine_found TRUE)
 endif()
 string(REGEX MATCHALL "[^\r\n]*(RegisterStdString|RegisterScriptArray|RegisterScriptDictionary|CScriptArray|CScriptDictionary|CScriptDictValue)[^\r\n]*" found "${symbols}")
 if(found)
 list(JOIN found "\n" shown)
-message(FATAL_ERROR "check_no_sample_addons: ${ARCHIVE} holds sample add-on symbols:\n${shown}")
+string(APPEND failures "\n${archive} holds sample add-on symbols:\n${shown}")
 endif()
-message(STATUS "check_no_sample_addons: ${ARCHIVE} holds no sample add-on symbol")
+endforeach()
+if(failures)
+message(FATAL_ERROR "check_no_sample_addons:${failures}")
+endif()
+if(NOT engine_found)
+message(FATAL_ERROR "check_no_sample_addons: no checked archive defines asCreateScriptEngine, so the AngelScript library was not among them")
+endif()
+list(LENGTH archives count)
+message(STATUS "check_no_sample_addons: ${count} archive(s) hold no sample add-on symbol: ${archives}")

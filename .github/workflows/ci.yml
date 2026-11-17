@@ -37,9 +37,11 @@ jobs:
         run: python bootstrap.py
       - name: Build and test
         run: .tools/cmake/bin/cmake --workflow --preset windows
-      # The speed gate of spec 8.4 on an optimized build: Zodiac's types against the sample add-ons. A failing run is measured
-      # once more (shared runners are noisy) before the job fails; each run's table, and each operation's ratio per engine and
-      # context (--detail), is in the log.
+      # The speed gate of spec 8.4 on an optimized build: Zodiac's types against the sample add-ons, every operation of
+      # bench_types --list. A failing run is measured once more (shared runners are noisy) before the job fails. Each run's
+      # table and its --detail lines (each operation's ratio per engine and context) are in the log and, on failure, in the
+      # bench artifact: an operation slower on every engine and context is a real regression, one that only a few placements
+      # push over the limit is noise.
       - name: Build the benchmark on the release preset
         run: |
           .tools/cmake/bin/cmake --preset windows-release
@@ -48,12 +50,29 @@ jobs:
         shell: bash
         run: |
           bench=build/windows-release/tests/bench/bench_types.exe
-          "$bench" --detail --out bench.json
-          if ! python -I tools/check_bench.py bench.json; then
+          "$bench" --list > bench-ops.txt
+          run_bench() {
+            local status=0
+            "$bench" --detail --out "$1.json" 2> "$1-stderr.txt" || status=$?
+            cat "$1-stderr.txt"
+            return $status
+          }
+          run_bench bench
+          if ! python -I tools/check_bench.py bench.json --expected bench-ops.txt; then
             echo "Measuring again once before failing."
-            "$bench" --detail --out bench.json
-            python -I tools/check_bench.py bench.json
+            run_bench bench-retry
+            python -I tools/check_bench.py bench-retry.json --expected bench-ops.txt
           fi
+      - name: Upload the benchmark results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-windows
+          path: |
+            bench*.json
+            bench*-stderr.txt
+            bench-ops.txt
+          if-no-files-found: ignore
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -104,7 +123,8 @@ jobs:
         env:
           ZODIAC_LONG_TESTS: "1"
         run: .tools/cmake/bin/cmake --workflow --preset linux
-      # The speed gate of spec 8.4 on an optimized build, as in the windows job.
+      # The speed gate of spec 8.4 on an optimized build, as in the windows job (see its comment on --detail for telling
+      # noise from a real regression).
       - name: Build the benchmark on the release preset
         run: |
           .tools/cmake/bin/cmake --preset linux-release
@@ -112,12 +132,29 @@ jobs:
       - name: Benchmark against the sample add-ons
         run: |
           bench=build/linux-release/tests/bench/bench_types
-          "$bench" --detail --out bench.json
-          if ! python -I tools/check_bench.py bench.json; then
+          "$bench" --list > bench-ops.txt
+          run_bench() {
+            local status=0
+            "$bench" --detail --out "$1.json" 2> "$1-stderr.txt" || status=$?
+            cat "$1-stderr.txt"
+            return $status
+          }
+          run_bench bench
+          if ! python -I tools/check_bench.py bench.json --expected bench-ops.txt; then
             echo "Measuring again once before failing."
-            "$bench" --detail --out bench.json
-            python -I tools/check_bench.py bench.json
+            run_bench bench-retry
+            python -I tools/check_bench.py bench-retry.json --expected bench-ops.txt
           fi
+      - name: Upload the benchmark results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-linux
+          path: |
+            bench*.json
+            bench*-stderr.txt
+            bench-ops.txt
+          if-no-files-found: ignore
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
