@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Checks bench_types' results against the speed gate of spec 8.4: no Zodiac type may be more than 5 % slower than its sample add-on.
 
-    python -I tools/check_bench.py <results.json>
+    python -I tools/check_bench.py <results.json> --expected <ops.txt>
 
-The file holds one JSON object per line, {"op": name, "new_ns": n, "addon_ns": n, "ratio": r}, as bench_types writes it: new_ns and
-addon_ns are the median nanoseconds per iteration of Zodiac's types and of the add-ons, ratio the median of the per-round ratios new/addon.
-Blank lines are ignored. Prints a table of every operation to stdout.
+The results file holds one JSON object per line, {"op": name, "new_ns": n, "addon_ns": n, "ratio": r}, as bench_types writes it: new_ns
+and addon_ns are the median nanoseconds per iteration of Zodiac's types and of the add-ons, ratio the median of the per-round ratios
+new/addon. The expected file holds one operation name per line, as `bench_types --list` prints them (the bench is the one source of the
+operation list), and the results must cover exactly those operations. Blank lines are ignored in both. Prints a table of every operation
+to stdout.
 
-Exit codes: 0 every ratio is at most LIMIT; 1 some ratio is above LIMIT (each such operation is named on stderr); 2 the file is missing or
-unreadable, a line is not such an object (malformed JSON, a missing or non-numeric field, a negative or non-finite number, an empty op name),
-an operation appears twice, or the file holds no results.
+Exit codes: 0 every ratio is at most LIMIT; 1 some ratio is above LIMIT (each such operation is named on stderr); 2 either file is missing
+or unreadable, a line is not such an object (malformed JSON, a missing or non-numeric field, a negative or non-finite number, an empty op
+name), an operation appears twice, the file holds no results, the expected list is empty, or an expected operation is missing or an
+unknown one is present (each named on stderr).
 """
 
 import argparse
@@ -65,6 +68,23 @@ def parse(text: str) -> list:
     return results
 
 
+def check_complete(results: list, expected_text: str) -> None:
+    """Raises BenchFormatError unless the results cover exactly the operations listed in expected_text."""
+    expected = [name.strip() for name in expected_text.splitlines() if name.strip()]
+    if not expected:
+        raise BenchFormatError("the expected list holds no operations")
+    found = [op for op, *_ in results]
+    missing = [name for name in expected if name not in set(found)]
+    unknown = [op for op in found if op not in set(expected)]
+    problems = []
+    if missing:
+        problems.append("missing operation(s): " + ", ".join(missing))
+    if unknown:
+        problems.append("unknown operation(s): " + ", ".join(unknown))
+    if problems:
+        raise BenchFormatError("; ".join(problems))
+
+
 def table(results: list) -> str:
     width = max(len("op"), max(len(op) for op, *_ in results))
     lines = [f"{'op':<{width}}  {'new_ns':>12}  {'addon_ns':>12}  {'ratio':>6}"]
@@ -77,14 +97,18 @@ def table(results: list) -> str:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Fail when a Zodiac type is more than 5 % slower than its sample add-on.")
     parser.add_argument("results", type=Path, help="bench_types' JSON lines")
+    parser.add_argument("--expected", type=Path, required=True, help="the operation names, one per line (bench_types --list)")
     args = parser.parse_args(argv)
+    texts = []
+    for path in (args.results, args.expected):
+        try:
+            texts.append(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as error:
+            print(f"check_bench: cannot read {path}: {error}", file=sys.stderr)
+            return 2
     try:
-        text = args.results.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as error:
-        print(f"check_bench: cannot read {args.results}: {error}", file=sys.stderr)
-        return 2
-    try:
-        results = parse(text)
+        results = parse(texts[0])
+        check_complete(results, texts[1])
     except BenchFormatError as error:
         print(f"check_bench: {args.results}: {error}", file=sys.stderr)
         return 2

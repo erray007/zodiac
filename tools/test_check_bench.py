@@ -1,10 +1,12 @@
 """Tests for tools/check_bench.py, the gate over bench_types' JSON lines (spec 8.4).
 
 Contract under test: ratios above 1.05 fail with exit code 1 and name every such operation, everything at or below passes
-with exit code 0, and any input that is not a complete set of well-formed result lines fails with exit code 2."""
+with exit code 0, and any input that is not a complete set of well-formed result lines fails with exit code 2: complete
+means exactly the operations of the --expected list (bench_types --list), and a missing or unknown one is named."""
 
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -26,13 +28,46 @@ class CheckBenchTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.path = Path(self._tmp.name) / "bench.json"
 
-    def run_main(self, text):
+    def run_main(self, text, expected=None):
+        """Runs check_bench on text; expected is the op list bench_types --list would print (by default the ops in text)."""
         self.path.write_text(text, encoding="utf-8")
+        if expected is None:
+            expected = list(dict.fromkeys(re.findall(r'"op": "([^"]*)"', text)))
+        ops = Path(self._tmp.name) / "ops.txt"
+        ops.write_text("".join(name + "\n" for name in expected), encoding="utf-8")
         out = io.StringIO()
         err = io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
-            code = check_bench.main([str(self.path)])
+            code = check_bench.main([str(self.path), "--expected", str(ops)])
         return code, out.getvalue(), err.getvalue()
+
+    def test_a_missing_op_fails_naming_it(self):
+        code, _, err = self.run_main(line("string_find", 0.5) + "\n", expected=["string_find", "array_sort_int", "dict_insert_10"])
+        self.assertEqual(code, 2)
+        self.assertIn("array_sort_int", err)
+        self.assertIn("dict_insert_10", err)
+        self.assertNotIn("string_find", err)
+
+    def test_an_unknown_op_fails_naming_it(self):
+        code, _, err = self.run_main(line("string_find", 0.5) + "\n" + line("string_fnid", 0.5) + "\n", expected=["string_find"])
+        self.assertEqual(code, 2)
+        self.assertIn("string_fnid", err)
+
+    def test_the_expected_list_is_required_and_readable(self):
+        self.path.write_text(line("string_find", 0.5) + "\n", encoding="utf-8")
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = check_bench.main([str(self.path), "--expected", str(Path(self._tmp.name) / "missing.txt")])
+        self.assertEqual(code, 2)
+        self.assertIn("missing.txt", err.getvalue())
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            check_bench.main([str(self.path)])
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_an_empty_expected_list_fails(self):
+        code, _, err = self.run_main(line("string_find", 0.5) + "\n", expected=[])
+        self.assertEqual(code, 2)
+        self.assertIn("no operations", err)
 
     def test_all_ratios_at_or_below_the_limit_pass(self):
         code, out, err = self.run_main("\n".join([line("string_find", 0.5), line("array_sort_int", 1.0), line("dict_insert_10", 1.05)]) + "\n")
@@ -77,8 +112,10 @@ class CheckBenchTests(unittest.TestCase):
     def test_a_missing_file_fails(self):
         out = io.StringIO()
         err = io.StringIO()
+        ops = Path(self._tmp.name) / "ops.txt"
+        ops.write_text("string_find\n", encoding="utf-8")
         with redirect_stdout(out), redirect_stderr(err):
-            code = check_bench.main([str(self.path)])
+            code = check_bench.main([str(self.path), "--expected", str(ops)])
         self.assertEqual(code, 2)
         self.assertIn(str(self.path), err.getvalue())
 
