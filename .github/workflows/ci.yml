@@ -38,7 +38,8 @@ jobs:
       - name: Build and test
         run: .tools/cmake/bin/cmake --workflow --preset windows
       # The speed gate of spec 8.4 on an optimized build: Zodiac's types against the sample add-ons. A failing run is measured
-      # once more (shared runners are noisy) before the job fails; each run's table is in the log.
+      # once more (shared runners are noisy) before the job fails; each run's table, and each operation's ratio per engine and
+      # context (--detail), is in the log.
       - name: Build the benchmark on the release preset
         run: |
           .tools/cmake/bin/cmake --preset windows-release
@@ -47,10 +48,10 @@ jobs:
         shell: bash
         run: |
           bench=build/windows-release/tests/bench/bench_types.exe
-          "$bench" --out bench.json
+          "$bench" --detail --out bench.json
           if ! python -I tools/check_bench.py bench.json; then
             echo "Measuring again once before failing."
-            "$bench" --out bench.json
+            "$bench" --detail --out bench.json
             python -I tools/check_bench.py bench.json
           fi
       - name: Upload logs on failure
@@ -111,10 +112,10 @@ jobs:
       - name: Benchmark against the sample add-ons
         run: |
           bench=build/linux-release/tests/bench/bench_types
-          "$bench" --out bench.json
+          "$bench" --detail --out bench.json
           if ! python -I tools/check_bench.py bench.json; then
             echo "Measuring again once before failing."
-            "$bench" --out bench.json
+            "$bench" --detail --out bench.json
             python -I tools/check_bench.py bench.json
           fi
       - name: Upload logs on failure

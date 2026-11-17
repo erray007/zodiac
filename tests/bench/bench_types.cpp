@@ -19,9 +19,10 @@
 //   {"op":name,"new_ns":n,"addon_ns":n,"ratio":r}, new_ns and addon_ns the median nanoseconds per unit of work of each
 //   side, ratio the median of the per-round ratios new/addon. tools/check_bench.py gates the lines (ratio at most 1.05).
 //   Progress goes to stderr every 10 rounds.
-// - Usage: bench_types [--rounds N] [--target-ms N] [--op NAME]... [--out PATH] [--list]. Defaults: 101 rounds (at least
-//   15 are required, spec 8.4) of 1 ms per side: many short rounds pair the two sides closely in time, and the whole run
-//   takes about 45 s on the release preset. --op (repeatable) measures only the named operations, --list prints the names.
+// - Usage: bench_types [--rounds N] [--target-ms N] [--op NAME]... [--out PATH] [--detail] [--list]. Defaults: 101 rounds
+//   (at least 15 are required, spec 8.4) of 1 ms per side: many short rounds pair the two sides closely in time, and the
+//   whole run takes about 45 s on the release preset. --op (repeatable) measures only the named operations, --detail also
+//   prints each operation's median ratio per pair of engine and context to stderr, --list prints the names.
 // - Exit codes: 0 measured, 1 bad arguments, 2 a snippet did not build or run, 3 the two sides disagree on a checksum.
 // Not a ctest test (spec 8.4): CI runs it on release presets, and Task 7 reuses it to compare compiler flags.
 #include <angelscript.h>
@@ -377,6 +378,7 @@ Side& operator=(const Side&)=delete;
 std::int64_t run(int reps,double& ns)
 {
 Instance& instance=instances_[next_engine_];
+last_placement_=next_engine_*kContexts+instance.next_context;
 next_engine_=(next_engine_+1)%kEngines;
 context_=instance.contexts[instance.next_context];
 instance.next_context=(instance.next_context+1)%kContexts;
@@ -391,6 +393,11 @@ const std::int64_t checksum=static_cast<std::int64_t>(context_->GetReturnQWord()
 context_->Unprepare();
 instance.engine->GarbageCollect(asGC_FULL_CYCLE);
 return checksum;
+}
+// The engine and context of the last run, as engine*kContexts+context (for --detail).
+int last_placement() const noexcept
+{
+return last_placement_;
 }
 private:
 struct Instance {
@@ -409,6 +416,7 @@ std::string name_;
 Instance instances_[kEngines];
 asIScriptContext* context_=nullptr;
 int next_engine_=0;
+int last_placement_=0;
 };
 
 double median(std::vector<double> values)
@@ -434,12 +442,15 @@ Measurement(const Job& job_,int rounds):job(&job_),zodiac(true,job_,kZodiacPrelu
 zodiac_times.reserve(static_cast<std::size_t>(rounds));
 addon_times.reserve(static_cast<std::size_t>(rounds));
 ratios.reserve(static_cast<std::size_t>(rounds));
+placements.reserve(static_cast<std::size_t>(rounds));
 }
 const Job* job;
 Side zodiac;
 Side addon;
 int reps=1;
 std::vector<double> zodiac_times,addon_times,ratios;
+// The placements of each round's two runs, as zodiac*kEngines*kContexts+addon (for --detail).
+std::vector<int> placements;
 };
 
 void check(const Measurement& m,std::int64_t zodiac_sum,std::int64_t addon_sum)
@@ -479,6 +490,28 @@ check(m,zodiac_sum,addon_sum);
 m.zodiac_times.push_back(zodiac_ns);
 m.addon_times.push_back(addon_ns);
 m.ratios.push_back(zodiac_ns/addon_ns);
+m.placements.push_back(m.zodiac.last_placement()*kEngines*kContexts+m.addon.last_placement());
+}
+
+// --detail: the median ratio of m's rounds per pair of placements (Zodiac engine.context/add-on engine.context), to tell
+// an operation that differs on every placement from one that a few placements decide.
+std::string detail_line(const Measurement& m)
+{
+constexpr int placements=kEngines*kContexts;
+std::vector<std::vector<double>> groups(static_cast<std::size_t>(placements*placements));
+for(std::size_t i=0;i<m.ratios.size();++i)groups[static_cast<std::size_t>(m.placements[i])].push_back(m.ratios[i]);
+std::string line="bench_types: detail "+m.job->name;
+for(int key=0;key<placements*placements;++key){
+const std::vector<double>& group=groups[static_cast<std::size_t>(key)];
+if(group.empty())continue;
+const int z=key/placements,a=key%placements;
+line.append(" ").append(std::to_string(z/kContexts)).append(".").append(std::to_string(z%kContexts)).append("/").append(std::to_string(a/kContexts)).append(".").append(std::to_string(a%kContexts)).append("=");
+char digits[32];
+line.append(digits,std::to_chars(digits,digits+sizeof digits,median(group),std::chars_format::fixed,3).ptr);
+line.append("x").append(std::to_string(group.size()));
+}
+line.append("\n");
+return line;
 }
 
 std::string result_line(const Measurement& m)
@@ -523,6 +556,7 @@ int target_ms=1;
 std::vector<std::string> only;
 const char* out_path=nullptr;
 bool list=false;
+bool detail=false;
 const std::vector<Job> jobs=all_jobs();
 for(int i=1;i<argc;++i){
 const std::string_view arg=argv[i];
@@ -540,7 +574,8 @@ only.push_back(name);
 }
 else if(arg=="--out"&&has_value)out_path=argv[++i];
 else if(arg=="--list")list=true;
-else fail(1,"usage: bench_types [--rounds N] [--target-ms N] [--op NAME]... [--out PATH] [--list]");
+else if(arg=="--detail")detail=true;
+else fail(1,"usage: bench_types [--rounds N] [--target-ms N] [--op NAME]... [--out PATH] [--detail] [--list]");
 }
 if(list){
 for(const Job& job:jobs)std::printf("%s\n",job.name.c_str());
@@ -566,6 +601,12 @@ for(Measurement& m:measurements)calibrate(m,target_ns);
 for(int round=0;round<rounds;++round){
 for(Measurement& m:measurements)measure_round(m,round);
 if((round+1)%10==0||round+1==rounds)std::fprintf(stderr,"bench_types: round %d of %d\n",round+1,rounds);
+}
+if(detail){
+for(const Measurement& m:measurements){
+const std::string line=detail_line(m);
+std::fwrite(line.data(),1,line.size(),stderr);
+}
 }
 for(const Measurement& m:measurements){
 const std::string line=result_line(m);
