@@ -310,7 +310,7 @@ if(n>=8)return ((load_word(a)^load_word(b))|(load_word(a+n-8)^load_word(b+n-8)))
 if(n>=4)return ((load_u32(a)^load_u32(b))|(load_u32(a+n-4)^load_u32(b+n-4)))==0;
 return ((load_u16(a)^load_u16(b))|(load_u16(a+n-2)^load_u16(b+n-2)))==0;
 }
-#if defined(__SSE2__)
+#if defined(__SSE2__)&&!defined(__GLIBC__)
 // Bit k set when the candidate start at p+k has the needle's first byte there and its last byte at last+k.
 inline unsigned candidates(const byte* p,const byte* last,__m128i first_byte,__m128i last_byte) noexcept
 {
@@ -344,7 +344,18 @@ std::size_t search(const byte* t,std::size_t size,const byte* s,std::size_t n) n
 {
 if(n>size)return npos;
 if(n==0)return 0;
-#if defined(__SSE2__)
+#if defined(__GLIBC__)
+// glibc's memchr (AVX2 or EVEX, chosen at load time) scans for the first byte faster than SSE2 can, so it finds the
+// candidates and each is verified inline: libc++'s find makes the same memchr call plus a memcmp call per candidate
+// (the SSE2 scan below measured 1.09 to 1.11 against it on CI).
+const byte* const end=t+(size-n+1);
+for(const byte* p=t;p<end;++p){
+p=static_cast<const byte*>(std::memchr(p,s[0],static_cast<std::size_t>(end-p)));
+if(!p)return npos;
+if(n==1||(p[n-1]==s[n-1]&&same_bytes(p,s,n)))return static_cast<std::size_t>(p-t);
+}
+return npos;
+#elif defined(__SSE2__)
 if(n==1)return find_byte(t,size,s[0]);
 // Candidate starts are [0, stop); candidate k's last byte is last[k].
 const std::size_t stop=size-n+1;
