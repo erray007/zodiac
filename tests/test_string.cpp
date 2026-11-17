@@ -477,6 +477,36 @@ CHECK(s.contains(needle)==(matches>0));
 }
 }
 
+TEST_CASE("search on one-byte-per-character text with invalid bytes agrees with the general path")
+{
+// Invalid bytes count as one character each, so such text takes find_simple (byte offsets are indices). The same text
+// after "ş" (a two-byte character) takes the general path; its answers must be the same, one character later.
+const std::string texts[]={"\xC3(","a\xFF" "b\xFF","\xFF\xFF\xFF","(\xC3(\xC3","\xE2\x82(\xE2\x82"};
+const std::string needles[]={"(","\xC3","\xC3(","\xFF","b\xFF","\xFF\xFF","a","\xE2\x82","x",""};
+for(const std::string& text:texts){
+const String simple(text);
+const String general("\xC5\x9F"+text);
+REQUIRE(simple.length()==simple.byte_length());
+REQUIRE(general.length()==simple.length()+1);
+for(const std::string& needle:needles){
+CAPTURE(text);
+CAPTURE(needle);
+for(int start=0;start<=simple.length();++start){
+const std::size_t bytes=std::string_view(text).find(needle,static_cast<std::size_t>(start));
+const int expected=bytes==std::string_view::npos?-1:static_cast<int>(bytes);
+CHECK(simple.find(needle,start)==expected);
+CHECK(general.find(needle,start+1)==(expected<0?-1:expected+1));
+const std::size_t last=std::string_view(text).rfind(needle,static_cast<std::size_t>(start));
+const int expected_last=last==std::string_view::npos?-1:static_cast<int>(last);
+CHECK(simple.rfind(needle,start)==expected_last);
+}
+CHECK(simple.contains(needle)==(std::string_view(text).find(needle)!=std::string_view::npos));
+CHECK(general.contains(needle)==simple.contains(needle));
+CHECK(general.count(needle)==simple.count(needle));
+}
+}
+}
+
 TEST_CASE("one-byte find agrees with std::string_view::find at every length, start and position")
 {
 // A one-byte needle takes its own 16-byte scan with an overlapping, shifted last block: the byte is placed at every

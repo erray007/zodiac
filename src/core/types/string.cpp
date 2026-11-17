@@ -5,6 +5,7 @@
 #include <core/types/unicode.hpp>
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <charconv>
 #include <cmath>
 #include <cstring>
@@ -1368,6 +1369,8 @@ return static_cast<std::uint8_t>(data()[index]);
 
 int String::find_simple(const char* needle,std::size_t size,int start) const noexcept
 {
+assert(start>=0&&static_cast<std::uint32_t>(start)<=size_bytes());
+assert(static_cast<std::uint32_t>(length())==size_bytes());
 const auto from=static_cast<std::size_t>(start);
 const std::size_t pos=search(ubytes(data())+from,std::size_t{size_bytes()}-from,ubytes(needle),size);
 return pos==npos?-1:static_cast<int>(pos+from);

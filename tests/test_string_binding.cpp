@@ -32,6 +32,17 @@ REQUIRE(fixture.run(source.c_str(),"string main()")==asEXECUTION_FINISHED);
 return fixture.returned_string();
 }
 // Runs "void main(){<statements>}", which must raise a script exception, and returns its text.
+// True when "void main(){<statements>}" compiles in the fixture's "test" module.
+bool compiles(ScriptFixture& fixture,std::string_view statements)
+{
+const std::string source="void main(){"+std::string(statements)+"}";
+asIScriptModule* module=fixture.engine->GetModule("test",asGM_ALWAYS_CREATE);
+REQUIRE(module!=nullptr);
+REQUIRE(module->AddScriptSection("test",source.c_str())>=0);
+fixture.messages.clear();
+return module->Build()>=0;
+}
+
 std::string error_of(ScriptFixture& fixture,std::string_view statements)
 {
 const std::string source="void main(){"+std::string(statements)+"}";
@@ -123,6 +134,34 @@ CHECK(fixture.context->GetReturnByte()!=0);
 CHECK(error_of(fixture,"uint c=\"\xC5\x9F\".code_at(1);")=="index out of range");
 CHECK(error_of(fixture,"uint c=\"\".code_at(0);")=="index out of range");
 CHECK(error_of(fixture,"uint8 b=\"a\".byte_at(-1);")=="index out of range");
+}
+
+TEST_CASE("code_at and byte_at are read as values and cannot be assigned through")
+{
+// Declared const uint &code_at(int) const and const uint8 &byte_at(int) const (spec 8.1): locals, auto locals and
+// expressions hold copies, so changing a copy, the string or another character never changes what was read.
+ScriptFixture fixture;
+const char* source="bool main(){\n"
+"string s=\"a\xC5\x9F" "b\";\n"
+"uint c=s.code_at(1);\n"
+"auto ac=s.code_at(1);\n"
+"uint8 b=s.byte_at(0);\n"
+"auto ab=s.byte_at(0);\n"
+"c+=1;ac+=2;b+=1;ab+=2;\n"
+"if(s.code_at(1)!=0x15F||s.byte_at(0)!=0x61)return false;\n"
+"uint kept=s.code_at(0);uint8 kept_byte=s.byte_at(3);\n"
+"s=\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\";\n"
+"if(kept!=0x61||kept_byte!=0x62)return false;\n"
+"uint other=s.code_at(0);\n"
+"return c==0x160&&ac==0x161&&b==0x62&&ab==0x63&&other==0x7A&&kept==0x61;\n"
+"}";
+REQUIRE(fixture.run(source,"bool main()")==asEXECUTION_FINISHED);
+CHECK(fixture.context->GetReturnByte()!=0);
+CHECK(compiles(fixture,"string s=\"ab\";uint c=s.code_at(0);uint8 b=s.byte_at(1);"));
+CHECK_FALSE(compiles(fixture,"string s=\"ab\";s.code_at(0)=5;"));
+CHECK_FALSE(compiles(fixture,"string s=\"ab\";s.byte_at(0)=5;"));
+CHECK_FALSE(compiles(fixture,"string s=\"ab\";s.byte_at(0)+=1;"));
+CHECK_FALSE(compiles(fixture,"string s=\"ab\";s.code_at(0)++;"));
 }
 
 TEST_CASE("byte_at and code_at of temporary strings read the right text")

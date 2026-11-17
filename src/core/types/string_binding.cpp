@@ -333,13 +333,24 @@ raise_current_exception();
 }
 return -1;
 }
+}
+
+// String's friend for the script find: checks find_simple's preconditions itself, then calls it.
+struct StringBindingAccess {
 // Text with one byte per character and a valid start goes straight to find_simple, without an exception frame (it
 // never allocates); everything else (multibyte text, which may build its index, or a bad start) takes find_any.
-int find(const String& self,const String& needle,int start) noexcept
+static int find(const String& self,const String& needle,int start) noexcept
 {
 const int length=self.length();
 if(length==self.byte_length()&&static_cast<unsigned>(start)<=static_cast<unsigned>(length))return self.find_simple(needle.data(),static_cast<std::size_t>(needle.byte_length()),start);
 return find_any(self,needle,start);
+}
+};
+
+namespace {
+int find(const String& self,const String& needle,int start) noexcept
+{
+return StringBindingAccess::find(self,needle,start);
 }
 int rfind(const String& self,const String& needle,int start)
 {

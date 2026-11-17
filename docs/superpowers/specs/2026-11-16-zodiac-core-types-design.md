@@ -76,12 +76,14 @@ Script API (style C; indices and counts are characters unless the name says `byt
 | Group | Members |
 |---|---|
 | Size | `length()`, `byte_length()`, `empty()` |
-| Access | `s[i]` (one-character string, read-only), `code_at(i)` (uint code point), `byte_at(i)` (uint8) |
+| Access | `s[i]` (one-character string, read-only), `const uint &code_at(int) const` (code point), `const uint8 &byte_at(int) const` (byte) |
 | Search | `find(needle, start=0)`, `rfind(needle, start=-1)`, `contains(needle)`, `starts_with`, `ends_with`, `count(needle)` |
 | Parts | `substr(start, count=-1)`, `left(count)`, `right(count)`, `split(delimiter, keep_empty=true)` → `array<string>`, `array<string>.join(separator)` |
 | Change (returns new string) | `replace(old, new, all=true)`, `trim()`, `trim_left()`, `trim_right()`, `lower()`, `upper()`, `lower(locale)`, `upper(locale)`, `repeat(n)`, `reverse()` (by character), `insert(index, text)`, `erase(start, count)` |
 | Numbers | `to_number()` (double; throws on invalid), `to_int()`, `is_number()`, `is_digits()`, `string(value)` constructors for every numeric type and bool, `format(fmt, ...)` with `{}` placeholders |
 | Other | `hash()` (64-bit, stable across runs and platforms), comparison operators (byte order = code point order), `+` and `+=` with strings, numbers and bools (BGT-style concatenation) |
+
+`code_at` and `byte_at` return const references so the engine calls them through its fast call path (asBC_Thiscall1, as the add-on's `opIndex`); scripts read them as values, and a funcdef or delegate bound to them must use the reference signature.
 
 - **Character = Unicode code point (my call).** Grapheme clusters (letter plus combining marks, emoji sequences) are not merged: they need UAX #29 tables and would slow every operation. Text typed on Windows and macOS keyboards is precomposed, so Turkish letters are single code points. `s.normalize()` (NFC) is provided for text from other sources. The anti-goal "never split a character" means never split a UTF-8 sequence.
 - **Integers and ranges (my call, BGT-friendly):** lengths, indices and counts are `int`; "not found" is `-1`. `s[i]`, `code_at`, `byte_at` and `insert`/`erase` with a start outside `[0, length()]` throw `index out of range`. Counts that run past the end are clamped (`left(100)` on a 5-character string returns all 5; `substr(3, 100)` returns the rest). A negative count other than the `-1` default throws. The array uses the same rules.

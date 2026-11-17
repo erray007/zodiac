@@ -225,10 +225,6 @@ if(start<0||start>length)return std::unexpected(StringError::index_out_of_range)
 if(static_cast<std::uint32_t>(length)==size_bytes())return find_simple(needle.data(),needle.size(),start);
 return find_multibyte(needle,start);
 }
-// find() for text with one byte per character (length() == byte_length(), so indices are byte offsets and every
-// offset is a character boundary): the first match of needle[0, size) at or after start, which must be in
-// [0, byte_length()]. Never allocates.
-int find_simple(const char* needle,std::size_t size,int start) const noexcept;
 // Character index of the last match beginning at or before start (-1: the end).
 std::expected<int,StringError> rfind(std::string_view needle,int start=-1) const;
 bool contains(std::string_view needle) const noexcept;
@@ -449,6 +445,12 @@ const std::uint32_t* index() const;
 std::expected<char32_t,StringError> multibyte_code_at(int index) const;
 // find for text with multibyte characters (start already checked).
 std::expected<int,StringError> find_multibyte(std::string_view needle,int start) const;
+// find() for text with one byte per character (length() == byte_length(), so indices are byte offsets and every
+// offset is a character boundary): the first match of needle[0, size) at or after start, which must be in
+// [0, byte_length()] (both asserted in debug builds). Never allocates. Private: find() and the script binding (through
+// StringBindingAccess, which checks both preconditions first) are its only callers.
+int find_simple(const char* needle,std::size_t size,int start) const noexcept;
+friend struct StringBindingAccess;
 std::uint32_t char_to_byte(std::uint32_t index) const;
 std::uint32_t byte_to_char(std::uint32_t offset) const;
 // The meta of a part of this string with length characters (known whenever this string's count is known).
