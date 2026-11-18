@@ -403,11 +403,17 @@ project.name=path_to_utf8(file.stem());
 return project;
 }
 
+fs::path project_work_dir(const Project& project)
+{
+return project.root/".zodiac";
+}
+
 std::expected<std::vector<fs::path>,std::string> expand_assets(const Project& project)
 {
 std::vector<fs::path> files;
 if(project.build.assets.empty())return files;
 const fs::path release_dir=project.root/"release";
+const fs::path work_dir=project_work_dir(project);
 const fs::path manifest=project.root/"zodiac.toml";
 std::error_code ec;
 fs::recursive_directory_iterator it(project.root,fs::directory_options::none,ec);
@@ -416,7 +422,7 @@ for(const fs::recursive_directory_iterator end;it!=end;it.increment(ec))
 {
 const fs::path& path=it->path();
 // Compared as the file system compares names (case-insensitively on Windows): "--config AYAR.TXT" names the same file as ayar.txt on disk.
-if(same_path_text(path,release_dir))
+if(same_path_text(path,release_dir)||same_path_text(path,work_dir))
 {
 it.disable_recursion_pending();
 continue;

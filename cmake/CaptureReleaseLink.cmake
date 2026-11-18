@@ -1,18 +1,23 @@
 # zodiac_capture_release_link(<release_lib_dir>)
 #
 # Windows only, run at configure time. Asks the pinned llvm-mingw driver (CMAKE_CXX_COMPILER) how it links a static GUI release executable,
-# "-### -static -mwindows -municode <ZODIAC_RELEASE_GAME_LINK_FLAGS> <placeholder object> -o <output>", and stores the ld.lld arguments relocatably.
+# "-### -static -mwindows -municode <ZODIAC_RELEASE_GAME_LINK_FLAGS> -Wl,--thinlto-cache-dir=<placeholder folder> <placeholder object> -o <output>",
+# and stores the ld.lld arguments relocatably.
 # ZODIAC_RELEASE_GAME_LINK_FLAGS (cmake/ZodiacReleaseFlags.cmake, include it first) are the release link flags of every kit executable, so games are
-# linked like them: -O3 -Wl,--gc-sections -s -flto=thin -Wl,--icf=safe, which the driver turns into --gc-sections, -s, --icf=safe and the ThinLTO
+# linked like them: -O3 -flto=thin -Wl,--gc-sections -s -Wl,--icf=safe, which the driver turns into --gc-sections, -s, --icf=safe and the ThinLTO
 # options -plugin-opt=mcpu=x86-64, -plugin-opt=O3 and -plugin-opt=thinlto (kept as they are: they name no file).
+# Debug trees capture this same LTO line (the capture does not depend on the build type). That is harmless: their lib/release archives hold
+# native objects, and lld ignores the ThinLTO options and the cache folder when no input is bitcode.
 # - <release_lib_dir>/link.txt: one argument per line. Every file of the toolchain becomes {release_lib}/crt/<file name> (an -l library is resolved the way
 #   lld's MinGW driver does under -Bstatic, lib<name>.a then <name>.lib in each -L folder in order, and the -L folders are dropped), the output path
-#   becomes {output} and the placeholder object {inputs}. cli/linker.hpp expands it.
+#   becomes {output}, the placeholder object {inputs} and the cache argument the line --thinlto-cache-dir={cache} (the ThinLTO cache: a game's
+#   no-change rebuild reuses the backend's objects). cli/linker.hpp expands it.
 # - <release_lib_dir>/toolchain.txt: "llvm-mingw <version> <crt> <arch>" without a line break, e.g. "llvm-mingw 20261104 ucrt x86_64": the version from
 #   the toolchain's .stamp (written by bootstrap.py), ucrt when the linked libmsvcrt.a is the toolchain's libucrt.a (msvcrt otherwise), the arch from the driver's target.
 # Sets ZODIAC_RELEASE_CRT_FILES in the caller's scope to the absolute toolchain files link.txt names, in link order; zodiac_kit_stage copies them to <release_lib_dir>/crt.
 # Fails the configure, and so the kit build, when the driver runs no ld.lld (or more than one), when the line names a file it cannot copy (missing,
-# outside the toolchain, an -l that does not resolve, two different files with one name) or uses an argument form it cannot relocate.
+# outside the toolchain, an -l that does not resolve, two different files with one name), uses an argument form it cannot relocate, or lacks the
+# placeholder object, the output or the cache folder.
 # The capture runs on every configure and the toolchain's .stamp is a configure dependency, so a toolchain change regenerates both files;
 # they are only rewritten when their content changes.
 include_guard(GLOBAL)
@@ -55,10 +60,11 @@ string(STRIP "${version}" version)
 set(work "${CMAKE_BINARY_DIR}/CMakeFiles/zodiac_release_link")
 set(placeholder "${work}/zodiac_release_inputs.obj")
 set(output "${work}/zodiac_release_output.exe")
+set(cache "${work}/zodiac_release_cache")
 file(MAKE_DIRECTORY "${work}")
 # -### checks that the inputs exist, so the placeholder is a real (empty) file; nothing is compiled or linked.
 file(WRITE "${placeholder}" "")
-execute_process(COMMAND "${CMAKE_CXX_COMPILER}" "-###" -static -mwindows -municode ${ZODIAC_RELEASE_GAME_LINK_FLAGS} "${placeholder}" -o "${output}"
+execute_process(COMMAND "${CMAKE_CXX_COMPILER}" "-###" -static -mwindows -municode ${ZODIAC_RELEASE_GAME_LINK_FLAGS} "-Wl,--thinlto-cache-dir=${cache}" "${placeholder}" -o "${output}"
 RESULT_VARIABLE result OUTPUT_VARIABLE driver_output ERROR_VARIABLE driver_output ENCODING UTF-8)
 if(NOT result EQUAL 0)
 message(FATAL_ERROR "Cannot capture the release link line: ${CMAKE_CXX_COMPILER} -### failed (${result}):\n${driver_output}")
@@ -100,6 +106,7 @@ cmake_path(GET linker_bin PARENT_PATH root)
 _zodiac_path_key(root_key "${root}")
 _zodiac_path_key(placeholder_key "${placeholder}")
 _zodiac_path_key(output_key "${output}")
+_zodiac_path_key(cache_key "${cache}")
 set(lines "")
 set(search_dirs "")
 set(crt_files "")
@@ -115,6 +122,14 @@ message(FATAL_ERROR "Cannot capture the release link line: -o names \"${argument
 endif()
 list(APPEND lines "{output}")
 set(expect_output FALSE)
+continue()
+endif()
+if(argument MATCHES "^--thinlto-cache-dir=(.+)$")
+_zodiac_path_key(key "${CMAKE_MATCH_1}")
+if(NOT key STREQUAL cache_key)
+message(FATAL_ERROR "Cannot capture the release link line: \"${argument}\" is not the requested cache folder.")
+endif()
+list(APPEND lines "--thinlto-cache-dir={cache}")
 continue()
 endif()
 if(argument STREQUAL "-o")
@@ -205,8 +220,9 @@ list(APPEND lines "{release_lib}/crt/${name}")
 endforeach()
 list(FIND lines "{inputs}" inputs_at)
 list(FIND lines "{output}" output_at)
-if(inputs_at EQUAL -1 OR output_at EQUAL -1)
-message(FATAL_ERROR "Cannot capture the release link line: the placeholder object or the output is missing from it:\n${driver_output}")
+list(FIND lines "--thinlto-cache-dir={cache}" cache_at)
+if(inputs_at EQUAL -1 OR output_at EQUAL -1 OR cache_at EQUAL -1)
+message(FATAL_ERROR "Cannot capture the release link line: the placeholder object, the output or the cache folder is missing from it:\n${driver_output}")
 endif()
 # The C runtime the toolchain links by default: llvm-mingw's UCRT flavour installs its libucrt.a as libmsvcrt.a.
 set(crt "")

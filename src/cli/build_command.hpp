@@ -18,7 +18,9 @@
 // 3. The scripts compile exactly as in zodiac run (errors exit 1), in the project root as working directory, and the bytecode is saved
 //    (without debug info when [build] strip_debug_info is set).
 // 4. The payload (kit_version ZODIAC_VERSION; requested: static then dynamic names as the runtime loads them; modules: registration order with versions)
-//    is written as <output>/<name>.zodpay.obj and linked by link_release to <output>/<name>.exe.tmp.
+//    is written as <output>/<name>.zodpay.obj and linked by link_release to <output>/<name>.exe.tmp, with the ThinLTO cache in
+//    <root>/.zodiac/thinlto-cache (project_work_dir, never an asset), so a rebuild reuses the backend's unchanged objects; when the output folder
+//    holds that folder or lies inside it, the link runs without a cache, so nothing of it can be shipped.
 // 5. With [build.sign] command, the command runs on <name>.exe.tmp with {file} replaced by that temporary path; the program is an absolute path,
 //    a path relative to the project root, or a name searched on PATH. Every dynamic module (a registered module not listed as static, so also an
 //    undeclared dependency) is then copied from the folder it was loaded from to <output>/<dll>.tmp and signed the same way, followed by its
