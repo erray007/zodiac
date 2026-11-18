@@ -1,6 +1,6 @@
 # Release-configuration compile and link flags of every target: Zodiac's own, its dependencies (AngelScript, its sample add-ons, doctest), the kit's
 # lib/release archives, the modules, the tests and the tools (zodiac.exe, zodiacw.exe). Include it after project() and before any target or dependency
-# is added. Chosen by measurement (Task 7 report, .superpowers/sdd/2026-11-16-zodiac-core-types/task-7-report.md): the owner wants release builds
+# is added. Chosen by measurement (the Outcome of Task 7 in docs/superpowers/plans/2026-11-16-zodiac-core-types.md): the owner wants release builds
 # fastest first, then smallest, on every platform (game servers will run on Linux); build time does not count.
 # - Every release object (C and C++): -O3 -DNDEBUG, -ffunction-sections -fdata-sections and full LTO (-flto), so the archives (the kit's lib/release
 #   on Windows) hold LLVM bitcode and every link optimizes the whole program as one module; zodiac build links games with the kit's own ld.lld.

@@ -169,3 +169,12 @@ Candidates, each measured alone and then together, against the current release (
 - [ ] **Step 3: Keep the set that wins**: smaller hello and no bench op slower than baseline by more than 2 %; a candidate that shrinks size but slows an op beyond that is dropped and listed with its numbers.
 - [ ] **Step 4: Verify**: full suite on windows-debug, windows-release and linux; kit-windows and kit-clean-machine CI jobs green (the clean-machine build of a hello with the bundled lld is the proof the kit's link line works).
 - [ ] **Step 5: Commit** `git commit -m "Optimize release builds for speed and size"`
+
+**Outcome (2026-11-18):** the flags chosen, now in `cmake/ZodiacReleaseFlags.cmake` (whose header records the reasons):
+- Every release object (C and C++, Zodiac and its dependencies, the kit's `lib/release` archives, modules, tests and tools): `-O3 -DNDEBUG`, `-ffunction-sections -fdata-sections` and full LTO (`-flto`) on every platform, so the archives hold LLVM bitcode and every link optimizes the whole program as one module.
+- Every release link: `-flto`, `--gc-sections`, `-s` and `--icf=safe` (safe ICF folds only functions whose address is not significant, so AngelScript's function pointer comparisons keep their meaning; `--icf=all` saved nothing more on the hello). lld links on both platforms: llvm-mingw's on Windows, the system's on Linux (`-fuse-ld=lld`, with the LLVM archiver and symbol lister, which can index and read bitcode). The kit's executables are linked like games, through the captured link line, so `bench_types` measures exactly what a game gets.
+- Key numbers: paired geomean over the 29 bench operations 0.847 of the old release's times (`-O3`, `--gc-sections`, `-s`) and 0.953 of ThinLTO's; the release hello is 2 450 432 bytes.
+- Ruling that replaced Step 3's per-op 2 % rule: the measured noise floor of paired runs is 3-4 % per op, so a 2 % per-op limit cannot be decided. A set is kept when its paired geomean is at most 1.00 and no op is above 1.02 in every pass beyond its A/A noise.
+- The owner chose speed over size (full LTO over the smaller-is-better order of Step 3) and declared build time irrelevant (a full-LTO release build takes about 20 minutes).
+- The `string_code_ascii` residual that ThinLTO left (slower than the old release beyond noise) disappeared under full LTO.
+- PGO is deferred until after the audio and network modules, when the bench and the games exercise representative code.
