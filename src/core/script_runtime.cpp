@@ -3,12 +3,11 @@
 #include <core/path_utf8.hpp>
 #include <core/project_file.hpp>
 #include <core/text.hpp>
+#include <core/types/array.hpp>
+#include <core/types/dictionary.hpp>
+#include <core/types/string_binding.hpp>
 #include <angelscript.h>
-#include <scriptarray/scriptarray.h>
 #include <scriptbuilder/scriptbuilder.h>
-#include <scriptdictionary/scriptdictionary.h>
-#include <scripthelper/scripthelper.h>
-#include <scriptstdstring/scriptstdstring.h>
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
@@ -143,11 +142,12 @@ ScriptRuntime::ScriptRuntime(Diagnostics& diagnostics,ModuleSearchPaths search_p
 :diagnostics_(diagnostics),search_paths_(std::move(search_paths)),engine_(create_engine()),host_(engine_)
 {
 engine_->SetMessageCallback(asFUNCTION(RuntimeCallbacks::message),this,asCALL_CDECL);
-RegisterStdString(engine_);
-RegisterScriptArray(engine_,true);
-RegisterStdStringUtils(engine_);
-RegisterScriptDictionary(engine_);
-RegisterExceptionRoutines(engine_);
+// Zodiac's array first: string's split and join use array<string>; the dictionary after both, since keys() returns
+// array<string>. The sample dictionary add-on is not registered (it keys on std::string; Zodiac's dictionary replaces it).
+register_array(engine_);
+register_string(engine_);
+register_dictionary(engine_);
+register_exception_helpers(engine_);
 host_.set_log_handler([this](zodiac_log_level level,std::string_view message){diagnostics_.report(level,message);});
 }
 

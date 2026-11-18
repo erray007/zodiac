@@ -23,7 +23,7 @@
 - `zodiac build` never leaves a half-written executable at the output path (temporary name, rename at the end).
 - Exit codes: 0 success, 1 script (compile/runtime) error, 2 usage/project/module/link error.
 - Release builds are Windows-host, Windows-target only in this plan. On Linux, `zodiac build` reports `error: release builds are not supported on this host yet` and exits 2; Linux CI must stay green, Windows-only tests are registered only `if(WIN32)`.
-- A core-only "hello world" release is at most 3 MB (3145728 bytes).
+- A core-only "hello world" release is at most 5 MB (5242880 bytes; raised to 5 MB by the owner, 2026-11-17).
 - The engine shows no window in games. The build result window (Task 9) belongs to the kit tool only.
 - Not in this plan (owned by plan 4): `verbose`, the dialog sink and the automatic release `<game>.log`, dev-only checks, workers at runtime. Until then the release stub honours the project's `console` and `file` diagnostics settings, and dev and release cores are built from identical sources under two target names.
 - Never use shell heredocs to create or edit files (owner's rule); use the editor tools.
@@ -304,7 +304,7 @@ git commit -m "Add the release core and the release stub start-up path"
   - `lib/release/` with `libzodiac_release_stub.a`, `libzodiac_core_release.a`, `libangelscript.a`, `crt/` (every CRT object and library the captured link line needs, copied from llvm-mingw), `link.txt`, `toolchain.txt` (`llvm-mingw 20261104 ucrt x86_64`).
   - `bin/ld.lld.exe` copied from llvm-mingw.
   - `modules/static/zodiac_mod_<name>.a` for every module built with a static variant (renamed from `libzodiac_mod_<name>_static.a`), plus `zodiac_mod_<name>.stamp` holding the `toolchain.txt` text.
-- `link.txt` format: one argument per line, as captured from `x86_64-w64-mingw32-clang++ -### -static -mwindows -municode -Wl,--gc-sections -s` linking a placeholder object, with absolute llvm-mingw paths rewritten to `{release_lib}/crt/<file>`, the output path replaced by `{output}`, and the placeholder object replaced by `{inputs}`. `CaptureReleaseLink.cmake` fails the kit build if the captured line has no `ld.lld` invocation or references a file it cannot copy.
+- `link.txt` format: one argument per line, as captured from `x86_64-w64-mingw32-clang++ -### -static -mwindows -municode -O3 -flto -Wl,--gc-sections -s -Wl,--icf=safe` linking a placeholder object (the release link flags of every kit executable, `ZODIAC_RELEASE_GAME_LINK_FLAGS` in `cmake/ZodiacReleaseFlags.cmake`, so games are linked like them; the driver turns `-O3 -flto` into the LTO options `-plugin-opt=mcpu=x86-64` and `-plugin-opt=O3`, which name no file and are kept as they are), with absolute llvm-mingw paths rewritten to `{release_lib}/crt/<file>`, the output path replaced by `{output}`, and the placeholder object replaced by `{inputs}`. `CaptureReleaseLink.cmake` fails the kit build if the captured line has no `ld.lld` invocation or references a file it cannot copy.
 - Produces in `linker.hpp`:
 
 ```cpp
@@ -362,7 +362,7 @@ git commit -m "Capture the release link line and stage the kit's release librari
 - `test_build_assets_copied`: `[build] assets = ["sounds/**/*.ogg"]` copies `sounds/a.ogg` and `sounds/x/b.ogg` only.
 - `test_build_sign_command_runs`: `[build.sign] command` pointing at the `echo_args` fixture tool with `{file}` → build succeeds and the tool was invoked (fixture writes a marker file); a tool exiting non-zero fails the build with `signing`.
 - `test_build_without_project`: a lone `.zs` → exit 2 with `zodiac.toml not found`.
-- `test_hello_size_gate`: core-only hello exe size ≤ 3145728 bytes.
+- `test_hello_size_gate`: core-only hello exe size ≤ 5242880 bytes (raised to 5 MB by the owner, 2026-11-17; measured on Release builds only).
 
 - [ ] **Step 2: Run to verify they fail** (`ctest --preset windows-debug -R build_e2e`).
 

@@ -15,13 +15,15 @@ MODULE_DIR = os.environ.get("ZODIAC_MODULE_DIR", "")
 TEST_MODULE_DIR = os.environ.get("ZODIAC_TEST_MODULE_DIR", "")
 ECHO_ARGS = os.environ.get("ZODIAC_ECHO_ARGS", "")
 VENDOR_MODULE_DIR = os.environ.get("ZODIAC_VENDOR_MODULE_DIR", "")
+# The build configuration of the tree under test (CTest passes $<CONFIG>); the size gate measures Release builds only.
+BUILD_CONFIG = os.environ.get("ZODIAC_BUILD_CONFIG", "")
 SCRIPT_FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "scripts"
 # Fixtures that need test-only modules from ZODIAC_TEST_MODULE_DIR: a release loads its modules from the kit (static) or its own folder (dynamic),
 # and the kit ships no test modules, so these cannot be built. Every other fixture takes part in the identity test.
 FIXTURES_NEEDING_TEST_MODULES = {"holds_plugin_object"}
 # The fixtures that build; the identity test fails if this set changes, so a fixture can never drop out of it silently.
 BUILDABLE_FIXTURES = {"int_main", "non_ascii_include", "runtime_error", "uses_module", "void_main"}
-SIZE_LIMIT = 3145728
+SIZE_LIMIT = 5242880
 LONE_FILE_WARNING = "warning: no zodiac.toml; only the core is available (create a project file to add modules)"
 LONE_FILE_NOTE = "note: no zodiac.toml; only the core is available, so module functions are not declared (create a project file to add modules)"
 
@@ -674,6 +676,9 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(files, ["data/a.txt", "game.exe", "main.zs"])
 
     def test_hello_size_gate(self):
+        # Debug builds stay unoptimized for debugging, so only a Release build says what a shipped hello weighs.
+        if BUILD_CONFIG != "Release":
+            self.skipTest("size gate measures release builds only")
         exe = self.build_hello()
         size = exe.stat().st_size
         self.assertLessEqual(size, SIZE_LIMIT, "core-only hello release is %d bytes" % size)

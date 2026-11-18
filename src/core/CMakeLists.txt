@@ -8,8 +8,9 @@ ${PROJECT_SOURCE_DIR}/src/platform/${ZODIAC_PLATFORM_DIR}/dynamic_library.cpp
 ${PROJECT_SOURCE_DIR}/src/platform/${ZODIAC_PLATFORM_DIR}/console.cpp
 ${PROJECT_SOURCE_DIR}/src/platform/${ZODIAC_PLATFORM_DIR}/executable_path.cpp
 ${PROJECT_SOURCE_DIR}/src/platform/${ZODIAC_PLATFORM_DIR}/run_process.cpp
+${PROJECT_SOURCE_DIR}/src/platform/${ZODIAC_PLATFORM_DIR}/entropy.cpp
 )
-set(ZODIAC_CORE_SOURCES host.cpp host.hpp project_file.cpp project_file.hpp text.cpp text.hpp dynamic_library.hpp path_utf8.hpp module_registry.cpp module_registry.hpp diagnostics.cpp diagnostics.hpp script_runtime.cpp script_runtime.hpp kit_layout.cpp kit_layout.hpp payload.cpp payload.hpp coff_object.cpp coff_object.hpp static_modules.hpp ${ZODIAC_PLATFORM_SOURCES} ${PROJECT_SOURCE_DIR}/src/platform/console.hpp ${PROJECT_SOURCE_DIR}/src/platform/process.hpp)
+set(ZODIAC_CORE_SOURCES host.cpp host.hpp project_file.cpp project_file.hpp text.cpp text.hpp dynamic_library.hpp path_utf8.hpp module_registry.cpp module_registry.hpp diagnostics.cpp diagnostics.hpp script_runtime.cpp script_runtime.hpp kit_layout.cpp kit_layout.hpp payload.cpp payload.hpp coff_object.cpp coff_object.hpp static_modules.hpp types/unicode.cpp types/unicode.hpp types/unicode_tables.cpp types/unicode_tables.hpp types/string.cpp types/string.hpp types/script_guard.hpp types/string_binding.cpp types/string_binding.hpp types/exception_binding.cpp types/array.cpp types/array.hpp types/array_fast_paths.cpp types/dictionary.cpp types/dictionary.hpp ${ZODIAC_PLATFORM_SOURCES} ${PROJECT_SOURCE_DIR}/src/platform/entropy.hpp ${PROJECT_SOURCE_DIR}/src/platform/console.hpp ${PROJECT_SOURCE_DIR}/src/platform/process.hpp)
 # zodiac_core is the dev configuration (zodiac.exe); zodiac_core_release is the configuration linked into release executables (lib/release in the kit).
 # Both come from the same sources; the release one adds the static module record walk and ZODIAC_RELEASE=1, which plan 4's dev-only checks key on.
 function(zodiac_core_target name)
@@ -24,3 +25,5 @@ endfunction()
 zodiac_core_target(zodiac_core ${ZODIAC_CORE_SOURCES} pe_imports.cpp pe_imports.hpp)
 zodiac_core_target(zodiac_core_release ${ZODIAC_CORE_SOURCES} static_modules.cpp)
 target_compile_definitions(zodiac_core_release PUBLIC ZODIAC_RELEASE=1)
+# Like every target, the release core is unoptimized in Debug builds so it stays debuggable; the hello size gate (at most
+# 5 MB, test_hello_size_gate) therefore measures Release builds only.

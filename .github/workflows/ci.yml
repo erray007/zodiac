@@ -25,12 +25,54 @@ jobs:
         with:
           path: .deps
           key: deps-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake') }}
+      # The .tools cache is only saved on a key miss, so the UCD files get a cache of their own; gen_unicode.py still verifies each SHA-256.
+      - name: Cache Unicode data
+        uses: actions/cache@v4
+        with:
+          path: .tools/unicode
+          key: ucd-16.0.0-${{ hashFiles('tools/gen_unicode.py') }}
       - name: Bootstrap unit tests
-        run: python -I -m unittest discover -v -s tools -p "test_*.py"
+        run: python -I -m unittest discover -v -s tools -p "test_*.py" && python -I tools/gen_unicode.py --check
       - name: Bootstrap
         run: python bootstrap.py
       - name: Build and test
         run: .tools/cmake/bin/cmake --workflow --preset windows
+      # The speed gate of spec 8.4 on an optimized build: Zodiac's types against the sample add-ons, every operation of
+      # bench_types --list. A failing run is measured once more (shared runners are noisy) before the job fails. Each run's
+      # table and its --detail lines (each operation's ratio per engine and context) are in the log and, on failure, in the
+      # bench artifact: an operation slower on every engine and context is a real regression, one that only a few placements
+      # push over the limit is noise.
+      - name: Build the benchmark on the release preset
+        run: |
+          .tools/cmake/bin/cmake --preset windows-release
+          .tools/cmake/bin/cmake --build --preset windows-release --target bench_types
+      - name: Benchmark against the sample add-ons
+        shell: bash
+        run: |
+          bench=build/windows-release/tests/bench/bench_types.exe
+          "$bench" --list > bench-ops.txt
+          run_bench() {
+            local status=0
+            "$bench" --detail --out "$1.json" 2> "$1-stderr.txt" || status=$?
+            cat "$1-stderr.txt"
+            return $status
+          }
+          run_bench bench
+          if ! python -I tools/check_bench.py bench.json --expected bench-ops.txt; then
+            echo "Measuring again once before failing."
+            run_bench bench-retry
+            python -I tools/check_bench.py bench-retry.json --expected bench-ops.txt
+          fi
+      - name: Upload the benchmark results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-windows
+          path: |
+            bench*.json
+            bench*-stderr.txt
+            bench-ops.txt
+          if-no-files-found: ignore
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -58,20 +100,63 @@ jobs:
         with:
           path: .deps
           key: deps-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake') }}
-      - name: Install and select clang 18 with libc++
+      # lld-18 links (full LTO, --icf=safe) and llvm-18 brings llvm-ar, llvm-ranlib and llvm-nm for the bitcode archives; cmake/toolchain-clang-linux.cmake
+      # finds them by the compiler's version suffix (ld.lld-18, llvm-ar-18, ...).
+      - name: Install and select clang 18 with libc++, lld and the LLVM tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev
+          sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev lld-18 llvm-18
           echo "CC=clang-18" >> "$GITHUB_ENV"
           echo "CXX=clang++-18" >> "$GITHUB_ENV"
       - name: Show compiler version
         run: clang-18 --version
+      # The .tools cache is only saved on a key miss, so the UCD files get a cache of their own; gen_unicode.py still verifies each SHA-256.
+      - name: Cache Unicode data
+        uses: actions/cache@v4
+        with:
+          path: .tools/unicode
+          key: ucd-16.0.0-${{ hashFiles('tools/gen_unicode.py') }}
       - name: Bootstrap unit tests
-        run: python -I -m unittest discover -v -s tools -p "test_*.py"
+        run: python -I -m unittest discover -v -s tools -p "test_*.py" && python -I tools/gen_unicode.py --check
       - name: Bootstrap
         run: python bootstrap.py
       - name: Build and test
+        # The Linux job also runs the long tests (test_string's exhaustive length-3 UTF-8 check).
+        env:
+          ZODIAC_LONG_TESTS: "1"
         run: .tools/cmake/bin/cmake --workflow --preset linux
+      # The speed gate of spec 8.4 on an optimized build, as in the windows job (see its comment on --detail for telling
+      # noise from a real regression).
+      - name: Build the benchmark on the release preset
+        run: |
+          .tools/cmake/bin/cmake --preset linux-release
+          .tools/cmake/bin/cmake --build --preset linux-release --target bench_types
+      - name: Benchmark against the sample add-ons
+        run: |
+          bench=build/linux-release/tests/bench/bench_types
+          "$bench" --list > bench-ops.txt
+          run_bench() {
+            local status=0
+            "$bench" --detail --out "$1.json" 2> "$1-stderr.txt" || status=$?
+            cat "$1-stderr.txt"
+            return $status
+          }
+          run_bench bench
+          if ! python -I tools/check_bench.py bench.json --expected bench-ops.txt; then
+            echo "Measuring again once before failing."
+            run_bench bench-retry
+            python -I tools/check_bench.py bench-retry.json --expected bench-ops.txt
+          fi
+      - name: Upload the benchmark results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-linux
+          path: |
+            bench*.json
+            bench*-stderr.txt
+            bench-ops.txt
+          if-no-files-found: ignore
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -209,8 +294,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "hello.exe failed with exit code $LASTEXITCODE" }
           $size = (Get-Item -LiteralPath $hello).Length
           "hello.exe ran and exited with 0. Size: $size bytes."
-          # Size gate (spec 8.9): a core-only hello world release is at most 3 MB.
-          if ($size -gt 3MB) { throw "hello.exe is $size bytes, more than the 3 MB limit" }
+          # Size gate (spec 8.9): a core-only hello world release is at most 5 MB.
+          if ($size -gt 5MB) { throw "hello.exe is $size bytes, more than the 5 MB limit" }
       # Two rounds. Round 1: .zs already belongs to another program (a fake ProgID); every option is installed, then uninstall must give .zs back and
       # remove everything else it added. Round 2: the user PATH already holds the kit's bin folder; uninstall must leave that entry, which it did not add.
       - name: Setup wizard, silent install and uninstall

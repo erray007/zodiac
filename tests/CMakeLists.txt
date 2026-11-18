@@ -6,6 +6,16 @@ zodiac_target_warnings(${name})
 add_test(NAME ${name} COMMAND ${name})
 endfunction()
 zodiac_add_test(test_angelscript_smoke SOURCES test_angelscript_smoke.cpp LIBRARIES angelscript)
+# The archives games link hold no sample add-on (spec 8.4): on Windows every archive the kit stages in lib/release
+# (zodiac_kit_stage, built with zodiac), elsewhere the angelscript and release core archives themselves.
+if(WIN32)
+set(ZODIAC_GAME_ARCHIVES "-DARCHIVE_DIR=${CMAKE_BINARY_DIR}/lib/release")
+else()
+set(ZODIAC_GAME_ARCHIVES "-DARCHIVES=$<TARGET_FILE:angelscript>|$<TARGET_FILE:zodiac_core_release>")
+endif()
+add_test(NAME test_angelscript_has_no_sample_addons COMMAND "${CMAKE_COMMAND}" "-DNM=${CMAKE_NM}" "${ZODIAC_GAME_ARCHIVES}" -P "${CMAKE_CURRENT_SOURCE_DIR}/check_no_sample_addons.cmake")
+# The speed gate against the sample add-ons (spec 8.4): built with everything, run by CI on release presets, not by ctest.
+add_subdirectory(bench)
 add_library(test_plugin_header_c STATIC test_plugin_header_c.c)
 set_target_properties(test_plugin_header_c PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 zodiac_target_warnings(test_plugin_header_c)
@@ -88,6 +98,15 @@ target_link_libraries(zodiac_mod_vendor_direct PRIVATE vendor_lib)
 endif()
 zodiac_add_test(test_project_file SOURCES test_project_file.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_text SOURCES test_text.cpp LIBRARIES zodiac_core)
+# NFC vectors are generated from the pinned NormalizationTest.txt by tools/gen_unicode.py and committed.
+zodiac_add_test(test_unicode SOURCES test_unicode.cpp LIBRARIES zodiac_core)
+target_compile_definitions(test_unicode PRIVATE "ZODIAC_TEST_UNICODE_VECTORS=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/unicode/nfc_vectors.txt\"")
+zodiac_add_test(test_string SOURCES test_string.cpp LIBRARIES zodiac_core)
+# Replaces the global operator new to fail chosen allocations, so it is an executable of its own.
+zodiac_add_test(test_string_allocation SOURCES test_string_allocation.cpp LIBRARIES zodiac_core)
+zodiac_add_test(test_string_binding SOURCES test_string_binding.cpp script_fixture.hpp LIBRARIES zodiac_core)
+zodiac_add_test(test_array SOURCES test_array.cpp script_fixture.hpp LIBRARIES zodiac_core)
+zodiac_add_test(test_dictionary SOURCES test_dictionary.cpp script_fixture.hpp LIBRARIES zodiac_core)
 zodiac_add_test(test_module_registry SOURCES test_module_registry.cpp script_fixture.hpp LIBRARIES zodiac_core)
 target_compile_definitions(test_module_registry PRIVATE
 "ZODIAC_TEST_MODULE_DIR=\"${CMAKE_BINARY_DIR}/modules\""
@@ -183,7 +202,11 @@ set_tests_properties(cli_e2e PROPERTIES ENVIRONMENT "ZODIAC_EXE=$<TARGET_FILE:zo
 if(WIN32)
 # Builds real releases with the build tree's kit layout (zodiac_kit_stage); echo_args stands in for a signing tool.
 add_test(NAME build_e2e COMMAND ${Python3_EXECUTABLE} -I -m unittest discover -v -s ${CMAKE_CURRENT_SOURCE_DIR}/e2e -p "test_build.py")
-set_tests_properties(build_e2e PROPERTIES ENVIRONMENT "ZODIAC_EXE=$<TARGET_FILE:zodiac>;ZODIACW_EXE=$<TARGET_FILE:zodiacw>;ZODIAC_MODULE_DIR=${CMAKE_BINARY_DIR}/modules;ZODIAC_TEST_MODULE_DIR=${ZODIAC_TEST_MODULE_DIR};ZODIAC_VERSION=${PROJECT_VERSION};ZODIAC_ECHO_ARGS=$<TARGET_FILE:echo_args>;ZODIAC_VENDOR_MODULE_DIR=${ZODIAC_VENDOR_MODULE_DIR};PYTHONIOENCODING=utf-8")
+# Every Release build of a game runs the full LTO backend in the kit's ld.lld (cmake/ZodiacReleaseFlags.cmake), about 21 s per link on a 4-core
+# machine, and build_e2e builds a few dozen games (about 17 minutes estimated locally), too close to CTest's default 1500 s. kit_e2e builds one game
+# and keeps the default.
+set_tests_properties(build_e2e PROPERTIES TIMEOUT 3600)
+set_tests_properties(build_e2e PROPERTIES ENVIRONMENT "ZODIAC_EXE=$<TARGET_FILE:zodiac>;ZODIACW_EXE=$<TARGET_FILE:zodiacw>;ZODIAC_MODULE_DIR=${CMAKE_BINARY_DIR}/modules;ZODIAC_TEST_MODULE_DIR=${ZODIAC_TEST_MODULE_DIR};ZODIAC_VERSION=${PROJECT_VERSION};ZODIAC_ECHO_ARGS=$<TARGET_FILE:echo_args>;ZODIAC_VENDOR_MODULE_DIR=${ZODIAC_VENDOR_MODULE_DIR};ZODIAC_BUILD_CONFIG=$<CONFIG>;PYTHONIOENCODING=utf-8")
 # The installed kit: a fresh "cmake --install" into build/<preset>/kit-test/Zodiac (the folder is emptied first, so nothing stale survives),
 # then kit_e2e checks the layout and builds games with a copy of it in a folder of its own, with only the Windows system folders on PATH.
 set(ZODIAC_KIT_TEST_DIR "${CMAKE_BINARY_DIR}/kit-test/Zodiac")

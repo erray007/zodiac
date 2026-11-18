@@ -34,6 +34,7 @@ Zodiac is distributed as an installable package. A game developer installs only 
 
 - Windows x86_64, Windows 10 or later; toolchain llvm-mingw UCRT as pinned in `tools/toolchain.json` (foundation spec 8.8).
 - The kit's linker is LLVM `lld` from the same pinned llvm-mingw release used to build the kit, so module libraries and linker always match.
+- Release builds use full LTO (`cmake/ZodiacReleaseFlags.cmake`), so the kit's `lib/release` archives hold LLVM bitcode, not native objects, and `zodiac build` links every game through lld's LTO backend. A static module library linked by `zodiac build` must therefore hold native objects, or bitcode from the kit's exact LLVM version (the pinned llvm-mingw release); bitcode from any other LLVM version makes lld fail with "Invalid bitcode".
 - Everything redistributed in the kit respects its license (lld: Apache-2.0 with LLVM exception; mingw-w64 runtime: ZPL/public domain; libc++/compiler-rt: Apache-2.0 with LLVM exception). The kit carries a `THIRD_PARTY_LICENSES` file.
 - AngelScript bytecode is only valid against an identical registered interface, so release startup must register exactly the same modules, in the same order, with the same declarations, as the compile step.
 
@@ -202,7 +203,7 @@ command = ["signtool", "sign", "/fd", "SHA256", "/a", "{file}"]
 
 - Builds the kit layout, the zip and the setup wizard on every push to `main` and for tags; uploads them as artifacts. Tags `v*` publish a GitHub release with both packages and checksums.
 - Clean-machine test: in a fresh Windows job without the dev toolchain on PATH, unzip the kit, `zodiac new`, `zodiac build`, run the produced executable, check the exit code and output.
-- Size gate: a core-only "hello world" release must be at most 3 MB; CI fails above it. (The foundation spec's full criterion with `audio` and `screen_reader` takes over in plan 5.)
+- Size gate: a core-only "hello world" release must be at most 5 MB (raised to 5 MB by the owner, 2026-11-17), measured on Release builds; CI fails above it. (The foundation spec's full criterion with `audio` and `screen_reader` takes over in plan 5.)
 - Silent install and uninstall of the setup wizard (`/VERYSILENT`) in CI, checking PATH, association and file removal.
 
 ## 9. Success criteria
@@ -212,7 +213,7 @@ command = ["signtool", "sign", "/fd", "SHA256", "/a", "{file}"]
 - Every script fixture gives the same exit code and diagnostics under `run` and as a release build.
 - Double-clicking a `.zs` file runs it; with no project file, a script calling a function from an installed module runs. *Superseded by `2026-11-16-zodiac-kit-usability-design.md` item 8: with no project file a core-only script runs, and a module call fails to compile with the note line.*
 - The owner completes the setup wizard and the uninstall with NVDA alone.
-- A core-only hello world release is at most 3 MB.
+- A core-only hello world release is at most 5 MB (raised to 5 MB by the owner, 2026-11-17).
 
 ## 9a. Order (my call)
 
