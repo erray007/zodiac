@@ -4,12 +4,10 @@
 #include <core/text.hpp>
 #include <core/types/array.hpp>
 #include <core/types/script_guard.hpp>
-#include <platform/entropy.hpp>
 #include <atomic>
 #include <bit>
 #include <cfloat>
 #include <charconv>
-#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstddef>
@@ -81,24 +79,6 @@ constexpr std::string_view header="zodiac-dictionary 1";
 constexpr const char* array_tag_names[]={"array<bool>","array<int8>","array<int16>","array<int>","array<int64>","array<uint8>","array<uint16>","array<uint>","array<uint64>","array<float>","array<double>","array<string>","array<dictionary@>","array<dictionary>"};
 static_assert(std::size(array_tag_names)==static_cast<std::size_t>(ArrayTag::count));
 
-// The odd multiplier of Dictionary::home(), drawn once per process from the operating system's entropy source. Should the
-// source fail, the clock and the address of a static are mixed instead (still unknown to scripts, though weaker).
-std::uint64_t slot_multiplier() noexcept
-{
-static const std::uint64_t multiplier=[]() noexcept{
-std::uint64_t value=0;
-if(!platform::fill_entropy(&value,sizeof value)){
-static const char anchor=0;
-value=static_cast<std::uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count())^reinterpret_cast<std::uintptr_t>(&anchor);
-// splitmix64's finalizer spreads the few changing bits over the whole word.
-value=(value^(value>>30))*0xBF58476D1CE4E5B9u;
-value=(value^(value>>27))*0x94D049BB133111EBu;
-value^=value>>31;
-}
-return value|1;
-}();
-return multiplier;
-}
 void* load_pointer(const void* slot) noexcept
 {
 void* pointer;
@@ -555,11 +535,9 @@ auto* slots=static_cast<Slot*>(std::calloc(size,sizeof(Slot)));
 if(!slots)throw std::bad_alloc();
 Slot* const old=index_;
 const std::uint32_t old_size=old?mask_+1:0;
-// The new mapping is in place before the slots move, so home() places them in the new index.
+// The new mask is in place before the slots move, so home() places them in the new index.
 index_=slots;
 mask_=size-1;
-shift_=64-static_cast<std::uint32_t>(std::countr_zero(size));
-multiplier_=slot_multiplier();
 for(std::uint32_t at=0;at<old_size;++at){
 const Slot& slot=old[at];
 if(!slot.entry)continue;
@@ -590,7 +568,7 @@ if(!index_)return no_entry;
 for(std::uint32_t position=home(hash);;position=(position+1)&mask_){
 const Slot& slot=index_[position];
 if(!slot.entry)return no_entry;
-// The bytes are compared inline (no C runtime memcmp call), which more than pays for home()'s multiply.
+// The bytes are compared inline (no C runtime memcmp call).
 if(slot.hash==hash&&string_detail::same_text(entry(slot.entry-1).key.bytes(),key.bytes()))return position;
 }
 }
@@ -663,24 +641,24 @@ index_[hole]=Slot{};
 
 bool Dictionary::exists(const String& key) const noexcept
 {
-return find_position(key,key.hash())!=no_entry;
+return find_position(key,key.table_hash())!=no_entry;
 }
 
 const DictionaryValue* Dictionary::find(const String& key) const noexcept
 {
-const std::uint32_t position=find_position(key,key.hash());
+const std::uint32_t position=find_position(key,key.table_hash());
 return position==no_entry?nullptr:&entry(index_[position].entry-1).value;
 }
 
 DictionaryValue* Dictionary::find(const String& key) noexcept
 {
-const std::uint32_t position=find_position(key,key.hash());
+const std::uint32_t position=find_position(key,key.table_hash());
 return position==no_entry?nullptr:&entry(index_[position].entry-1).value;
 }
 
 void Dictionary::put(const String& key,DictionaryValue& value)
 {
-const std::uint64_t hash=key.hash();
+const std::uint64_t hash=key.table_hash();
 const std::uint32_t position=find_position(key,hash);
 if(position!=no_entry){
 entry(index_[position].entry-1).value.swap(value);
@@ -692,7 +670,7 @@ insert_new(String(key),hash,value);
 
 DictionaryValue& Dictionary::at(const String& key)
 {
-const std::uint64_t hash=key.hash();
+const std::uint64_t hash=key.table_hash();
 const std::uint32_t position=find_position(key,hash);
 if(position!=no_entry)return entry(index_[position].entry-1).value;
 reserve(1);
@@ -732,7 +710,7 @@ return value&&value->get(out,type_id,*cache_);
 
 bool Dictionary::remove(const String& key) noexcept
 {
-const std::uint32_t position=find_position(key,key.hash());
+const std::uint32_t position=find_position(key,key.table_hash());
 if(position==no_entry)return false;
 const std::uint32_t index=index_[position].entry-1;
 erase_position(position);
@@ -809,7 +787,7 @@ reserve(source.live_);
 clear();
 for(std::uint32_t index=source.first_;index!=no_entry;index=source.entry(index).next){
 Entry& item=source.entry(index);
-const std::uint64_t hash=item.key.hash();
+const std::uint64_t hash=item.key.table_hash();
 DictionaryValue value(std::move(item.value));
 // Script code run by clear() or by an earlier release may have stored this key again.
 const std::uint32_t position=find_position(item.key,hash);
@@ -833,7 +811,7 @@ for(std::uint32_t index=other.first_;index!=no_entry;index=other.entry(index).ne
 const Entry& item=other.entry(index);
 DictionaryValue value;
 if(!value.snapshot(item.value,*cache_))return false;
-copy.insert_new(String(item.key),item.key.hash(),value);
+copy.insert_new(String(item.key),item.key.table_hash(),value);
 }
 for(std::uint32_t index=copy.first_;index!=no_entry;index=copy.entry(index).next){
 DictionaryValue& value=copy.entry(index).value;
@@ -1237,7 +1215,7 @@ const std::string_view tag=line.substr(0,space);
 std::string_view rest=line.substr(space+1);
 String key;
 if(!read_quoted(rest,key))return false;
-const std::uint64_t hash=key.hash();
+const std::uint64_t hash=key.table_hash();
 if(target.find_position(key,hash)!=no_entry)return false;
 DictionaryValue item;
 if(tag=="none"){

@@ -12,19 +12,23 @@
 //   a per-thread cache of at most 32 blocks per class, freed when the thread ends; any thread may free any string.
 // - Metadata is computed lazily and invalidated on every mutation (or carried over exactly when an operation provably
 //   cannot change the character count): the character count with an all-ASCII flag (one word-at-a-time scan), the 64-bit
-//   hash (cached for heap strings; inline strings hash their at most 23 bytes on each call), and for non-ASCII heap text
+//   table hash (cached for heap strings; inline strings hash their at most 23 bytes on each call), and for non-ASCII heap text
 //   longer than index_step characters a sparse index with the byte offset of every index_step-th character, so indexed
 //   access, substr and the character position of a search hit scan at most index_step characters. The index always covers
 //   the whole text: const members build it in one go, appends extend it. When every character is one byte, indices are
 //   byte offsets and no index exists.
-// - hash() is a fixed-seed wyhash-style 64-bit hash of the bytes read little-endian: equal on every platform and run.
+// - hash() is a fixed-seed wyhash-style 64-bit hash of the bytes read little-endian: equal on every platform and run, the
+//   script's `hash()`, computed on each call (never cached). table_hash() is the hash every hash table keyed by String uses
+//   (the dictionary, std::hash<String>): the same wyhash structure with its seed and all four mixing secrets drawn per
+//   process from the operating system's entropy source, so it is equal for equal bytes within one process only, and key
+//   sets built offline to collide in hash() (fully or in some bits) spread in tables like any other keys.
 // - Range rules: lengths, indices and counts are int and "not found" is -1. char_at/code_at need 0 <= i < length(),
 //   byte_at 0 <= i < byte_length(); find/substr/insert/erase starts must lie in [0, length()] (rfind also takes -1 = end);
 //   counts that run past the end are clamped; a negative count other than the -1 "to the end" default is negative_count.
 //   Violations are returned as StringError (no C++ exceptions for script errors); the binding maps them to exception texts.
 // - Comparisons are by bytes (unsigned), which for valid UTF-8 is code point order.
 // - Thread safety like a standard container: any number of threads may call const members (and copy) one String at the
-//   same time; the caches they fill are written atomically (relaxed counts, release/acquire for the hash and the index
+//   same time; the caches they fill are written atomically (relaxed counts, release/acquire for the table hash and the index
 //   pointer, which is published once by compare-and-swap and only replaced or freed by non-const members). Non-const
 //   members need exclusive access.
 // - Alignment: alignof(String) is 8, but a String may live at an address that is only 4 mod 8: AngelScript places value
@@ -32,7 +36,8 @@
 //   (DictionaryCache::make_from_list in dictionary.cpp reads them in place). That is safe only because the in-object 64-bit
 //   field, Heap::hash, is read and written only with relaxed loads and stores, which compile to plain moves that x86-64 and
 //   ARM64 perform at any address. Such a move may not be single-copy atomic when it crosses a cache line, which is harmless
-//   here: every thread that stores the hash stores the same value, and readers load it only after an acquire load of
+//   here: every thread that stores the table hash stores the same value (the secrets are fixed before main and before any
+//   other static initializer runs), and readers load it only after an acquire load of
 //   hash_known has seen the release store that follows a complete store. Acquire, release, compare-and-swap and
 //   read-modify-write operations are used only on 4-aligned 32-bit fields (Heap::hash_known, Rep::meta) and on the heap
 //   block's header (the index pointer), which the allocator aligns; those would fault or tear on a misaligned address.
@@ -60,6 +65,9 @@ template<typename T>
 concept integer_value=std::integral<T>&&!std::is_same_v<T,bool>&&!std::is_same_v<T,char>&&!std::is_same_v<T,wchar_t>&&!std::is_same_v<T,char8_t>&&!std::is_same_v<T,char16_t>&&!std::is_same_v<T,char32_t>;
 // The 64-bit hash of String::hash() over any bytes.
 std::uint64_t hash_bytes(const char* data,std::size_t size) noexcept;
+// The 64-bit hash of String::table_hash() over any bytes, keyed per process. Valid from the first dynamic initializer on
+// (the secrets are drawn by a priority-101 constructor; debug builds assert it).
+std::uint64_t table_hash_bytes(const char* data,std::size_t size) noexcept;
 // Byte equality without a C runtime call, for the hot comparisons of short strings (array find and equality, dictionary
 // lookups, substring search): the Windows C runtime's memcmp, called once per comparison, dominated them. Up to 16 bytes
 // the n bytes are compared with two overlapping loads of 2, 4 or 8 bytes; longer runs go to an out-of-line loop (16-byte
@@ -219,9 +227,15 @@ if((meta&meta_ascii)!=0)return true;
 if((meta&meta_length)!=size_bytes())return false;
 return settle_ascii();
 }
+// The stable script hash (see the contract), computed on each call.
 std::uint64_t hash() const noexcept
 {
-if(!is_heap())return string_detail::hash_bytes(rep_.storage.buffer,rep_.size);
+return string_detail::hash_bytes(data(),size_bytes());
+}
+// The per-process keyed hash for hash tables (see the contract), cached for heap text.
+std::uint64_t table_hash() const noexcept
+{
+if(!is_heap())return string_detail::table_hash_bytes(rep_.storage.buffer,rep_.size);
 if(__atomic_load_n(&rep_.storage.heap.hash_known,__ATOMIC_ACQUIRE)!=0)return __atomic_load_n(&rep_.storage.heap.hash,__ATOMIC_RELAXED);
 return cache_hash();
 }
@@ -408,7 +422,7 @@ struct Heap {
 char* ptr;
 std::uint32_t capacity;
 std::uint32_t hash_known;
-// May sit at a 4-mod-8 address (see the alignment contract): only relaxed loads and stores, never acquire, release,
+// The cached table_hash(). May sit at a 4-mod-8 address (see the alignment contract): only relaxed loads and stores, never acquire, release,
 // compare-and-swap or any read-modify-write operation.
 std::uint64_t hash;
 };
@@ -462,8 +476,10 @@ void release() noexcept;
 void free_index() noexcept;
 int scan() const noexcept;
 bool settle_ascii() const noexcept;
+// Computes table_hash() of heap text and caches it.
 std::uint64_t cache_hash() const noexcept;
 void extend_index();
+// Carries other's cached table hash (heap text of equal bytes) over to this heap text, or marks it unknown.
 void copy_hash(const String& other) noexcept;
 static std::uint32_t view_meta(std::string_view bytes) noexcept;
 void reallocate(std::uint32_t capacity);
@@ -512,6 +528,6 @@ template<>
 struct std::hash<zodiac::String> {
 std::size_t operator()(const zodiac::String& text) const noexcept
 {
-return static_cast<std::size_t>(text.hash());
+return static_cast<std::size_t>(text.table_hash());
 }
 };

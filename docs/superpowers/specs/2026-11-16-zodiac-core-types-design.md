@@ -98,7 +98,7 @@ Script API (style C; indices and counts are characters unless the name says `byt
 
 ### 8.3 `dictionary` (plan 4a)
 
-- Hash table with string keys (open addressing, the string's cached hash), iteration in insertion order (deterministic saves and listings).
+- Hash table with string keys (open addressing, the string's cached keyed table hash), iteration in insertion order (deterministic saves and listings).
 - Values of any script type, stored like the sample add-on (primitive kept inline, objects and handles by reference counting), with garbage-collector support for cycles.
 - API: `set(key, value)`, `get(key, out value)` → bool, `d[key]` (value proxy with conversions), `exists(key)`, `remove(key)` → bool, `keys()` → `array<string>`, `length()`, `empty()`, `clear()`, `serialize()` → string and `deserialize(string)` → bool in Zodiac's own versioned text format (only primitives, strings and nested dictionaries/arrays of those; other values are refused with an exception naming the key).
 
