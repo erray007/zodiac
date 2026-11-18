@@ -32,7 +32,6 @@ Plugins keep full freedom to use their own pack systems. The owner's `tg_audio` 
 - Reading or converting tg_audio's or king_audio_engine's pack formats (MAPK and the encrypted folder). Those formats stay inside their plugin. Zodiac's core does not know them.
 - Compression inside packs. Game assets (ogg, opus, png) are already compressed. The format reserves a flag so compression can be added later without a new version.
 - Payload (bytecode) encryption, string-literal encryption and `obfuscate`. Those belong to the protection plan, which reuses this plan's cipher code.
-- Writable mounts of packs. A mounted pack is read-only. Writing goes through the `pack` object.
 - BGT's `pack_file` name and format: the `bgt_compat` module (plan 9).
 
 ## 4. Anti-goals
