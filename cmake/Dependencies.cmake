@@ -65,14 +65,18 @@ find_package(Threads REQUIRED)
 target_link_libraries(angelscript PUBLIC Threads::Threads)
 set_target_properties(angelscript PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_options(angelscript PRIVATE -w)
-# The sample add-ons Zodiac's string, array<T> and dictionary replace (spec 8.4). Only tests/bench links them, to measure Zodiac's types
-# against them; games, the core and the kit never get them (test_angelscript_has_no_sample_addons checks every archive of lib/release).
+# The sample add-ons Zodiac's string, array<T>, dictionary and maths replace (spec 8.4). Only tests/bench links them, to measure Zodiac's
+# types and library against them; games, the core and the kit never get them (test_angelscript_has_no_sample_addons checks every archive
+# of lib/release).
 add_library(angelscript_sample_addons STATIC
 "${AS_ADDON}/scriptstdstring/scriptstdstring.cpp"
 "${AS_ADDON}/scriptstdstring/scriptstdstring_utils.cpp"
 "${AS_ADDON}/scriptarray/scriptarray.cpp"
 "${AS_ADDON}/scriptdictionary/scriptdictionary.cpp"
+"${AS_ADDON}/scriptmath/scriptmath.cpp"
 )
 target_include_directories(angelscript_sample_addons SYSTEM PUBLIC "${AS_ADDON}")
 target_link_libraries(angelscript_sample_addons PUBLIC angelscript)
 target_compile_options(angelscript_sample_addons PRIVATE -w)
+# scriptmath registers float functions by default; Zodiac's maths are double, so the add-on is measured in its double configuration.
+target_compile_definitions(angelscript_sample_addons PRIVATE AS_USE_FLOAT=0)

@@ -1,8 +1,9 @@
 # cmake -DNM=<nm> [-DARCHIVE_DIR=<dir>] [-DARCHIVES=<a.a|b.a>] -P check_no_sample_addons.cmake
 #
 # The test test_angelscript_has_no_sample_addons (spec 8.4): the archives games link hold no symbol of the sample add-ons Zodiac's types
-# replace: scriptstdstring (RegisterStdString*), scriptarray (RegisterScriptArray, CScriptArray) and scriptdictionary
-# (RegisterScriptDictionary*, CScriptDictionary, CScriptDictValue). Those live in angelscript_sample_addons, which only tests/bench links.
+# and library replace: scriptstdstring (RegisterStdString*), scriptarray (RegisterScriptArray, CScriptArray), scriptdictionary
+# (RegisterScriptDictionary*, CScriptDictionary, CScriptDictValue) and scriptmath (RegisterScriptMath*). Those live in
+# angelscript_sample_addons, which only tests/bench links.
 # The archives checked are every *.a directly in ARCHIVE_DIR (the kit's lib/release on Windows: libangelscript.a,
 # libzodiac_core_release.a, libzodiac_release_stub.a and any other the kit stages there; lib/release/crt holds the toolchain's own runtime
 # and is not ours) plus every file in ARCHIVES. It fails unless at least one archive is checked, nm reads every one of them (each lists
@@ -46,7 +47,7 @@ endif()
 if(symbols MATCHES " T _?asCreateScriptEngine[\r\n]")
 set(engine_found TRUE)
 endif()
-string(REGEX MATCHALL "[^\r\n]*(RegisterStdString|RegisterScriptArray|RegisterScriptDictionary|CScriptArray|CScriptDictionary|CScriptDictValue)[^\r\n]*" found "${symbols}")
+string(REGEX MATCHALL "[^\r\n]*(RegisterStdString|RegisterScriptArray|RegisterScriptDictionary|RegisterScriptMath|CScriptArray|CScriptDictionary|CScriptDictValue)[^\r\n]*" found "${symbols}")
 if(found)
 list(JOIN found "\n" shown)
 string(APPEND failures "\n${archive} holds sample add-on symbols:\n${shown}")

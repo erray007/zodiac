@@ -3,6 +3,7 @@
 #include <doctest/doctest.h>
 #include <angelscript.h>
 #include <core/host.hpp>
+#include <core/library/library.hpp>
 #include <core/types/array.hpp>
 #include <core/types/dictionary.hpp>
 #include <core/types/string.hpp>
@@ -27,10 +28,11 @@ asIScriptEngine* engine=asCreateScriptEngine();
 REQUIRE(engine!=nullptr);
 engine->SetMessageCallback(asFUNCTION(collect_engine_message),&messages,asCALL_CDECL);
 // The same registrations as ScriptRuntime: the array first, since split and join use array<string>; the dictionary after
-// both, since keys() returns array<string>.
+// both, since keys() returns array<string>; then the library.
 zodiac::register_array(engine);
 zodiac::register_string(engine);
 zodiac::register_dictionary(engine);
+zodiac::register_math(engine);
 zodiac::register_exception_helpers(engine);
 return engine;
 }

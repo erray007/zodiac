@@ -3,6 +3,7 @@
 #include <core/path_utf8.hpp>
 #include <core/project_file.hpp>
 #include <core/text.hpp>
+#include <core/library/library.hpp>
 #include <core/types/array.hpp>
 #include <core/types/dictionary.hpp>
 #include <core/types/string_binding.hpp>
@@ -144,9 +145,11 @@ ScriptRuntime::ScriptRuntime(Diagnostics& diagnostics,ModuleSearchPaths search_p
 engine_->SetMessageCallback(asFUNCTION(RuntimeCallbacks::message),this,asCALL_CDECL);
 // Zodiac's array first: string's split and join use array<string>; the dictionary after both, since keys() returns
 // array<string>. The sample dictionary add-on is not registered (it keys on std::string; Zodiac's dictionary replaces it).
+// Then the library, which uses the types (the sample maths add-on is not registered either; register_math replaces it).
 register_array(engine_);
 register_string(engine_);
 register_dictionary(engine_);
+register_math(engine_);
 register_exception_helpers(engine_);
 host_.set_log_handler([this](zodiac_log_level level,std::string_view message){diagnostics_.report(level,message);});
 }
