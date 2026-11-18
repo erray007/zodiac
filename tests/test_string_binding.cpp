@@ -162,6 +162,24 @@ CHECK_FALSE(compiles(fixture,"string s=\"ab\";s.code_at(0)=5;"));
 CHECK_FALSE(compiles(fixture,"string s=\"ab\";s.byte_at(0)=5;"));
 CHECK_FALSE(compiles(fixture,"string s=\"ab\";s.byte_at(0)+=1;"));
 CHECK_FALSE(compiles(fixture,"string s=\"ab\";s.code_at(0)++;"));
+// s[i] is read-only too (a get-only index accessor): assigning to it does not compile, reading it does, in expressions,
+// as an argument, on a const string and on a temporary.
+CHECK_FALSE(compiles(fixture,"string s=\"ab\";s[0]=\"x\";"));
+CHECK_FALSE(compiles(fixture,"string s=\"ab\";s[0]+=\"x\";"));
+CHECK(compiles(fixture,"string s=\"ab\";string c=s[1];bool b=s[0]==\"a\";string d=s[0]+s[1];"));
+// No implicit conversion from a number to a string, as an argument or in a comparison.
+CHECK(compiles(fixture,"f(\"5\");}void f(string s){"));
+CHECK_FALSE(compiles(fixture,"f(5);}void f(string s){"));
+CHECK_FALSE(compiles(fixture,"bool b=\"a\"==5;"));
+const char* reads="string first(const string &in s){return s;}\n"
+"bool main(){\n"
+"const string s=\"a\xC5\x9F" "b\";\n"
+"string c=s[1];\n"
+"int i=2;\n"
+"return c==\"\xC5\x9F\"&&first(s[i])==\"b\"&&(s[0]+s[2])==\"ab\"&&(s+\"!\")[3]==\"!\"&&s[1].length()==1;\n"
+"}";
+REQUIRE(fixture.run(reads,"bool main()")==asEXECUTION_FINISHED);
+CHECK(fixture.context->GetReturnByte()!=0);
 }
 
 TEST_CASE("byte_at and code_at of temporary strings read the right text")

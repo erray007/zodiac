@@ -606,7 +606,9 @@ r.method("string &opAddAssign(const string &in)",asFUNCTION(guarded<&add_assign>
 r.method("string opAdd(const string &in) const",asFUNCTION(guarded<&add>::call));
 r.method("bool opEquals(const string &in) const",asFUNCTION(equals));
 r.method("int opCmp(const string &in) const",asFUNCTION(compare));
-r.method("string opIndex(int) const",asFUNCTION(guarded<&char_at>::call));
+// s[i] is read-only (spec 8.1): a get-only index accessor, so an assignment to s[i] is a compile error rather than a write
+// to a temporary. The engine's default accessor mode (3) only takes functions declared with "property" as accessors.
+r.method("string get_opIndex(int) const property",asFUNCTION(guarded<&char_at>::call));
 r.value<std::int8_t>("int8");
 r.value<std::int16_t>("int16");
 r.value<std::int32_t>("int");
