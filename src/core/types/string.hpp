@@ -470,9 +470,11 @@ rep_.size=0;
 rep_.meta=meta_ascii;
 }
 void init(const char* bytes,std::size_t size,std::uint32_t meta);
-// The copy constructor for heap text (other.is_heap()).
-void copy_heap(const String& other);
-void release() noexcept;
+// The copy constructor for heap text (other.is_heap()). It and release() start on a 64-byte boundary, as do the binding's
+// copy and destroy entry points (string_binding.cpp): with full LTO their default 16-byte placement shifts with the size of
+// unrelated code, and on the measured machines that alone moved copying a heap string from a literal by up to 8 %.
+[[gnu::aligned(64)]] void copy_heap(const String& other);
+[[gnu::aligned(64)]] void release() noexcept;
 void free_index() noexcept;
 int scan() const noexcept;
 bool settle_ascii() const noexcept;

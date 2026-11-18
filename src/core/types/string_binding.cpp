@@ -170,8 +170,9 @@ void construct(void* memory) noexcept
 {
 ::new(memory) String();
 }
-// A copy of heap text allocates and may throw.
-[[gnu::noinline]] void copy_construct_heap(const String& other,void* memory) noexcept
+// A copy of heap text allocates and may throw. This, copy_construct and destruct start on a 64-byte boundary (see
+// String::copy_heap in string.hpp).
+[[gnu::noinline,gnu::aligned(64)]] void copy_construct_heap(const String& other,void* memory) noexcept
 {
 try{
 ::new(memory) String(other);
@@ -182,7 +183,7 @@ raise_current_exception();
 }
 }
 // Inline text is copied without allocating, so the common case is a leaf without an exception frame (a tail call otherwise).
-void copy_construct(const String& other,void* memory) noexcept
+[[gnu::aligned(64)]] void copy_construct(const String& other,void* memory) noexcept
 {
 if(other.is_inline()){
 ::new(memory) String(other);
@@ -201,7 +202,7 @@ catch(...){
 raise_current_exception();
 }
 }
-void destruct(String* self) noexcept
+[[gnu::aligned(64)]] void destruct(String* self) noexcept
 {
 self->~String();
 }
