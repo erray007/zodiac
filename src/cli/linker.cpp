@@ -66,7 +66,7 @@ void replace_all(std::string& text,std::string_view from,std::string_view to)
 for(std::size_t at=text.find(from);at!=std::string::npos;at=text.find(from,at+to.size()))text.replace(at,from.size(),to);
 }
 enum class LinkLineError{unreadable,damaged};
-// The lines of link.txt; damaged when a line is empty, {inputs} or {output} is not there exactly once, or {cache} is in more than one line.
+// The lines of link.txt; damaged when a line is empty or {inputs} or {output} is not there exactly once.
 std::expected<std::vector<std::string>,LinkLineError> read_link_line(const fs::path& file)
 {
 std::ifstream in(file,std::ios::binary);
@@ -76,7 +76,6 @@ if(in.bad())return std::unexpected(LinkLineError::unreadable);
 std::vector<std::string> lines;
 std::size_t inputs=0;
 std::size_t outputs=0;
-std::size_t caches=0;
 std::size_t start=0;
 while(start<text.size()){
 std::size_t end=text.find('\n',start);
@@ -87,10 +86,9 @@ if(!line.empty()&&line.back()=='\r')line.pop_back();
 if(line.empty())return std::unexpected(LinkLineError::damaged);
 if(line=="{inputs}")++inputs;
 if(line=="{output}")++outputs;
-if(line.find("{cache}")!=std::string::npos)++caches;
 lines.push_back(std::move(line));
 }
-if(inputs!=1||outputs!=1||caches>1)return std::unexpected(LinkLineError::damaged);
+if(inputs!=1||outputs!=1)return std::unexpected(LinkLineError::damaged);
 return lines;
 }
 // Reports each non-empty line of text, prefixed by prefix (continuation lines of a failure are indented by two spaces).
@@ -148,13 +146,6 @@ continue;
 }
 if(line=="{output}"){
 append_quoted(arguments,generic_utf8(request.output));
-continue;
-}
-// The cache line is expanded on its own, so a cache path holding the text "{release_lib}" stays as it is.
-if(line.find("{cache}")!=std::string::npos){
-if(request.thinlto_cache.empty())continue;
-replace_all(line,"{cache}",generic_utf8(request.thinlto_cache));
-append_quoted(arguments,line);
 continue;
 }
 replace_all(line,"{release_lib}",release_lib);

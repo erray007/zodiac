@@ -65,10 +65,8 @@ std::optional<std::filesystem::path> find_project_root(const std::filesystem::pa
 // may register the same names, so none is chosen for the developer), everything else default.
 // A project file error is returned unchanged. The file itself is not checked: the caller verifies it is a regular file.
 std::expected<Project,std::string> load_project_for_script(const std::filesystem::path& script_file);
-// <root>/.zodiac: the folder of the build's own working files (zodiac build keeps its ThinLTO cache in <root>/.zodiac/thinlto-cache). Never an asset.
-std::filesystem::path project_work_dir(const Project& project);
 // Every regular file under project.root matching any of project.build.assets, as absolute paths, sorted and without duplicates.
-// zodiac.toml in the root, the project file (project.file) and everything under <root>/release and project_work_dir are never returned; those paths are compared as
+// zodiac.toml in the root, the project file (project.file) and everything under <root>/release are never returned; those paths are compared as
 // the file system compares names (same_path_text: case-insensitively on Windows). A pattern matching nothing is not an error; a missing or unreadable directory is: the error is one line, `zodiac.toml: error: cannot read directory "<path>": <reason>`.
 // A link whose target no longer exists is skipped (there is nothing to copy); any other entry whose type cannot be read is an error: `zodiac.toml: error: cannot read "<entry path>": <reason>`.
 std::expected<std::vector<std::filesystem::path>,std::string> expand_assets(const Project& project);

@@ -383,13 +383,11 @@ REQUIRE(files.has_value());
 CHECK(*files==std::vector<fs::path>{loaded->root/"sounds"/"a.ogg",loaded->root/"sounds"/"guns"/"b.ogg"});
 }
 
-TEST_CASE("expand_assets never returns zodiac.toml, release files or the build's work folder and allows no matches")
+TEST_CASE("expand_assets never returns zodiac.toml or release files and allows no matches")
 {
 TempProject project;
 project.main_script();
 project.write("release/x.txt","");
-project.write(".zodiac/thinlto-cache/llvmcache-0","");
-CHECK(zodiac::project_work_dir(zodiac::Project{.root=project.dir()})==project.dir()/".zodiac");
 project.toml("[game]\nmain = \"main.zs\"\n[build]\nassets = [\"**\", \"nothing/*.xyz\"]\n");
 const auto loaded=zodiac::load_project(project.dir());
 REQUIRE(loaded.has_value());

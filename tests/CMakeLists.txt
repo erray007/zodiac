@@ -200,10 +200,6 @@ set_tests_properties(cli_e2e PROPERTIES ENVIRONMENT "ZODIAC_EXE=$<TARGET_FILE:zo
 if(WIN32)
 # Builds real releases with the build tree's kit layout (zodiac_kit_stage); echo_args stands in for a signing tool.
 add_test(NAME build_e2e COMMAND ${Python3_EXECUTABLE} -I -m unittest discover -v -s ${CMAKE_CURRENT_SOURCE_DIR}/e2e -p "test_build.py")
-# Every Release build of a game runs the ThinLTO backend in the kit's ld.lld (about 12 s per link on a 4-core machine, cmake/ZodiacReleaseFlags.cmake),
-# and build_e2e builds a few dozen games: about 10 minutes locally, close enough to CTest's default 1500 s that a slow runner could pass it.
-# kit_e2e builds one game and keeps the default.
-set_tests_properties(build_e2e PROPERTIES TIMEOUT 2400)
 set_tests_properties(build_e2e PROPERTIES ENVIRONMENT "ZODIAC_EXE=$<TARGET_FILE:zodiac>;ZODIACW_EXE=$<TARGET_FILE:zodiacw>;ZODIAC_MODULE_DIR=${CMAKE_BINARY_DIR}/modules;ZODIAC_TEST_MODULE_DIR=${ZODIAC_TEST_MODULE_DIR};ZODIAC_VERSION=${PROJECT_VERSION};ZODIAC_ECHO_ARGS=$<TARGET_FILE:echo_args>;ZODIAC_VENDOR_MODULE_DIR=${ZODIAC_VENDOR_MODULE_DIR};ZODIAC_BUILD_CONFIG=$<CONFIG>;PYTHONIOENCODING=utf-8")
 # The installed kit: a fresh "cmake --install" into build/<preset>/kit-test/Zodiac (the folder is emptied first, so nothing stale survives),
 # then kit_e2e checks the layout and builds games with a copy of it in a folder of its own, with only the Windows system folders on PATH.

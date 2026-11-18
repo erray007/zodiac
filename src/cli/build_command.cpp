@@ -586,9 +586,6 @@ request.forced_symbols.push_back("zodiac_static_module_"+library.name);
 }
 request.inputs.push_back(kit.release_lib/"libzodiac_core_release.a");
 request.inputs.push_back(kit.release_lib/"libangelscript.a");
-// The ThinLTO cache lives in the project's work folder, never in the shipped output folder: an output folder that holds the cache (or lies inside it) builds without one.
-const fs::path cache=project_work_dir(project)/"thinlto-cache";
-if(!same_path_text(cache,output)&&!is_inside(cache,output)&&!is_inside(output,cache))request.thinlto_cache=cache;
 // link_release reports its own failures.
 if(!link_release(kit,request,diagnostics))return exit_build_error;
 const bool signing=!project.build.sign_command.empty();

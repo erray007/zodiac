@@ -6,7 +6,6 @@ import shutil
 import struct
 import subprocess
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -47,15 +46,6 @@ def pe_subsystem(path):
     data = Path(path).read_bytes()
     pe = struct.unpack_from("<I", data, 0x3C)[0]
     return struct.unpack_from("<H", data, pe + 24 + 68)[0]
-
-
-def without_time_stamp(data):
-    """A PE image with its file header's TimeDateStamp and its optional header's CheckSum zeroed: the fields two links of the same inputs may differ in."""
-    image = bytearray(data)
-    pe = struct.unpack_from("<I", image, 0x3C)[0]
-    struct.pack_into("<I", image, pe + 8, 0)
-    struct.pack_into("<I", image, pe + 24 + 64, 0)
-    return bytes(image)
 
 
 def run_exe(path, cwd=None, errors="strict"):
@@ -684,35 +674,6 @@ class BuildTest(unittest.TestCase):
             self.assert_built(self.build(str(project), "--output", str(output)), output / "game.exe")
         files = sorted(p.relative_to(project / "out").as_posix() for p in (project / "out").rglob("*") if p.is_file())
         self.assertEqual(files, ["data/a.txt", "game.exe", "main.zs"])
-
-    def test_rebuild_reuses_the_thinlto_cache(self):
-        project = self.new_project(self.root / "hello")
-        exe = project / "release" / "hello.exe"
-        times = []
-        images = []
-        for _ in range(2):
-            start = time.perf_counter()
-            self.assert_built(self.build(str(project)), exe)
-            times.append(time.perf_counter() - start)
-            images.append(exe.read_bytes())
-        # The cached link gives the same program; only the time stamp may change.
-        self.assertEqual(without_time_stamp(images[1]), without_time_stamp(images[0]))
-        self.assertEqual(run_exe(exe), (0, "", ""))
-        # The cache stays in the project's work folder: the output folder ships the executable only.
-        self.assertEqual(sorted(p.name for p in exe.parent.iterdir()), ["hello.exe"])
-        if BUILD_CONFIG == "Release":
-            # Only a Release kit's archives are bitcode, so only they fill the cache and make the second link fast.
-            cache = project / ".zodiac" / "thinlto-cache"
-            self.assertTrue(cache.is_dir() and any(cache.iterdir()), cache)
-            print("hello builds: %.2f s, then %.2f s with the ThinLTO cache" % (times[0], times[1]))
-            self.assertLess(times[1], times[0] * 0.5, times)
-
-    def test_output_holding_the_cache_folder_builds_without_a_cache(self):
-        project = self.new_project(self.root / "game")
-        # The project root as output folder: the cache folder would be inside it, so the link runs without one.
-        self.assert_built(self.build(str(project), "--output", str(project)), project / "game.exe")
-        self.assertFalse((project / ".zodiac").exists())
-        self.assertEqual(run_exe(project / "game.exe"), (0, "", ""))
 
     def test_hello_size_gate(self):
         # Debug builds stay unoptimized for debugging, so only a Release build says what a shipped hello weighs.

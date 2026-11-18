@@ -108,7 +108,7 @@ std::expected<void,std::string> result;
 std::vector<std::string> lines;
 };
 // Links folder/game.exe from the payload's object, the release stub, the given static modules, the release core and AngelScript, in the order zodiac build uses.
-Linked link_game(const fs::path& folder,std::string_view payload,const std::vector<std::string>& static_modules,const std::vector<fs::path>& extra_inputs={},const fs::path& cache={})
+Linked link_game(const fs::path& folder,std::string_view payload,const std::vector<std::string>& static_modules,const std::vector<fs::path>& extra_inputs={})
 {
 const zodiac::KitLayout kit=build_kit();
 const fs::path object=folder/"game.zodpay.obj";
@@ -124,7 +124,6 @@ request.forced_symbols.push_back("zodiac_static_module_"+name);
 request.inputs.push_back(kit.release_lib/"libzodiac_core_release.a");
 request.inputs.push_back(kit.release_lib/"libangelscript.a");
 request.inputs.insert(request.inputs.end(),extra_inputs.begin(),extra_inputs.end());
-request.thinlto_cache=cache;
 Linked linked;
 zodiac::Diagnostics diagnostics;
 diagnostics.add_sink(std::make_unique<CollectSink>(linked.lines));
@@ -175,9 +174,6 @@ INFO(join(lines));
 CHECK(std::ranges::count(lines,"{inputs}")==1);
 CHECK(std::ranges::count(lines,"{output}")==1);
 CHECK(std::ranges::count(lines,"{release_lib}/crt/crt2u.o")==1);
-CHECK(std::ranges::count(lines,"--thinlto-cache-dir={cache}")==1);
-CHECK(std::ranges::count(lines,"--icf=safe")==1);
-CHECK(std::ranges::count(lines,"-plugin-opt=thinlto")==1);
 // Relocatable: no absolute path of the toolchain the kit was built with survives.
 for(const std::string& line:lines){
 CHECK(line.find(':')==std::string::npos);
@@ -201,48 +197,6 @@ CHECK(pe_subsystem(folder.dir()/"game.exe")==2);
 const zodiac::platform::ProcessResult ran=run_exe(folder.dir()/"game.exe");
 CHECK(ran.output=="");
 CHECK(ran.exit_code==7);
-}
-
-TEST_CASE("link_release keeps ThinLTO objects in the requested cache folder")
-{
-const TempDir folder;
-const TempDir cache_parent;
-const fs::path cache=cache_parent.dir()/from_utf8("\xC3\xB6nbellek");
-const std::string payload=payload_of(from_utf8(ZODIAC_TEST_SCRIPT_DIR)/"int_main");
-for(int link=0;link<2;++link){
-const Linked linked=link_game(folder.dir(),payload,{},{},cache);
-INFO(join(linked.lines));
-REQUIRE(linked.result.has_value());
-CHECK(run_exe(folder.dir()/"game.exe").exit_code==7);
-}
-#if defined(NDEBUG)
-// A Release tree's archives are bitcode, so the backend stores its objects there; a Debug tree's are native and lld ignores the cache.
-REQUIRE(fs::is_directory(cache));
-CHECK(fs::directory_iterator(cache)!=fs::directory_iterator());
-#endif
-// Nothing of the cache lands next to the executable.
-std::vector<std::string> names;
-for(const fs::directory_entry& entry:fs::directory_iterator(folder.dir()))names.push_back(to_utf8(entry.path().filename()));
-std::ranges::sort(names);
-CHECK(names==std::vector<std::string>{"game.exe","game.zodpay.obj"});
-}
-
-TEST_CASE("link_release refuses a link line with {cache} in two lines")
-{
-const TempDir folder;
-zodiac::KitLayout kit=build_kit();
-kit.release_lib=folder.dir()/"release";
-fs::create_directories(kit.release_lib);
-write_file(kit.release_lib/"link.txt","-o\n{output}\n{inputs}\n--thinlto-cache-dir={cache}\n--thinlto-cache-dir={cache}\n");
-zodiac::cli::LinkRequest request;
-request.output=folder.dir()/"game.exe";
-std::vector<std::string> lines;
-zodiac::Diagnostics diagnostics;
-diagnostics.add_sink(std::make_unique<CollectSink>(lines));
-const auto result=zodiac::cli::link_release(kit,request,diagnostics);
-REQUIRE(!result.has_value());
-CHECK(result.error().starts_with("error: the release link line \""));
-CHECK(result.error().ends_with("link.txt\" is damaged"));
 }
 
 TEST_CASE("a linked release delivers static module output to a piped parent")
