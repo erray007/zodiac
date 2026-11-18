@@ -102,6 +102,8 @@ zodiac_add_test(test_text SOURCES test_text.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_unicode SOURCES test_unicode.cpp LIBRARIES zodiac_core)
 target_compile_definitions(test_unicode PRIVATE "ZODIAC_TEST_UNICODE_VECTORS=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/unicode/nfc_vectors.txt\"")
 zodiac_add_test(test_string SOURCES test_string.cpp LIBRARIES zodiac_core)
+# Replaces the global operator new to fail chosen allocations, so it is an executable of its own.
+zodiac_add_test(test_string_allocation SOURCES test_string_allocation.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_string_binding SOURCES test_string_binding.cpp script_fixture.hpp LIBRARIES zodiac_core)
 zodiac_add_test(test_array SOURCES test_array.cpp script_fixture.hpp LIBRARIES zodiac_core)
 zodiac_add_test(test_dictionary SOURCES test_dictionary.cpp script_fixture.hpp LIBRARIES zodiac_core)

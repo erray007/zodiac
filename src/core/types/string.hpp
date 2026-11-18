@@ -431,7 +431,8 @@ void raw_set_size(std::uint32_t size,std::uint32_t meta) noexcept;
 String& append_raw(const char* bytes,std::size_t size,std::uint32_t meta);
 // append_raw's paths for a full block and for text with a sparse index, kept out of line so its common path stays small.
 [[gnu::noinline]] String& append_grown(const char* bytes,std::size_t size,std::uint32_t meta);
-[[gnu::noinline]] void update_index(bool joins);
+// Never throws: an index it cannot extend is dropped (rebuilt lazily), so a published index always covers the whole text.
+[[gnu::noinline]] void update_index(bool joins) noexcept;
 String& append_signed(long long value);
 String& append_unsigned(unsigned long long value);
 static String concat(std::string_view a,std::uint32_t a_meta,std::string_view b,std::uint32_t b_meta);

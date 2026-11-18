@@ -1110,12 +1110,25 @@ if(!known_ascii&&header_of(rep_.storage.heap.ptr)->index!=nullptr)update_index(j
 return *this;
 }
 
-void String::update_index(bool joins)
+void String::update_index(bool joins) noexcept
 {
 // Earlier characters (and so the index entries) change only when the new bytes start with a continuation byte that
 // completes a sequence the old end left open; otherwise the index is extended over the new text.
-if(joins)free_index();
-else extend_index();
+if(joins){
+free_index();
+return;
+}
+// The new bytes, size and meta are already committed when the index is extended, so a std::bad_alloc from growing its
+// block must not leave the old index (which covers only the old text) published: it is dropped instead, and the next
+// indexed read rebuilds it over the whole text. extend_index allocates before it writes anything, so the old block is
+// intact for free_index. Table-based unwinding makes the handler free on the path that does not throw, which is cheaper
+// than allocating the grown block before the commit (that needs the character count of the new text first).
+try{
+extend_index();
+}
+catch(...){
+free_index();
+}
 }
 
 // An append that needs a larger block.
