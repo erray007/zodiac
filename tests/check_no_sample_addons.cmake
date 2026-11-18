@@ -8,6 +8,8 @@
 # and is not ours) plus every file in ARCHIVES. It fails unless at least one archive is checked, nm reads every one of them (each lists
 # defined symbols), one of them defines asCreateScriptEngine (so the AngelScript library is among them), and none holds an add-on symbol;
 # each offending archive is named with its symbols.
+# Release archives on Windows hold LLVM bitcode (ThinLTO, cmake/ZodiacReleaseFlags.cmake); NM must then read bitcode, as llvm-nm (CMAKE_NM
+# of llvm-mingw) does. llvm-nm prints a bitcode symbol with dashes in place of the address ("---------------- T name"), a native one with hex digits.
 if(NOT DEFINED NM OR "${NM}" STREQUAL "")
 message(FATAL_ERROR "check_no_sample_addons: NM is not set")
 endif()
@@ -38,7 +40,7 @@ execute_process(COMMAND "${NM}" "${archive}" RESULT_VARIABLE result OUTPUT_VARIA
 if(NOT result EQUAL 0)
 message(FATAL_ERROR "check_no_sample_addons: ${NM} failed on ${archive} (${result}): ${errors}")
 endif()
-if(NOT symbols MATCHES "[\r\n][0-9a-fA-F]* *[TDBR] ")
+if(NOT symbols MATCHES "[\r\n][0-9a-fA-F-]* *[TDBR] ")
 message(FATAL_ERROR "check_no_sample_addons: ${NM} listed no defined symbol in ${archive}, so its symbols were not read")
 endif()
 if(symbols MATCHES " T _?asCreateScriptEngine[\r\n]")

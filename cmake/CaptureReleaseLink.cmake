@@ -1,7 +1,10 @@
 # zodiac_capture_release_link(<release_lib_dir>)
 #
 # Windows only, run at configure time. Asks the pinned llvm-mingw driver (CMAKE_CXX_COMPILER) how it links a static GUI release executable,
-# "-### -static -mwindows -municode -Wl,--gc-sections -s <placeholder object> -o <output>", and stores the ld.lld arguments relocatably:
+# "-### -static -mwindows -municode <ZODIAC_RELEASE_GAME_LINK_FLAGS> <placeholder object> -o <output>", and stores the ld.lld arguments relocatably.
+# ZODIAC_RELEASE_GAME_LINK_FLAGS (cmake/ZodiacReleaseFlags.cmake, include it first) are the release link flags of every kit executable, so games are
+# linked like them: -O3 -Wl,--gc-sections -s -flto=thin -Wl,--icf=safe, which the driver turns into --gc-sections, -s, --icf=safe and the ThinLTO
+# options -plugin-opt=mcpu=x86-64, -plugin-opt=O3 and -plugin-opt=thinlto (kept as they are: they name no file).
 # - <release_lib_dir>/link.txt: one argument per line. Every file of the toolchain becomes {release_lib}/crt/<file name> (an -l library is resolved the way
 #   lld's MinGW driver does under -Bstatic, lib<name>.a then <name>.lib in each -L folder in order, and the -L folders are dropped), the output path
 #   becomes {output} and the placeholder object {inputs}. cli/linker.hpp expands it.
@@ -37,6 +40,9 @@ endif()
 file(WRITE "${file}" "${text}")
 endfunction()
 function(zodiac_capture_release_link release_lib)
+if(NOT ZODIAC_RELEASE_GAME_LINK_FLAGS)
+message(FATAL_ERROR "Cannot capture the release link line: ZODIAC_RELEASE_GAME_LINK_FLAGS is not set; include cmake/ZodiacReleaseFlags.cmake first.")
+endif()
 cmake_path(GET CMAKE_CXX_COMPILER PARENT_PATH compiler_bin)
 cmake_path(GET compiler_bin PARENT_PATH compiler_root)
 set(stamp "${compiler_root}/.stamp")
@@ -52,7 +58,7 @@ set(output "${work}/zodiac_release_output.exe")
 file(MAKE_DIRECTORY "${work}")
 # -### checks that the inputs exist, so the placeholder is a real (empty) file; nothing is compiled or linked.
 file(WRITE "${placeholder}" "")
-execute_process(COMMAND "${CMAKE_CXX_COMPILER}" "-###" -static -mwindows -municode -Wl,--gc-sections -s "${placeholder}" -o "${output}"
+execute_process(COMMAND "${CMAKE_CXX_COMPILER}" "-###" -static -mwindows -municode ${ZODIAC_RELEASE_GAME_LINK_FLAGS} "${placeholder}" -o "${output}"
 RESULT_VARIABLE result OUTPUT_VARIABLE driver_output ERROR_VARIABLE driver_output ENCODING UTF-8)
 if(NOT result EQUAL 0)
 message(FATAL_ERROR "Cannot capture the release link line: ${CMAKE_CXX_COMPILER} -### failed (${result}):\n${driver_output}")
