@@ -590,7 +590,8 @@ if(!index_)return no_entry;
 for(std::uint32_t position=home(hash);;position=(position+1)&mask_){
 const Slot& slot=index_[position];
 if(!slot.entry)return no_entry;
-if(slot.hash==hash&&entry(slot.entry-1).key==key)return position;
+// The bytes are compared inline (no C runtime memcmp call), which more than pays for home()'s multiply.
+if(slot.hash==hash&&string_detail::same_text(entry(slot.entry-1).key.bytes(),key.bytes()))return position;
 }
 }
 

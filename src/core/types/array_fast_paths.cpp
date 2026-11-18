@@ -30,9 +30,9 @@
 // ALTERED SOURCE: the native paths of zodiac::ScriptArray (spec 8.2), replacing the add-on's per-element type switch
 // (CScriptArray::Less/Equals) and its insertion sort. For bool, integer, floating-point and enum elements sort, find and
 // equality work on the element memory as the element's C++ type (std::sort, std::find, memcmp); for Zodiac's string they
-// compare zodiac::String objects directly (find and equality without a memcmp call per element, see same_bytes). Nothing
-// here calls into the script engine. Floating point: NaN goes last in both sort orders (so the order is strict weak) and
-// equals nothing, -0 equals 0.
+// compare zodiac::String objects directly (find and equality without a memcmp call per element, see
+// string_detail::same_bytes). Nothing here calls into the script engine. Floating point: NaN goes last in both sort orders
+// (so the order is strict weak) and equals nothing, -0 equals 0.
 #include <core/types/array.hpp>
 #include <core/types/string.hpp>
 #include <algorithm>
@@ -43,9 +43,6 @@
 #include <functional>
 #include <string_view>
 #include <type_traits>
-#if defined(__SSE2__)
-#include <emmintrin.h>
-#endif
 
 namespace zodiac {
 namespace {
@@ -116,46 +113,8 @@ const String* const* strings(const std::byte* data) noexcept
 {
 return reinterpret_cast<const String* const*>(data);
 }
-// String element comparison without a C runtime call per element: the Windows C runtime's memcmp, called once per element
-// of equal length, dominated find and equality of the short strings scripts store. Up to 16 bytes the n bytes are compared
-// with two overlapping loads of 2, 4 or 8 bytes; longer strings go to an out-of-line loop (16-byte SSE2 blocks, the last
-// one overlapping) so the per-element loop keeps few live registers. Every load stays inside both strings.
-template<class T>
-T load(const char* p) noexcept
-{
-T value;
-std::memcpy(&value,p,sizeof value);
-return value;
-}
-[[gnu::noinline]] bool same_long_bytes(const char* a,const char* b,std::size_t n) noexcept
-{
-#if defined(__SSE2__)
-for(std::size_t k=0;k+16<n;k+=16){
-const __m128i x=_mm_loadu_si128(reinterpret_cast<const __m128i*>(a+k));
-const __m128i y=_mm_loadu_si128(reinterpret_cast<const __m128i*>(b+k));
-if(_mm_movemask_epi8(_mm_cmpeq_epi8(x,y))!=0xFFFF)return false;
-}
-const __m128i x=_mm_loadu_si128(reinterpret_cast<const __m128i*>(a+n-16));
-const __m128i y=_mm_loadu_si128(reinterpret_cast<const __m128i*>(b+n-16));
-return _mm_movemask_epi8(_mm_cmpeq_epi8(x,y))==0xFFFF;
-#else
-return std::memcmp(a,b,n)==0;
-#endif
-}
-// True when the n bytes at a and b are equal.
-inline bool same_bytes(const char* a,const char* b,std::size_t n) noexcept
-{
-if(n>16)return same_long_bytes(a,b,n);
-if(n>=8)return ((load<std::uint64_t>(a)^load<std::uint64_t>(b))|(load<std::uint64_t>(a+n-8)^load<std::uint64_t>(b+n-8)))==0;
-if(n>=4)return ((load<std::uint32_t>(a)^load<std::uint32_t>(b))|(load<std::uint32_t>(a+n-4)^load<std::uint32_t>(b+n-4)))==0;
-if(n>=2)return ((load<std::uint16_t>(a)^load<std::uint16_t>(b))|(load<std::uint16_t>(a+n-2)^load<std::uint16_t>(b+n-2)))==0;
-return n==0||*a==*b;
-}
-// a and b hold the same bytes (the String == of the element type).
-inline bool same_string(std::string_view a,std::string_view b) noexcept
-{
-return a.size()==b.size()&&same_bytes(a.data(),b.data(),a.size());
-}
+// String elements compare without a C runtime call per element (string_detail::same_text, see string.hpp).
+using string_detail::same_text;
 }
 
 void ScriptArray::native_sort(bool descending) noexcept
@@ -179,7 +138,7 @@ if(kind_==Kind::string){
 const std::string_view needle=static_cast<const String*>(value)->bytes();
 const String* const* elements=strings(data_);
 for(std::uint32_t index=start;index<count_;++index){
-if(same_string(elements[index]->bytes(),needle))return static_cast<int>(index);
+if(same_text(elements[index]->bytes(),needle))return static_cast<int>(index);
 }
 return -1;
 }
@@ -194,7 +153,7 @@ if(kind_==Kind::string){
 const String* const* left=strings(data_);
 const String* const* right=strings(other.data_);
 for(std::uint32_t index=0;index<count_;++index){
-if(!same_string(left[index]->bytes(),right[index]->bytes()))return false;
+if(!same_text(left[index]->bytes(),right[index]->bytes()))return false;
 }
 return true;
 }

@@ -286,27 +286,11 @@ std::uint16_t value;
 std::memcpy(&value,p,2);
 return value;
 }
-// same_bytes for n > 16, out of line: long needles are rare, and keeping their loop out of search leaves its scan with
-// few live registers.
-[[gnu::noinline]] bool same_long_bytes(const byte* a,const byte* b,std::size_t n) noexcept
-{
-#if defined(__SSE2__)
-for(std::size_t k=0;k+16<n;k+=16){
-const __m128i x=_mm_loadu_si128(reinterpret_cast<const __m128i*>(a+k));
-const __m128i y=_mm_loadu_si128(reinterpret_cast<const __m128i*>(b+k));
-if(_mm_movemask_epi8(_mm_cmpeq_epi8(x,y))!=0xFFFF)return false;
-}
-const __m128i x=_mm_loadu_si128(reinterpret_cast<const __m128i*>(a+n-16));
-const __m128i y=_mm_loadu_si128(reinterpret_cast<const __m128i*>(b+n-16));
-return _mm_movemask_epi8(_mm_cmpeq_epi8(x,y))==0xFFFF;
-#else
-return std::memcmp(a,b,n)==0;
-#endif
-}
-// True when the n bytes at a and b are equal (n >= 2).
+// True when the n bytes at a and b are equal (n >= 2). Long needles are rare: string_detail::same_long_bytes keeps their
+// loop out of search, which leaves its scan with few live registers.
 inline bool same_bytes(const byte* a,const byte* b,std::size_t n) noexcept
 {
-if(n>16)return same_long_bytes(a,b,n);
+if(n>16)return string_detail::same_long_bytes(reinterpret_cast<const char*>(a),reinterpret_cast<const char*>(b),n);
 if(n>=8)return ((load_word(a)^load_word(b))|(load_word(a+n-8)^load_word(b+n-8)))==0;
 if(n>=4)return ((load_u32(a)^load_u32(b))|(load_u32(a+n-4)^load_u32(b+n-4)))==0;
 return ((load_u16(a)^load_u16(b))|(load_u16(a+n-2)^load_u16(b+n-2)))==0;
@@ -851,6 +835,22 @@ return (a=='t'&&b=='r')||(a=='a'&&b=='z');
 }
 
 namespace string_detail {
+[[gnu::noinline]] bool same_long_bytes(const char* a,const char* b,std::size_t n) noexcept
+{
+#if defined(__SSE2__)
+for(std::size_t k=0;k+16<n;k+=16){
+const __m128i x=_mm_loadu_si128(reinterpret_cast<const __m128i*>(a+k));
+const __m128i y=_mm_loadu_si128(reinterpret_cast<const __m128i*>(b+k));
+if(_mm_movemask_epi8(_mm_cmpeq_epi8(x,y))!=0xFFFF)return false;
+}
+const __m128i x=_mm_loadu_si128(reinterpret_cast<const __m128i*>(a+n-16));
+const __m128i y=_mm_loadu_si128(reinterpret_cast<const __m128i*>(b+n-16));
+return _mm_movemask_epi8(_mm_cmpeq_epi8(x,y))==0xFFFF;
+#else
+return std::memcmp(a,b,n)==0;
+#endif
+}
+
 std::uint64_t hash_bytes(const char* data,std::size_t size) noexcept
 {
 const byte* p=ubytes(data);

@@ -60,6 +60,32 @@ template<typename T>
 concept integer_value=std::integral<T>&&!std::is_same_v<T,bool>&&!std::is_same_v<T,char>&&!std::is_same_v<T,wchar_t>&&!std::is_same_v<T,char8_t>&&!std::is_same_v<T,char16_t>&&!std::is_same_v<T,char32_t>;
 // The 64-bit hash of String::hash() over any bytes.
 std::uint64_t hash_bytes(const char* data,std::size_t size) noexcept;
+// Byte equality without a C runtime call, for the hot comparisons of short strings (array find and equality, dictionary
+// lookups, substring search): the Windows C runtime's memcmp, called once per comparison, dominated them. Up to 16 bytes
+// the n bytes are compared with two overlapping loads of 2, 4 or 8 bytes; longer runs go to an out-of-line loop (16-byte
+// SSE2 blocks, the last one overlapping) so callers' loops keep few live registers. Every load stays inside both ranges.
+// same_long_bytes needs n > 16.
+bool same_long_bytes(const char* a,const char* b,std::size_t n) noexcept;
+template<class T>
+inline T load_bytes(const char* p) noexcept
+{
+T value;
+__builtin_memcpy(&value,p,sizeof value);
+return value;
+}
+inline bool same_bytes(const char* a,const char* b,std::size_t n) noexcept
+{
+if(n>16)return same_long_bytes(a,b,n);
+if(n>=8)return ((load_bytes<std::uint64_t>(a)^load_bytes<std::uint64_t>(b))|(load_bytes<std::uint64_t>(a+n-8)^load_bytes<std::uint64_t>(b+n-8)))==0;
+if(n>=4)return ((load_bytes<std::uint32_t>(a)^load_bytes<std::uint32_t>(b))|(load_bytes<std::uint32_t>(a+n-4)^load_bytes<std::uint32_t>(b+n-4)))==0;
+if(n>=2)return ((load_bytes<std::uint16_t>(a)^load_bytes<std::uint16_t>(b))|(load_bytes<std::uint16_t>(a+n-2)^load_bytes<std::uint16_t>(b+n-2)))==0;
+return n==0||*a==*b;
+}
+// a and b hold the same bytes (String's ==).
+inline bool same_text(std::string_view a,std::string_view b) noexcept
+{
+return a.size()==b.size()&&same_bytes(a.data(),b.data(),a.size());
+}
 // String's packed fields. size: bit 31 is set while the bytes live on the heap. meta: meta_unknown, or the character count
 // plus meta_ascii when the text is known to be ASCII. Without meta_ascii the text is non-ASCII when the count differs from
 // the byte length, and not yet known otherwise (every character one byte: ASCII or invalid bytes; is_ascii() settles it).
