@@ -27,6 +27,15 @@
 //   same time; the caches they fill are written atomically (relaxed counts, release/acquire for the hash and the index
 //   pointer, which is published once by compare-and-swap and only replaced or freed by non-const members). Non-const
 //   members need exclusive access.
+// - Alignment: alignof(String) is 8, but a String may live at an address that is only 4 mod 8: AngelScript places value
+//   types on its script stack at 4-byte granularity, and the dictionary list literal's buffer holds keys at 4-byte boundaries
+//   (DictionaryCache::make_from_list in dictionary.cpp reads them in place). That is safe only because the in-object 64-bit
+//   field, Heap::hash, is read and written only with relaxed loads and stores, which compile to plain moves that x86-64 and
+//   ARM64 perform at any address. Such a move may not be single-copy atomic when it crosses a cache line, which is harmless
+//   here: every thread that stores the hash stores the same value, and readers load it only after an acquire load of
+//   hash_known has seen the release store that follows a complete store. Acquire, release, compare-and-swap and
+//   read-modify-write operations are used only on 4-aligned 32-bit fields (Heap::hash_known, Rep::meta) and on the heap
+//   block's header (the index pointer), which the allocator aligns; those would fault or tear on a misaligned address.
 #pragma once
 #include <climits>
 #include <compare>
@@ -125,8 +134,10 @@ return *this=std::string_view(text);
 static String from_code_point(char32_t code_point);
 static String from_bool(bool value);
 // Shortest text that reads back as the same double (std::to_chars), so integers have no ".0"; "inf", "-inf", "nan",
-// and negative zero is "0". Like JavaScript, fixed notation for 1e-7 <= |value| < 1e21 ("100000", "0.0001"), otherwise
-// scientific with the shortest exponent ("1e+21", "1e-7").
+// and negative zero is "0". JavaScript's notation thresholds: fixed notation for 1e-7 <= |value| < 1e21 ("100000",
+// "0.0001"), otherwise scientific with the shortest exponent ("1e+21", "1e-7"). Unlike JavaScript, which pads the shortest
+// digits with zeros, integers of 2^53 and above print their exact digits in fixed notation (123456789012345680000.0 is
+// "123456789012345683968").
 static String from_number(double value);
 // The same for float, with the shortest text that reads back as the same float (0.1f is "0.1").
 static String from_number(float value);
@@ -371,6 +382,8 @@ struct Heap {
 char* ptr;
 std::uint32_t capacity;
 std::uint32_t hash_known;
+// May sit at a 4-mod-8 address (see the alignment contract): only relaxed loads and stores, never acquire, release,
+// compare-and-swap or any read-modify-write operation.
 std::uint64_t hash;
 };
 union Storage {
@@ -383,6 +396,8 @@ std::uint32_t size;
 std::uint32_t meta;
 };
 static_assert(sizeof(Rep)==32);
+// The layout (and the 4-mod-8 placement argument) assumes 64-bit pointers.
+static_assert(sizeof(void*)==8);
 
 String(const char* bytes,std::size_t size,std::uint32_t meta)
 {
