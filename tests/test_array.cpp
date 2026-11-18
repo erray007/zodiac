@@ -158,6 +158,29 @@ CHECK(value_of(fixture,"array<double> a={0.5,1};array<double> b={0.5,1};array<do
 CHECK(value_of(fixture,"array<float> a={2.5f,-0.5f};a.sort();return a[0]+\",\"+a[1]+\",\"+a.find(2.5f);")=="-0.5,2.5,1");
 }
 
+TEST_CASE("string elements: find and equality at every compared length")
+{
+// native_find and native_equals compare strings of up to 16 bytes with two overlapping 2-, 4- or 8-byte loads and longer
+// ones in 16-byte blocks: every length from 0 to 40 bytes, with the mismatch at each position, a longer and a shorter neighbour.
+ScriptFixture fixture;
+CHECK(value_of(fixture,R"(string base="abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";int bad=0;
+for(int n=0;n<=40;++n){
+string s=base.left(n);
+array<string> a;
+for(int k=0;k<n;++k)a.insert_last(s.left(k)+"#"+s.substr(k+1));
+a.insert_last(s+"#");
+if(n>0)a.insert_last(s.left(n-1));
+if(a.find(s)!=-1)++bad;
+a.insert_last(s);
+if(a.find(s)!=a.length()-1)++bad;
+if(a.find(s,a.length()-1)!=a.length()-1)++bad;
+array<string> b=a;
+if(!(a==b))++bad;
+for(int k=0;k<n;++k){array<string> c=a;c[c.length()-1]=s.left(k)+"#"+s.substr(k+1);if(a==c)++bad;}
+}
+return ""+bad;)")=="0");
+}
+
 TEST_CASE("string elements")
 {
 ScriptFixture fixture;
