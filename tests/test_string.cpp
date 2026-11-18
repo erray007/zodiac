@@ -949,7 +949,56 @@ const std::uint64_t before=b.hash();
 b+="x";
 CHECK(b.hash()!=before);
 CHECK(b.hash()==String(b.bytes()).hash());
-CHECK(std::hash<String>{}(a)==static_cast<std::size_t>(a.hash()));
+}
+
+TEST_CASE("table_hash is equal for equal bytes, whatever the storage")
+{
+const String a(std::string(30,'h'));
+String b(std::string(20,'h'));
+b+=std::string(10,'h');
+const String shared=a;
+CHECK(a.table_hash()==b.table_hash());
+CHECK(shared.table_hash()==a.table_hash());
+CHECK(String("ş").table_hash()==String::from_code_point(U'ş').table_hash());
+CHECK(String("a").table_hash()!=String("b").table_hash());
+CHECK(String("").table_hash()!=String(std::string_view("\0",1)).table_hash());
+// Stable within the process: a second call (the cached value for heap text) and a fresh copy agree.
+const std::uint64_t first=a.table_hash();
+CHECK(a.table_hash()==first);
+CHECK(String(a.bytes()).table_hash()==first);
+CHECK(String("abc").table_hash()==String("abc").table_hash());
+const std::uint64_t before=b.table_hash();
+b+="x";
+CHECK(b.table_hash()!=before);
+CHECK(b.table_hash()==String(b.bytes()).table_hash());
+String inline_text("short");
+const std::uint64_t inline_before=inline_text.table_hash();
+inline_text+="er";
+CHECK(inline_text.table_hash()!=inline_before);
+CHECK(inline_text.table_hash()==String("shorter").table_hash());
+// Keyed per process, so it differs from the stable script hash.
+CHECK(String("abc").table_hash()!=String("abc").hash());
+CHECK(a.table_hash()!=a.hash());
+CHECK(std::hash<String>{}(a)==static_cast<std::size_t>(a.table_hash()));
+CHECK(std::hash<String>{}(String("abc"))==static_cast<std::size_t>(String("abc").table_hash()));
+}
+
+TEST_CASE("script hash stays uncached and stable on heap strings")
+{
+// Over 48 bytes: heap storage and the hash's three-lane path. hash() must not read the cached table hash.
+const std::string bytes="İstanbul'da IŞIK ve ışık, uzun bir cümle ile 48 baytı geçen metin";
+constexpr std::uint64_t golden=512401696878949126u;
+const String text(bytes);
+REQUIRE(text.byte_length()>String::inline_capacity);
+CHECK(text.hash()==golden);
+CHECK(text.hash()==zodiac::string_detail::hash_bytes(bytes.data(),bytes.size()));
+const std::uint64_t keyed=text.table_hash();
+CHECK(text.table_hash()==keyed);
+CHECK(text.hash()==golden);
+CHECK(text.hash()!=keyed);
+const String copy=text;
+CHECK(copy.table_hash()==keyed);
+CHECK(copy.hash()==golden);
 }
 
 TEST_CASE("hash values are fixed across platforms and runs")
