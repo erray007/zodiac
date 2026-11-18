@@ -23,6 +23,11 @@
 using zodiac::String;
 using zodiac::StringError;
 
+// Table hashes taken by namespace-scope (default-priority) initializers, before main: the secrets must already be drawn, or
+// these would be hashes under all-zero keys that later calls do not reproduce. One inline and one heap string.
+const std::uint64_t early_inline_table_hash=String("early inline").table_hash();
+const std::uint64_t early_heap_table_hash=String("early heap text, longer than the 23 inline bytes").table_hash();
+
 namespace doctest {
 template<>
 struct StringMaker<zodiac::String> {
@@ -949,6 +954,25 @@ const std::uint64_t before=b.hash();
 b+="x";
 CHECK(b.hash()!=before);
 CHECK(b.hash()==String(b.bytes()).hash());
+}
+
+TEST_CASE("the table hash's secrets are drawn before any static initializer hashes")
+{
+bool any_nonzero=false;
+bool differs_from_stable=false;
+for(int index=0;index<5;++index){
+const std::uint64_t word=zodiac::string_detail::table_key_word(index);
+any_nonzero=any_nonzero||word!=0;
+differs_from_stable=differs_from_stable||word!=zodiac::string_detail::stable_key_word(index);
+}
+CHECK(any_nonzero);
+CHECK(differs_from_stable);
+// Every word drawn: a zero word would mean the draw left part of the keys unset (chance 5 * 2^-64 otherwise).
+for(int index=0;index<5;++index)CHECK(zodiac::string_detail::table_key_word(index)!=0);
+CHECK(zodiac::string_detail::stable_key_word(2)==0xE7037ED1A0B428DBu);
+CHECK(early_inline_table_hash==String("early inline").table_hash());
+CHECK(early_heap_table_hash==String("early heap text, longer than the 23 inline bytes").table_hash());
+CHECK(early_heap_table_hash==zodiac::string_detail::table_hash_bytes("early heap text, longer than the 23 inline bytes",48));
 }
 
 TEST_CASE("table_hash is equal for equal bytes, whatever the storage")

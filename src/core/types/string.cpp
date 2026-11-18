@@ -900,9 +900,9 @@ return std::memcmp(a,b,n)==0;
 #endif
 }
 
-// The hashes of the wyhash structure under keys, in three parts so the stable hash folds its keys to constants and the
-// common short input stays a leaf: inputs over 48 bytes go to hash_long by a tail call, so the six live words of its
-// three-lane loop never make every call save and restore callee-saved registers.
+// The hashes of the wyhash structure under keys, in parts so the stable hash folds its keys to constants and inputs of up
+// to 16 bytes (most table keys) stay a leaf that touches no callee-saved register: longer inputs leave by a tail call to
+// hash_over16, and inputs over 48 bytes from there to hash_long, whose three-lane loop keeps six words live.
 // The last step over the bytes read into a and b: the size is mixed in, as wyhash does.
 template<const HashKeys& keys>
 [[gnu::always_inline]] inline std::uint64_t hash_finish(std::uint64_t a,std::uint64_t b,std::uint64_t seed,std::size_t size) noexcept
@@ -944,12 +944,18 @@ i-=48;
 }while(i>48);
 return hash_rest<keys>(p,i,seed^see1^see2,size);
 }
+// Inputs of more than 16 bytes.
+template<const HashKeys& keys>
+[[gnu::noinline]] std::uint64_t hash_over16(const byte* p,std::size_t size) noexcept
+{
+if(size>48)return hash_long<keys>(p,size);
+return hash_rest<keys>(p,size,keys.seed,size);
+}
 template<const HashKeys& keys>
 [[gnu::always_inline]] inline std::uint64_t keyed_hash(const char* data,std::size_t size) noexcept
 {
 const byte* p=ubytes(data);
-if(size>48)return hash_long<keys>(p,size);
-if(size>16)return hash_rest<keys>(p,size,keys.seed,size);
+if(size>16)return hash_over16<keys>(p,size);
 std::uint64_t a=0;
 std::uint64_t b=0;
 if(size>=4){
@@ -971,6 +977,24 @@ std::uint64_t table_hash_bytes(const char* data,std::size_t size) noexcept
 {
 assert(table_keys_drawn);
 return keyed_hash<table_keys>(data,size);
+}
+
+namespace {
+std::uint64_t key_word(const HashKeys& keys,int index) noexcept
+{
+const std::uint64_t words[]={keys.seed,keys.secret0,keys.secret1,keys.secret2,keys.secret3};
+return static_cast<unsigned>(index)<std::size(words)?words[index]:0;
+}
+}
+
+std::uint64_t table_key_word(int index) noexcept
+{
+return key_word(table_keys,index);
+}
+
+std::uint64_t stable_key_word(int index) noexcept
+{
+return key_word(stable_keys,index);
 }
 }
 

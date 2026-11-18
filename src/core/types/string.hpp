@@ -68,6 +68,10 @@ std::uint64_t hash_bytes(const char* data,std::size_t size) noexcept;
 // The 64-bit hash of String::table_hash() over any bytes, keyed per process. Valid from the first dynamic initializer on
 // (the secrets are drawn by a priority-101 constructor; debug builds assert it).
 std::uint64_t table_hash_bytes(const char* data,std::size_t size) noexcept;
+// For tests only (nothing else calls them, so release links drop them): word index of table_hash()'s keys and of hash()'s
+// keys, 0 the seed and 1 to 4 the secrets.
+std::uint64_t table_key_word(int index) noexcept;
+std::uint64_t stable_key_word(int index) noexcept;
 // Byte equality without a C runtime call, for the hot comparisons of short strings (array find and equality, dictionary
 // lookups, substring search): the Windows C runtime's memcmp, called once per comparison, dominated them. Up to 16 bytes
 // the n bytes are compared with two overlapping loads of 2, 4 or 8 bytes; longer runs go to an out-of-line loop (16-byte
