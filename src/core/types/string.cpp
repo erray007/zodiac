@@ -489,8 +489,9 @@ constexpr HashKeys stable_keys{hash_seed^mix(hash_seed^secret0,secret1),secret0,
 // such keys). With every secret unknown, no condition on the input alone zeroes or cancels a product: each multiply takes an
 // input word xor a random secret times an input word xor the random-keyed state, so whether two inputs collide depends on
 // the secrets, and an attacker who never sees a table hash cannot aim at it. Constant-initialized to zeros, filled by
-// draw_table_keys before any other dynamic initializer, then never written again; one cache line, read on every call.
-alignas(64) constinit HashKeys table_keys{};
+// draw_table_keys before any other dynamic initializer, then never written again. Naturally aligned: a 64-byte alignment
+// measured no faster (dictionary inserts and lookups were 0-3 % slower with it, within code-placement noise).
+constinit HashKeys table_keys{};
 #if !defined(NDEBUG)
 constinit bool table_keys_drawn=false;
 #endif
