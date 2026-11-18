@@ -174,6 +174,11 @@ INFO(join(lines));
 CHECK(std::ranges::count(lines,"{inputs}")==1);
 CHECK(std::ranges::count(lines,"{output}")==1);
 CHECK(std::ranges::count(lines,"{release_lib}/crt/crt2u.o")==1);
+// The release link flags games get (cmake/ZodiacReleaseFlags.cmake): safe ICF, gc, strip and full LTO at -O3.
+CHECK(std::ranges::count(lines,"--icf=safe")==1);
+CHECK(std::ranges::count(lines,"--gc-sections")==1);
+CHECK(std::ranges::count(lines,"-plugin-opt=O3")==1);
+CHECK(std::ranges::count(lines,"-plugin-opt=thinlto")==0);
 // Relocatable: no absolute path of the toolchain the kit was built with survives.
 for(const std::string& line:lines){
 CHECK(line.find(':')==std::string::npos);
