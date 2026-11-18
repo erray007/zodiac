@@ -177,8 +177,12 @@ if(a.find(s,a.length()-1)!=a.length()-1)++bad;
 array<string> b=a;
 if(!(a==b))++bad;
 for(int k=0;k<n;++k){array<string> c=a;c[c.length()-1]=s.left(k)+"#"+s.substr(k+1);if(a==c)++bad;}
+array<string> longer=a;longer[longer.length()-1]=s+"#";if(a==longer)++bad;
 }
 return ""+bad;)")=="0");
+// Strings that differ only in the high bit of one byte (a raw 0xC3 byte against "C", 0x43) are different elements: 1, 2 and 9 bytes long.
+CHECK(value_of(fixture,"array<string> a={\"\xC3\",\"x\xC3\",\"abcdefgh\xC3\"};array<string> b={\"C\",\"xC\",\"abcdefghC\"};array<string> c={\"\xC3\",\"x\xC3\",\"abcdefgh\xC3\"};"
+"return a.find(\"C\")+\",\"+a.find(\"xC\")+\",\"+a.find(\"abcdefghC\")+\",\"+(a==b)+\",\"+(a==c)+\",\"+b.find(\"abcdefgh\xC3\")+\",\"+a.find(\"abcdefgh\xC3\");")=="-1,-1,-1,false,true,-1,2");
 }
 
 TEST_CASE("string elements")

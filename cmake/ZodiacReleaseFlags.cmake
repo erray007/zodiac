@@ -6,7 +6,7 @@
 #   lib/release on Windows) hold LLVM bitcode and every link optimizes across modules; zodiac build links games with the kit's own ld.lld.
 # - Every release link (executables and shared libraries, the kit's own and, through the captured link line, every game): -flto=thin (the LTO
 #   backend runs at the -O3 the driver passes it as -plugin-opt=O3), --gc-sections, -s and --icf=safe. Safe ICF folds identical functions only when
-#   no use of their address is significant, as recorded in the objects' address-significance tables (clang writes them by default on COFF and ELF),
+#   their address is never taken in a way that is significant, as the objects' address-significance tables record (clang writes them by default on COFF and ELF),
 #   so comparisons of function pointers, such as AngelScript's, keep their meaning; --icf=all saved nothing more on the hello.
 # - Both platforms link with lld: llvm-mingw's on Windows, the system's on Linux (cmake/toolchain-clang-linux.cmake, -fuse-ld=lld), with the LLVM
 #   archiver and symbol lister, since GNU ar, ranlib and nm cannot index or read bitcode.
