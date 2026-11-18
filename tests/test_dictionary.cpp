@@ -7,11 +7,40 @@
 #include "script_fixture.hpp"
 #include <core/types/dictionary.hpp>
 #include <core/types/string.hpp>
+#include <algorithm>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
 
 using zodiac_test::ScriptFixture;
+
+namespace zodiac {
+// Reads a dictionary's index (declared a friend by Dictionary): how far its keys sit from their home slots.
+struct DictionaryTestAccess {
+struct Displacement {
+std::uint32_t largest=0;
+std::uint64_t total=0;
+};
+static Displacement displacement(const Dictionary& dictionary)
+{
+Displacement result;
+if(!dictionary.index_)return result;
+for(std::uint32_t at=0;at<=dictionary.mask_;++at){
+const Dictionary::Slot& slot=dictionary.index_[at];
+if(!slot.entry)continue;
+const std::uint32_t distance=(at-dictionary.home(slot.hash))&dictionary.mask_;
+result.largest=std::max(result.largest,distance);
+result.total+=distance;
+}
+return result;
+}
+static std::uint32_t index_size(const Dictionary& dictionary)
+{
+return dictionary.index_?dictionary.mask_+1:0;
+}
+};
+}
 
 namespace {
 // Script helpers every test source starts with: show() writes the keys in order separated by commas.
@@ -421,4 +450,77 @@ fixture.release_context();
 }
 // Left to the engine's shutdown, every object of every cycle is still destroyed.
 CHECK(g_destroyed==200);
+}
+
+namespace {
+// count keys "<prefix><n>" (n counting up from 0) whose String::hash() satisfies wanted.
+template<typename Wanted>
+std::vector<std::string> keys_where(std::string_view prefix,std::size_t count,Wanted wanted)
+{
+std::vector<std::string> keys;
+std::string key(prefix);
+for(std::uint64_t n=0;keys.size()<count;++n){
+key.resize(prefix.size());
+key+=std::to_string(n);
+if(wanted(zodiac::string_detail::hash_bytes(key.data(),key.size())))keys.push_back(key);
+}
+return keys;
+}
+// Inserts keys into a fresh dictionary and checks that no probe run grows long, that every key is found, that the keys
+// and serialize() keep insertion order, and the same again after every other key is removed.
+void check_spread(ScriptFixture& fixture,const std::vector<std::string>& keys)
+{
+REQUIRE(fixture.run("dictionary@ make(){return dictionary();}","dictionary@ make()")==asEXECUTION_FINISHED);
+auto* dictionary=static_cast<zodiac::Dictionary*>(fixture.context->GetReturnObject());
+REQUIRE(dictionary!=nullptr);
+dictionary->add_ref();
+fixture.release_context();
+for(std::size_t at=0;at<keys.size();++at)dictionary->set(zodiac::String(keys[at]),static_cast<std::int64_t>(at));
+REQUIRE(dictionary->length()==static_cast<int>(keys.size()));
+// keys.size() is a power of two: the index holds twice as many slots, so a home slot takes all its low bits.
+CHECK(zodiac::DictionaryTestAccess::index_size(*dictionary)==2*keys.size());
+// At load 1/2, linear probing over a uniform mapping moves a key 0.5 slots on average, and a run of L slots has a chance of
+// about e^(-0.19 L), so no key moves 128 slots (measured: at most 30); keys sharing one home slot would move about
+// keys.size()/2 on average and up to keys.size()-1.
+constexpr std::uint32_t longest=128;
+auto spread=zodiac::DictionaryTestAccess::displacement(*dictionary);
+CHECK(spread.largest<=longest);
+CHECK(spread.total<=3*keys.size());
+std::string expected="zodiac-dictionary 1\n";
+for(std::size_t at=0;at<keys.size();++at){
+const zodiac::DictionaryValue* value=dictionary->find(zodiac::String(keys[at]));
+REQUIRE(value!=nullptr);
+std::int64_t read=-1;
+CHECK(dictionary->get(zodiac::String(keys[at]),&read,asTYPEID_INT64));
+CHECK(read==static_cast<std::int64_t>(at));
+expected+="int64 \""+keys[at]+"\" "+std::to_string(at)+"\n";
+}
+CHECK(dictionary->serialize().bytes()==expected);
+expected="zodiac-dictionary 1\n";
+for(std::size_t at=0;at<keys.size();++at){
+if(at%2==0)CHECK(dictionary->remove(zodiac::String(keys[at])));
+else expected+="int64 \""+keys[at]+"\" "+std::to_string(at)+"\n";
+}
+spread=zodiac::DictionaryTestAccess::displacement(*dictionary);
+CHECK(spread.largest<=longest);
+CHECK(spread.total<=3*keys.size());
+for(std::size_t at=0;at<keys.size();++at)CHECK(dictionary->exists(zodiac::String(keys[at]))==(at%2==1));
+CHECK(dictionary->serialize().bytes()==expected);
+dictionary->release();
+}
+}
+
+TEST_CASE("keys chosen to collide in String::hash()'s bits do not pile up in one probe run")
+{
+// String::hash() is stable and visible to scripts, so a player or a save file can pick keys whose hashes share the bits a
+// table of 2048 slots would use (the low 11 or the high 11); the slot mapping is random per process, so they spread like
+// any other keys.
+ScriptFixture fixture;
+constexpr std::size_t count=1024;
+INFO("low bits");
+check_spread(fixture,keys_where("low",count,[](std::uint64_t hash){return (hash&0xFFF)==0;}));
+INFO("high bits");
+check_spread(fixture,keys_where("high",count,[](std::uint64_t hash){return (hash>>52)==0;}));
+INFO("ordinary keys");
+check_spread(fixture,keys_where("key",count,[](std::uint64_t){return true;}));
 }

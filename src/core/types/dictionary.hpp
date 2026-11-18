@@ -22,7 +22,10 @@
 //   by d[key] stays valid memory for the dictionary's lifetime; removed entries go to a free list for reuse. Keys are
 //   chained in insertion order. An open-addressing index (linear probing, power-of-two size, at most half full,
 //   backward-shift removal, no tombstones) stores each key's 64-bit String::hash() next to its entry number, so lookups hash
-//   the key once, compare hashes before bytes and never allocate. Insert, lookup and remove are amortized O(1); iteration
+//   the key once, compare hashes before bytes and never allocate. A key's home slot comes from its hash through a
+//   multiply-shift mapping keyed by a per-process secret from the operating system's entropy source (platform/entropy.hpp),
+//   so keys that untrusted input (players, the network, save files) picks to collide in String::hash()'s bits do not
+//   degrade the table; only slot positions vary between runs, never the iteration order or serialize()'s text. Insert, lookup and remove are amortized O(1); iteration
 //   is in insertion order. clear() keeps the memory. At most 2^30 entries ("out of memory" beyond).
 // - Script code can run inside set, remove, clear, assignment, deserialize and the proxy's assignments (a value's copy,
 //   opAssign or destructor). Every such operation makes new values before it changes the table and releases old values only
@@ -179,9 +182,26 @@ Dictionary& operator=(const Dictionary&)=delete;
 private:
 friend class DictionaryWriter;
 friend class DictionaryReader;
+// Tests read the index through it (probe lengths); defined only by them.
+friend struct DictionaryTestAccess;
 struct Entry;
-struct Slot;
+struct Slot {
+std::uint64_t hash;
+// Entry number plus one; 0 marks an empty slot.
+std::uint32_t entry;
+std::uint32_t unused;
+};
 static constexpr int segment_count=27;
+
+// The home slot of a key: the top bits of its stable hash times a random odd multiplier drawn once per process
+// (multiply-shift, a universal hash family: for any two hashes that differ the chance of a shared home is at most
+// 2/(table size) over the multiplier), so keys chosen to collide in String::hash()'s bits, which scripts can see, do not
+// pile up in one probe run. Only the mapping is random: the slots keep the stable hash, and iteration and serialize()
+// follow the insertion-order links, so both stay deterministic.
+std::uint32_t home(std::uint64_t hash) const noexcept
+{
+return static_cast<std::uint32_t>((hash*multiplier_)>>shift_);
+}
 
 explicit Dictionary(DictionaryCache& cache) noexcept;
 ~Dictionary();
@@ -213,6 +233,9 @@ std::uint32_t first_;
 std::uint32_t last_;
 std::uint32_t mask_=0;
 std::uint32_t clearing_=0;
+// 64 - log2(index size) and home()'s multiplier, set with the index by rehash (next to it, in the lookup's cache line).
+std::uint32_t shift_=0;
+std::uint64_t multiplier_=0;
 Slot* index_=nullptr;
 DictionaryCache* cache_;
 Entry* segments_[segment_count]={};

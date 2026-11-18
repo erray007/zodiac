@@ -4,13 +4,16 @@
 #include <core/text.hpp>
 #include <core/types/array.hpp>
 #include <core/types/script_guard.hpp>
+#include <platform/entropy.hpp>
 #include <atomic>
 #include <bit>
 #include <cfloat>
 #include <charconv>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
@@ -61,13 +64,6 @@ std::uint32_t prev;
 // The next live entry, or the next free entry of the free list.
 std::uint32_t next;
 };
-struct Dictionary::Slot {
-std::uint64_t hash;
-// Entry number plus one; 0 marks an empty slot.
-std::uint32_t entry;
-std::uint32_t unused;
-};
-
 namespace {
 static_assert(sizeof(DictionaryValue)==24,"dictionary_value is registered with DictionaryValue's layout");
 // Engine user data slot of the cache (Zodiac's own slots spell their owner).
@@ -85,6 +81,24 @@ constexpr std::string_view header="zodiac-dictionary 1";
 constexpr const char* array_tag_names[]={"array<bool>","array<int8>","array<int16>","array<int>","array<int64>","array<uint8>","array<uint16>","array<uint>","array<uint64>","array<float>","array<double>","array<string>","array<dictionary@>","array<dictionary>"};
 static_assert(std::size(array_tag_names)==static_cast<std::size_t>(ArrayTag::count));
 
+// The odd multiplier of Dictionary::home(), drawn once per process from the operating system's entropy source. Should the
+// source fail, the clock and the address of a static are mixed instead (still unknown to scripts, though weaker).
+std::uint64_t slot_multiplier() noexcept
+{
+static const std::uint64_t multiplier=[]() noexcept{
+std::uint64_t value=0;
+if(!platform::fill_entropy(&value,sizeof value)){
+static const char anchor=0;
+value=static_cast<std::uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count())^reinterpret_cast<std::uintptr_t>(&anchor);
+// splitmix64's finalizer spreads the few changing bits over the whole word.
+value=(value^(value>>30))*0xBF58476D1CE4E5B9u;
+value=(value^(value>>27))*0x94D049BB133111EBu;
+value^=value>>31;
+}
+return value|1;
+}();
+return multiplier;
+}
 void* load_pointer(const void* slot) noexcept
 {
 void* pointer;
@@ -539,19 +553,21 @@ void Dictionary::rehash(std::uint32_t size)
 {
 auto* slots=static_cast<Slot*>(std::calloc(size,sizeof(Slot)));
 if(!slots)throw std::bad_alloc();
-const std::uint32_t mask=size-1;
-if(index_){
-for(std::uint32_t at=0;at<=mask_;++at){
-const Slot& slot=index_[at];
+Slot* const old=index_;
+const std::uint32_t old_size=old?mask_+1:0;
+// The new mapping is in place before the slots move, so home() places them in the new index.
+index_=slots;
+mask_=size-1;
+shift_=64-static_cast<std::uint32_t>(std::countr_zero(size));
+multiplier_=slot_multiplier();
+for(std::uint32_t at=0;at<old_size;++at){
+const Slot& slot=old[at];
 if(!slot.entry)continue;
-std::uint32_t position=static_cast<std::uint32_t>(slot.hash)&mask;
-while(slots[position].entry)position=(position+1)&mask;
+std::uint32_t position=home(slot.hash);
+while(slots[position].entry)position=(position+1)&mask_;
 slots[position]=slot;
 }
-std::free(index_);
-}
-index_=slots;
-mask_=mask;
+std::free(old);
 }
 
 void Dictionary::reserve(std::uint32_t count)
@@ -571,7 +587,7 @@ while(std::uint64_t{capacity_}-used_+free_count_<count)add_segment();
 std::uint32_t Dictionary::find_position(const String& key,std::uint64_t hash) const noexcept
 {
 if(!index_)return no_entry;
-for(std::uint32_t position=static_cast<std::uint32_t>(hash)&mask_;;position=(position+1)&mask_){
+for(std::uint32_t position=home(hash);;position=(position+1)&mask_){
 const Slot& slot=index_[position];
 if(!slot.entry)return no_entry;
 if(slot.hash==hash&&entry(slot.entry-1).key==key)return position;
@@ -621,7 +637,7 @@ item.key=std::move(key);
 // A value written through a stale reference after this entry was removed comes back to the caller for release.
 item.value.swap(value);
 link_last(index);
-std::uint32_t position=static_cast<std::uint32_t>(hash)&mask_;
+std::uint32_t position=home(hash);
 while(index_[position].entry)position=(position+1)&mask_;
 index_[position]=Slot{hash,index+1,0};
 ++live_;
@@ -633,8 +649,8 @@ void Dictionary::erase_position(std::uint32_t position) noexcept
 // Backward shift: every later slot of the probe run that may move into the hole does, so no tombstones are needed.
 std::uint32_t hole=position;
 for(std::uint32_t next=(hole+1)&mask_;index_[next].entry;next=(next+1)&mask_){
-const std::uint32_t home=static_cast<std::uint32_t>(index_[next].hash)&mask_;
-if(((next-home)&mask_)>=((next-hole)&mask_)){
+const std::uint32_t start=home(index_[next].hash);
+if(((next-start)&mask_)>=((next-hole)&mask_)){
 index_[hole]=index_[next];
 hole=next;
 }
