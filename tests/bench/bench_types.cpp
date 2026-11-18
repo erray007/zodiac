@@ -1,8 +1,11 @@
-// bench_types: the speed gate of spec 8.4. Measures Zodiac's script string, array<T> and dictionary against AngelScript's sample
-// add-ons (scriptstdstring, scriptarray, scriptdictionary) in one process.
+// bench_types: the speed gate of spec 8.4. Measures Zodiac's script string, array<T>, dictionary and maths against AngelScript's
+// sample add-ons (scriptstdstring, scriptarray, scriptdictionary, scriptmath) in one process.
 // Contract:
-// - Two kinds of engine: Zodiac's types (registered as ScriptRuntime does: array, string, dictionary), and the add-ons
-//   (RegisterStdString, RegisterScriptArray as the default array, RegisterStdStringUtils, RegisterScriptDictionary), both native.
+// - Two kinds of engine: Zodiac's types and library (registered as ScriptRuntime does: array, string, dictionary, maths), and the
+//   add-ons (RegisterStdString, RegisterScriptArray as the default array, RegisterStdStringUtils, RegisterScriptDictionary,
+//   RegisterScriptMath in its double configuration), both native. The maths Zodiac has and scriptmath does not (integer abs, min,
+//   clamp, round, round with digits, hypot) are plain C++ natives on the add-on engine (bench_natives): what a game without
+//   Zodiac's library would register itself.
 // - Every operation of spec 8.4 is a pair of AngelScript snippets with the same semantics, the add-on side written the way a
 //   script would have to write it with the add-ons (where the add-on has no such operation, e.g. character indexing on Turkish
 //   text, it is the script code doing the same work). Each snippet defines int64 run(int reps), which does ITEMS units of work
@@ -27,16 +30,19 @@
 // - Exit codes: 0 measured, 1 bad arguments, 2 a snippet did not build or run, 3 the two sides disagree on a checksum.
 // Not a ctest test (spec 8.4): CI runs it on release presets, and Task 7 reuses it to compare compiler flags.
 #include <angelscript.h>
+#include <core/library/library.hpp>
 #include <core/types/array.hpp>
 #include <core/types/dictionary.hpp>
 #include <core/types/string_binding.hpp>
 #include <scriptarray/scriptarray.h>
 #include <scriptdictionary/scriptdictionary.h>
+#include <scriptmath/scriptmath.h>
 #include <scriptstdstring/scriptstdstring.h>
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -240,7 +246,83 @@ int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r){array<string> a=source;a.s
 R"(array<string> source;
 void setup(){for(int i=0;i<1000;++i)source.insertLast("name_"+next_random());}
 int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r){array<string> a=source;a.sortAsc();n+=a[0].length()+a[500].length()+(a[0]<a[999]?1:0)+a.find(source[0]);}return n;})"},
+// Maths: the same snippet on both sides, a sum over 1000 arguments of one call each (checksum: the integer part of the sum).
+// sqrt, sin, floor and pow against scriptmath.
+{"math_sqrt",1000,
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=sqrt(i+0.5);return int64(s);})",
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=sqrt(i+0.5);return int64(s);})"},
+{"math_sin",1000,
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=sin(i*0.0137);return int64(s*1000);})",
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=sin(i*0.0137);return int64(s*1000);})"},
+{"math_floor",1000,
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=floor(i*0.37-100.0);return int64(s);})",
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=floor(i*0.37-100.0);return int64(s);})"},
+{"math_pow",1000,
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=pow(1.0001,i*0.5);return int64(s);})",
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=pow(1.0001,i*0.5);return int64(s);})"},
+// Integer abs, min, clamp, round, hypot and round with digits against the plain C++ natives (bench_natives).
+{"math_abs_int",1000,
+R"(int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)n+=abs(i-500);return n;})",
+R"(int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)n+=abs(i-500);return n;})"},
+{"math_min_double",1000,
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=min(i*0.5,250.25);return int64(s);})",
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=min(i*0.5,250.25);return int64(s);})"},
+{"math_clamp_double",1000,
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=clamp(i*0.5-100.0,0.0,250.0);return int64(s);})",
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=clamp(i*0.5-100.0,0.0,250.0);return int64(s);})"},
+// Quarters from -100 up, so a quarter of the arguments are exact halves.
+{"math_round",1000,
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=round(i*0.25-100.0);return int64(s);})",
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=round(i*0.25-100.0);return int64(s);})"},
+{"math_hypot",1000,
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=hypot(i*0.5,300.0-i);return int64(s);})",
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=hypot(i*0.5,300.0-i);return int64(s);})"},
+// Computed values rounded to 2 places, none of them near a half (where the two sides would differ, Zodiac's being the
+// decimal answer).
+{"math_round_digits",1000,
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=round(i*0.0137+0.00031,2);return int64(s*100);})",
+R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=round(i*0.0137+0.00031,2);return int64(s*100);})"},
 };
+
+// The add-on engine's counterparts of Zodiac's maths that scriptmath lacks: plain C++, as a game would bind them itself.
+namespace bench_natives {
+int abs_int(int x)
+{
+return std::abs(x);
+}
+double min_double(double a,double b)
+{
+return std::min(a,b);
+}
+double clamp_double(double x,double low,double high)
+{
+return std::clamp(x,low,high);
+}
+double round_double(double x)
+{
+return std::round(x);
+}
+double hypot_double(double x,double y)
+{
+return std::hypot(x,y);
+}
+// Multiply, round, divide, with the power of ten from a table (digits from 0 to 16, as the bench calls it).
+double round_digits(double x,int digits)
+{
+static constexpr double powers[]={1e0,1e1,1e2,1e3,1e4,1e5,1e6,1e7,1e8,1e9,1e10,1e11,1e12,1e13,1e14,1e15,1e16};
+const double p=powers[digits];
+return std::round(x*p)/p;
+}
+void register_all(asIScriptEngine* engine)
+{
+engine->RegisterGlobalFunction("int abs(int)",asFUNCTION(abs_int),asCALL_CDECL);
+engine->RegisterGlobalFunction("double min(double,double)",asFUNCTION(min_double),asCALL_CDECL);
+engine->RegisterGlobalFunction("double clamp(double,double,double)",asFUNCTION(clamp_double),asCALL_CDECL);
+engine->RegisterGlobalFunction("double round(double)",asFUNCTION(round_double),asCALL_CDECL);
+engine->RegisterGlobalFunction("double hypot(double,double)",asFUNCTION(hypot_double),asCALL_CDECL);
+engine->RegisterGlobalFunction("double round(double,int)",asFUNCTION(round_digits),asCALL_CDECL);
+}
+}
 
 // Dictionary snippets for one size: insert into a new dictionary, look up every key in shuffled order, iterate over the keys.
 struct DictionarySnippets {
@@ -318,12 +400,15 @@ if(zodiac_types){
 zodiac::register_array(engine);
 zodiac::register_string(engine);
 zodiac::register_dictionary(engine);
+zodiac::register_math(engine);
 }
 else{
 RegisterStdString(engine);
 RegisterScriptArray(engine,true);
 RegisterStdStringUtils(engine);
 RegisterScriptDictionary(engine);
+RegisterScriptMath(engine);
+bench_natives::register_all(engine);
 }
 return engine;
 }
