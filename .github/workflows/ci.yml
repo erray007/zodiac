@@ -100,7 +100,7 @@ jobs:
         with:
           path: .deps
           key: deps-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake') }}
-      # lld-18 links (ThinLTO, --icf=safe) and llvm-18 brings llvm-ar, llvm-ranlib and llvm-nm for the bitcode archives; cmake/toolchain-clang-linux.cmake
+      # lld-18 links (full LTO, --icf=safe) and llvm-18 brings llvm-ar, llvm-ranlib and llvm-nm for the bitcode archives; cmake/toolchain-clang-linux.cmake
       # finds them by the compiler's version suffix (ld.lld-18, llvm-ar-18, ...).
       - name: Install and select clang 18 with libc++, lld and the LLVM tools
         run: |

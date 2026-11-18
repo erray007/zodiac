@@ -3,8 +3,10 @@
 # Windows only, run at configure time. Asks the pinned llvm-mingw driver (CMAKE_CXX_COMPILER) how it links a static GUI release executable,
 # "-### -static -mwindows -municode <ZODIAC_RELEASE_GAME_LINK_FLAGS> <placeholder object> -o <output>", and stores the ld.lld arguments relocatably.
 # ZODIAC_RELEASE_GAME_LINK_FLAGS (cmake/ZodiacReleaseFlags.cmake, include it first) are the release link flags of every kit executable, so games are
-# linked like them: -O3 -Wl,--gc-sections -s -flto=thin -Wl,--icf=safe, which the driver turns into --gc-sections, -s, --icf=safe and the ThinLTO
-# options -plugin-opt=mcpu=x86-64, -plugin-opt=O3 and -plugin-opt=thinlto (kept as they are: they name no file).
+# linked like them: -O3 -flto -Wl,--gc-sections -s -Wl,--icf=safe, which the driver turns into --gc-sections, -s, --icf=safe and the LTO options
+# -plugin-opt=mcpu=x86-64 and -plugin-opt=O3 (kept as they are: they name no file).
+# Debug trees capture this same LTO line (the capture does not depend on the build type). That is harmless: their lib/release archives hold
+# native objects, and lld ignores the LTO options when no input is bitcode.
 # - <release_lib_dir>/link.txt: one argument per line. Every file of the toolchain becomes {release_lib}/crt/<file name> (an -l library is resolved the way
 #   lld's MinGW driver does under -Bstatic, lib<name>.a then <name>.lib in each -L folder in order, and the -L folders are dropped), the output path
 #   becomes {output} and the placeholder object {inputs}. cli/linker.hpp expands it.
