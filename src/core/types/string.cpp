@@ -900,34 +900,41 @@ return std::memcmp(a,b,n)==0;
 #endif
 }
 
-// The hash of the wyhash structure under keys; inlined into both hashes so the stable one folds its keys to constants.
-[[gnu::always_inline]] inline std::uint64_t keyed_hash(const char* data,std::size_t size,const HashKeys& keys) noexcept
+// The hashes of the wyhash structure under keys, in three parts so the stable hash folds its keys to constants and the
+// common short input stays a leaf: inputs over 48 bytes go to hash_long by a tail call, so the six live words of its
+// three-lane loop never make every call save and restore callee-saved registers.
+// The last step over the bytes read into a and b: the size is mixed in, as wyhash does.
+template<const HashKeys& keys>
+[[gnu::always_inline]] inline std::uint64_t hash_finish(std::uint64_t a,std::uint64_t b,std::uint64_t seed,std::size_t size) noexcept
 {
-const std::uint64_t k0=keys.secret0;
+a^=keys.secret1;
+b^=seed;
+multiply(a,b);
+return mix(a^keys.secret0^size,b^keys.secret1);
+}
+// The remaining i bytes at p (17 to 48, or 1 to 48 after the lanes) of an input of size bytes, with the state seed.
+template<const HashKeys& keys>
+[[gnu::always_inline]] inline std::uint64_t hash_rest(const byte* p,std::size_t i,std::uint64_t seed,std::size_t size) noexcept
+{
+const std::uint64_t k1=keys.secret1;
+while(i>16){
+seed=mix(read64(p)^k1,read64(p+8)^seed);
+i-=16;
+p+=16;
+}
+return hash_finish<keys>(read64(p+i-16),read64(p+i-8),seed,size);
+}
+// Inputs of more than 48 bytes: 48-byte blocks in three lanes while more than 48 bytes remain, then the rest.
+template<const HashKeys& keys>
+[[gnu::noinline]] std::uint64_t hash_long(const byte* p,std::size_t size) noexcept
+{
 const std::uint64_t k1=keys.secret1;
 const std::uint64_t k2=keys.secret2;
 const std::uint64_t k3=keys.secret3;
-const byte* p=ubytes(data);
 std::uint64_t seed=keys.seed;
-std::uint64_t a;
-std::uint64_t b;
-if(size<=16){
-if(size>=4){
-const std::size_t shift=(size>>3)<<2;
-a=(read32(p)<<32)|read32(p+shift);
-b=(read32(p+size-4)<<32)|read32(p+size-4-shift);
-}else if(size>0){
-a=(std::uint64_t{p[0]}<<16)|(std::uint64_t{p[size>>1]}<<8)|p[size-1];
-b=0;
-}else{
-a=0;
-b=0;
-}
-}else{
-std::size_t i=size;
-if(i>48){
 std::uint64_t see1=seed;
 std::uint64_t see2=seed;
+std::size_t i=size;
 do{
 seed=mix(read64(p)^k1,read64(p+8)^seed);
 see1=mix(read64(p+16)^k2,read64(p+24)^see1);
@@ -935,31 +942,35 @@ see2=mix(read64(p+32)^k3,read64(p+40)^see2);
 p+=48;
 i-=48;
 }while(i>48);
-seed^=see1^see2;
+return hash_rest<keys>(p,i,seed^see1^see2,size);
 }
-while(i>16){
-seed=mix(read64(p)^k1,read64(p+8)^seed);
-i-=16;
-p+=16;
+template<const HashKeys& keys>
+[[gnu::always_inline]] inline std::uint64_t keyed_hash(const char* data,std::size_t size) noexcept
+{
+const byte* p=ubytes(data);
+if(size>48)return hash_long<keys>(p,size);
+if(size>16)return hash_rest<keys>(p,size,keys.seed,size);
+std::uint64_t a=0;
+std::uint64_t b=0;
+if(size>=4){
+const std::size_t shift=(size>>3)<<2;
+a=(read32(p)<<32)|read32(p+shift);
+b=(read32(p+size-4)<<32)|read32(p+size-4-shift);
+}else if(size>0){
+a=(std::uint64_t{p[0]}<<16)|(std::uint64_t{p[size>>1]}<<8)|p[size-1];
 }
-a=read64(p+i-16);
-b=read64(p+i-8);
-}
-a^=k1;
-b^=seed;
-multiply(a,b);
-return mix(a^k0^size,b^k1);
+return hash_finish<keys>(a,b,keys.seed,size);
 }
 
 std::uint64_t hash_bytes(const char* data,std::size_t size) noexcept
 {
-return keyed_hash(data,size,stable_keys);
+return keyed_hash<stable_keys>(data,size);
 }
 
 std::uint64_t table_hash_bytes(const char* data,std::size_t size) noexcept
 {
 assert(table_keys_drawn);
-return keyed_hash(data,size,table_keys);
+return keyed_hash<table_keys>(data,size);
 }
 }
 
