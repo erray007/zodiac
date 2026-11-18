@@ -30,8 +30,9 @@
 // ALTERED SOURCE: the native paths of zodiac::ScriptArray (spec 8.2), replacing the add-on's per-element type switch
 // (CScriptArray::Less/Equals) and its insertion sort. For bool, integer, floating-point and enum elements sort, find and
 // equality work on the element memory as the element's C++ type (std::sort, std::find, memcmp); for Zodiac's string they
-// compare zodiac::String objects directly (find and equality without a memcmp call per element, see same_bytes). Nothing here calls into the script engine. Floating point: NaN goes last in both
-// sort orders (so the order is strict weak) and equals nothing, -0 equals 0.
+// compare zodiac::String objects directly (find and equality without a memcmp call per element, see same_bytes). Nothing
+// here calls into the script engine. Floating point: NaN goes last in both sort orders (so the order is strict weak) and
+// equals nothing, -0 equals 0.
 #include <core/types/array.hpp>
 #include <core/types/string.hpp>
 #include <algorithm>

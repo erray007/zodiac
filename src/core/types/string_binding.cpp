@@ -1,9 +1,12 @@
+// The registration of the script `string` and its wrappers (see string_binding.hpp for the contract): script exceptions for
+// zodiac::String's errors, the shared literal constants, format(), and array<string>'s split() and join().
 #include <core/types/string_binding.hpp>
 #include <core/text.hpp>
 #include <core/types/script_guard.hpp>
 #include <core/types/string.hpp>
 #include <core/types/array.hpp>
 #include <angelscript.h>
+#include <algorithm>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -524,7 +527,10 @@ asIScriptEngine& engine=*gen->GetEngine();
 const int string_type=engine.GetStringFactory();
 const std::string_view text=pattern.bytes();
 String out;
-out.reserve(pattern.byte_length()+8*(arguments-1));
+// A guess of 8 bytes per argument, computed in size_t (a pattern near max_byte_length would overflow an int) and clamped,
+// since it is only a hint: a longer result still grows, one past the limit still throws.
+const std::size_t guess=text.size()+8*static_cast<std::size_t>(arguments>1?arguments-1:0);
+out.reserve(static_cast<int>(std::min(guess,static_cast<std::size_t>(String::max_byte_length))));
 int next=1;
 std::size_t run=0;
 for(std::size_t at=text.find_first_of("{}");at!=std::string_view::npos;at=text.find_first_of("{}",at)){

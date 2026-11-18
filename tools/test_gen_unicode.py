@@ -1,3 +1,10 @@
+"""Tests for tools/gen_unicode.py, the generator of Zodiac's Unicode tables and NFC test vectors (spec 8.1).
+
+Contract under test: --check exits 0 on the committed outputs (CRLF checkouts included) and 1 when one differs or is missing;
+generation is deterministic and writes every output; a UCD file that does not match its pinned SHA-256 is refused with exit
+code 2 and nothing is written; fetch_all downloads only missing files, download retries truncated responses, and a download
+failing every attempt exits 2 without leaving files behind; the two-level tables read back every value."""
+
 import contextlib
 import http.client
 import io
