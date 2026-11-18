@@ -1,13 +1,16 @@
 // zodiac::String (string.hpp): UTF-8 scanning with word-at-a-time ASCII fast paths, the heap block (recycled through a
-// per-thread cache) and its sparse character index, the hash, inline short copies, an SSE2 substring search, searching on
-// character boundaries, case mapping, NFC runs, and number formatting and parsing.
+// per-thread cache) and its sparse character index, the stable and the keyed table hash, inline short copies, an SSE2
+// substring search, searching on character boundaries, case mapping, NFC runs, and number formatting and parsing.
 #include <core/types/string.hpp>
 #include <core/types/unicode.hpp>
+#include <platform/entropy.hpp>
 #include <algorithm>
 #include <bit>
 #include <cassert>
 #include <charconv>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <locale.h>
@@ -448,8 +451,8 @@ end-=first-digits;
 return static_cast<std::uint32_t>(end-out);
 }
 
-// The hash: wyhash's structure (multiply-fold mixing of 8-byte little-endian reads) with a fixed seed. It needs the 64x64->128
-// multiply of unsigned __int128, which clang has on every 64-bit target Zodiac builds for.
+// The hashes: wyhash's structure (multiply-fold mixing of 8-byte little-endian reads). It needs the 64x64->128 multiply of
+// unsigned __int128, which clang has on every 64-bit target Zodiac builds for.
 #if !defined(__SIZEOF_INT128__)
 #error "zodiac::String's hash needs unsigned __int128 (a 64-bit clang target)"
 #endif
@@ -459,16 +462,62 @@ constexpr std::uint64_t secret0=0xA0761D6478BD642Fu;
 constexpr std::uint64_t secret1=0xE7037ED1A0B428DBu;
 constexpr std::uint64_t secret2=0x8EBC6AF09C88C6DBu;
 constexpr std::uint64_t secret3=0x589965CC75374CC3u;
-inline void multiply(std::uint64_t& a,std::uint64_t& b) noexcept
+constexpr void multiply(std::uint64_t& a,std::uint64_t& b) noexcept
 {
 const unsigned __int128 product=static_cast<unsigned __int128>(a)*b;
 a=static_cast<std::uint64_t>(product);
 b=static_cast<std::uint64_t>(product>>64);
 }
-inline std::uint64_t mix(std::uint64_t a,std::uint64_t b) noexcept
+constexpr std::uint64_t mix(std::uint64_t a,std::uint64_t b) noexcept
 {
 multiply(a,b);
 return a^b;
+}
+// The values a hash of the wyhash structure is keyed with: the starting state and the four mixing secrets.
+struct HashKeys {
+std::uint64_t seed;
+std::uint64_t secret0;
+std::uint64_t secret1;
+std::uint64_t secret2;
+std::uint64_t secret3;
+};
+// String::hash(): wyhash's public secrets and a fixed seed, folded at compile time.
+constexpr HashKeys stable_keys{hash_seed^mix(hash_seed^secret0,secret1),secret0,secret1,secret2,secret3};
+// String::table_hash(): the seed and every secret drawn per process. Keying only the seed would not do: wyhash multiplies
+// (input word ^ secret) by another word, so input words equal to a public secret zero the product and erase the seed and
+// every other word mixed into it, which yields any number of keys with one hash whatever the seed (the flooding test builds
+// such keys). With every secret unknown, no condition on the input alone zeroes or cancels a product: each multiply takes an
+// input word xor a random secret times an input word xor the random-keyed state, so whether two inputs collide depends on
+// the secrets, and an attacker who never sees a table hash cannot aim at it. Constant-initialized to zeros, filled by
+// draw_table_keys before any other dynamic initializer, then never written again. Naturally aligned: a 64-byte alignment
+// measured no faster (dictionary inserts and lookups were 0-3 % slower with it, within code-placement noise).
+constinit HashKeys table_keys{};
+#if !defined(NDEBUG)
+constinit bool table_keys_drawn=false;
+#endif
+// Fills table_keys from the operating system's entropy source. Should the source fail, the clock and the address of a static
+// seed a splitmix64 stream instead (still unknown to scripts and players, though weaker). Priority 101, the first one a
+// program may use, so it runs before every other dynamic initializer (default priority) of the program, which may hash
+// strings already. The secrets are uniform 64-bit words: wyhash's own secret maker only improves the mixing of a fixed public
+// choice, and a random word is that poor with negligible chance (Go's runtime keys its wyhash-style hash the same way).
+[[gnu::constructor(101)]] void draw_table_keys() noexcept
+{
+std::uint64_t words[5];
+if(!platform::fill_entropy(words,sizeof words)){
+static const char anchor=0;
+std::uint64_t state=static_cast<std::uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count())^reinterpret_cast<std::uintptr_t>(&anchor);
+for(std::uint64_t& word:words){
+state+=0x9E3779B97F4A7C15u;
+std::uint64_t value=state;
+value=(value^(value>>30))*0xBF58476D1CE4E5B9u;
+value=(value^(value>>27))*0x94D049BB133111EBu;
+word=value^(value>>31);
+}
+}
+table_keys=HashKeys{words[0],words[1],words[2],words[3],words[4]};
+#if !defined(NDEBUG)
+table_keys_drawn=true;
+#endif
 }
 inline std::uint64_t read64(const byte* p) noexcept
 {
@@ -851,50 +900,101 @@ return std::memcmp(a,b,n)==0;
 #endif
 }
 
-std::uint64_t hash_bytes(const char* data,std::size_t size) noexcept
+// The hashes of the wyhash structure under keys, in parts so the stable hash folds its keys to constants and inputs of up
+// to 16 bytes (most table keys) stay a leaf that touches no callee-saved register: longer inputs leave by a tail call to
+// hash_over16, and inputs over 48 bytes from there to hash_long, whose three-lane loop keeps six words live.
+// The last step over the bytes read into a and b: the size is mixed in, as wyhash does.
+template<const HashKeys& keys>
+[[gnu::always_inline]] inline std::uint64_t hash_finish(std::uint64_t a,std::uint64_t b,std::uint64_t seed,std::size_t size) noexcept
+{
+a^=keys.secret1;
+b^=seed;
+multiply(a,b);
+return mix(a^keys.secret0^size,b^keys.secret1);
+}
+// The remaining i bytes at p (17 to 48, or 1 to 48 after the lanes) of an input of size bytes, with the state seed.
+template<const HashKeys& keys>
+[[gnu::always_inline]] inline std::uint64_t hash_rest(const byte* p,std::size_t i,std::uint64_t seed,std::size_t size) noexcept
+{
+const std::uint64_t k1=keys.secret1;
+while(i>16){
+seed=mix(read64(p)^k1,read64(p+8)^seed);
+i-=16;
+p+=16;
+}
+return hash_finish<keys>(read64(p+i-16),read64(p+i-8),seed,size);
+}
+// Inputs of more than 48 bytes: 48-byte blocks in three lanes while more than 48 bytes remain, then the rest.
+template<const HashKeys& keys>
+[[gnu::noinline]] std::uint64_t hash_long(const byte* p,std::size_t size) noexcept
+{
+const std::uint64_t k1=keys.secret1;
+const std::uint64_t k2=keys.secret2;
+const std::uint64_t k3=keys.secret3;
+std::uint64_t seed=keys.seed;
+std::uint64_t see1=seed;
+std::uint64_t see2=seed;
+std::size_t i=size;
+do{
+seed=mix(read64(p)^k1,read64(p+8)^seed);
+see1=mix(read64(p+16)^k2,read64(p+24)^see1);
+see2=mix(read64(p+32)^k3,read64(p+40)^see2);
+p+=48;
+i-=48;
+}while(i>48);
+return hash_rest<keys>(p,i,seed^see1^see2,size);
+}
+// Inputs of more than 16 bytes.
+template<const HashKeys& keys>
+[[gnu::noinline]] std::uint64_t hash_over16(const byte* p,std::size_t size) noexcept
+{
+if(size>48)return hash_long<keys>(p,size);
+return hash_rest<keys>(p,size,keys.seed,size);
+}
+template<const HashKeys& keys>
+[[gnu::always_inline]] inline std::uint64_t keyed_hash(const char* data,std::size_t size) noexcept
 {
 const byte* p=ubytes(data);
-std::uint64_t seed=hash_seed^mix(hash_seed^secret0,secret1);
-std::uint64_t a;
-std::uint64_t b;
-if(size<=16){
+if(size>16)return hash_over16<keys>(p,size);
+std::uint64_t a=0;
+std::uint64_t b=0;
 if(size>=4){
 const std::size_t shift=(size>>3)<<2;
 a=(read32(p)<<32)|read32(p+shift);
 b=(read32(p+size-4)<<32)|read32(p+size-4-shift);
 }else if(size>0){
 a=(std::uint64_t{p[0]}<<16)|(std::uint64_t{p[size>>1]}<<8)|p[size-1];
-b=0;
-}else{
-a=0;
-b=0;
 }
-}else{
-std::size_t i=size;
-if(i>48){
-std::uint64_t see1=seed;
-std::uint64_t see2=seed;
-do{
-seed=mix(read64(p)^secret1,read64(p+8)^seed);
-see1=mix(read64(p+16)^secret2,read64(p+24)^see1);
-see2=mix(read64(p+32)^secret3,read64(p+40)^see2);
-p+=48;
-i-=48;
-}while(i>48);
-seed^=see1^see2;
+return hash_finish<keys>(a,b,keys.seed,size);
 }
-while(i>16){
-seed=mix(read64(p)^secret1,read64(p+8)^seed);
-i-=16;
-p+=16;
+
+std::uint64_t hash_bytes(const char* data,std::size_t size) noexcept
+{
+return keyed_hash<stable_keys>(data,size);
 }
-a=read64(p+i-16);
-b=read64(p+i-8);
+
+std::uint64_t table_hash_bytes(const char* data,std::size_t size) noexcept
+{
+assert(table_keys_drawn);
+return keyed_hash<table_keys>(data,size);
 }
-a^=secret1;
-b^=seed;
-multiply(a,b);
-return mix(a^secret0^size,b^secret1);
+
+namespace {
+std::uint64_t key_word(const HashKeys& keys,int index) noexcept
+{
+const std::uint64_t words[]={keys.seed,keys.secret0,keys.secret1,keys.secret2,keys.secret3};
+return static_cast<unsigned>(index)<std::size(words)?words[index]:0;
+}
+}
+
+std::uint64_t table_key_word(int index) noexcept
+{
+return key_word(table_keys,index);
+}
+
+std::uint64_t stable_key_word(int index) noexcept
+{
+return key_word(stable_keys,index);
 }
 }
 
@@ -1033,7 +1133,7 @@ return true;
 
 std::uint64_t String::cache_hash() const noexcept
 {
-const std::uint64_t value=string_detail::hash_bytes(rep_.storage.heap.ptr,size_bytes());
+const std::uint64_t value=string_detail::table_hash_bytes(rep_.storage.heap.ptr,size_bytes());
 __atomic_store_n(&rep_.storage.heap.hash,value,__ATOMIC_RELAXED);
 __atomic_store_n(&rep_.storage.heap.hash_known,std::uint32_t{1},__ATOMIC_RELEASE);
 return value;

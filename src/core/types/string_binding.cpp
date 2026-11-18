@@ -31,16 +31,17 @@ constexpr asPWORD string_array_slot=0x5A535452;
 // Characters of the offending text an "is not a number" message shows before "...".
 constexpr int max_shown=64;
 
-// Literals: one shared, immutable String per distinct constant, counted by the modules holding it.
+// Literals: one shared, immutable String per distinct constant, counted by the modules holding it. Hashed with the keyed
+// table hash (both overloads, so a lookup by bytes finds the String), since script source can be untrusted text too.
 struct ConstantHash {
 using is_transparent=void;
 std::size_t operator()(std::string_view bytes) const noexcept
 {
-return static_cast<std::size_t>(string_detail::hash_bytes(bytes.data(),bytes.size()));
+return static_cast<std::size_t>(string_detail::table_hash_bytes(bytes.data(),bytes.size()));
 }
 std::size_t operator()(const String& text) const noexcept
 {
-return static_cast<std::size_t>(text.hash());
+return static_cast<std::size_t>(text.table_hash());
 }
 };
 struct ConstantEqual {
@@ -70,7 +71,7 @@ if(found==constants_.end()){
 found=constants_.try_emplace(String(bytes),0).first;
 // Filled once here, under the lock, so contexts reading the constant at the same time find the caches ready.
 static_cast<void>(found->first.is_ascii());
-static_cast<void>(found->first.hash());
+static_cast<void>(found->first.table_hash());
 }
 ++found->second;
 return &found->first;
@@ -169,8 +170,9 @@ void construct(void* memory) noexcept
 {
 ::new(memory) String();
 }
-// A copy of heap text allocates and may throw.
-[[gnu::noinline]] void copy_construct_heap(const String& other,void* memory) noexcept
+// A copy of heap text allocates and may throw. This, copy_construct and destruct start on a 64-byte boundary (see
+// String::copy_heap in string.hpp).
+[[gnu::noinline,gnu::aligned(64)]] void copy_construct_heap(const String& other,void* memory) noexcept
 {
 try{
 ::new(memory) String(other);
@@ -181,7 +183,7 @@ raise_current_exception();
 }
 }
 // Inline text is copied without allocating, so the common case is a leaf without an exception frame (a tail call otherwise).
-void copy_construct(const String& other,void* memory) noexcept
+[[gnu::aligned(64)]] void copy_construct(const String& other,void* memory) noexcept
 {
 if(other.is_inline()){
 ::new(memory) String(other);
@@ -200,7 +202,7 @@ catch(...){
 raise_current_exception();
 }
 }
-void destruct(String* self) noexcept
+[[gnu::aligned(64)]] void destruct(String* self) noexcept
 {
 self->~String();
 }

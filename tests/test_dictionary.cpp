@@ -466,6 +466,67 @@ if(wanted(zodiac::string_detail::hash_bytes(key.data(),key.size())))keys.push_ba
 }
 return keys;
 }
+// key as serialize() writes it (the contract's quoting): '"' and '\' escaped, \n, \r and \t, other bytes below 0x20 and 0x7F
+// as \xNN in lowercase hex, every other byte as is.
+std::string quoted(std::string_view key)
+{
+constexpr char hex[]="0123456789abcdef";
+std::string out="\"";
+for(const char c:key){
+const auto byte=static_cast<unsigned char>(c);
+if(byte=='"'||byte=='\\'){
+out+='\\';
+out+=c;
+}
+else if(byte=='\n')out+="\\n";
+else if(byte=='\r')out+="\\r";
+else if(byte=='\t')out+="\\t";
+else if(byte<0x20||byte==0x7F){
+out+="\\x";
+out+=hex[byte>>4];
+out+=hex[byte&0xF];
+}
+else out+=c;
+}
+return out+'"';
+}
+// count keys whose full 64-bit String::hash() values are all equal, found by construction: hash() is wyhash's structure
+// with its public secrets, and wyhash multiplies (input word ^ secret) by another word, so an input word equal to the
+// secret zeroes the product and with it everything mixed into it, whatever the seed. With secret1, wyhash's public
+// 0xE7037ED1A0B428DB, as hash() uses it:
+// - 16 bytes (inline storage): a = (read32(0) << 32) | read32(8) meets secret1 when bytes 0-3 hold 0xE7037ED1 and bytes 8-11
+//   hold 0xA0B428DB (little-endian), so mix(a ^ secret1, b ^ seed) is 0 and the result no longer depends on b, which holds
+//   bytes 4-7 and 12-15: those carry the key's number.
+// - 32 bytes (heap storage): the first 16-byte step is mix(read64(0) ^ secret1, read64(8) ^ seed), so bytes 0-7 equal to
+//   secret1 make the state 0 whatever bytes 8-15 (the key's number) are; bytes 16-31 are the same in every key.
+std::vector<std::string> colliding_keys(std::size_t count,bool heap)
+{
+constexpr std::uint64_t secret1=0xE7037ED1A0B428DBu;
+const auto put32=[](std::string& key,std::size_t at,std::uint32_t value){
+for(int k=0;k<4;++k)key[at+static_cast<std::size_t>(k)]=static_cast<char>(value>>(8*k));
+};
+std::vector<std::string> keys;
+keys.reserve(count);
+for(std::size_t n=0;n<count;++n){
+std::string digits=std::to_string(n);
+digits.insert(0,8-digits.size(),'0');
+std::string key(heap?32:16,'\0');
+if(heap){
+put32(key,0,static_cast<std::uint32_t>(secret1));
+put32(key,4,static_cast<std::uint32_t>(secret1>>32));
+key.replace(8,8,digits);
+key.replace(16,16,"flooding a table");
+}
+else{
+put32(key,0,static_cast<std::uint32_t>(secret1>>32));
+key.replace(4,4,digits,0,4);
+put32(key,8,static_cast<std::uint32_t>(secret1));
+key.replace(12,4,digits,4,4);
+}
+keys.push_back(std::move(key));
+}
+return keys;
+}
 // Inserts keys into a fresh dictionary and checks that no probe run grows long, that every key is found, that the keys
 // and serialize() keep insertion order, and the same again after every other key is removed.
 void check_spread(ScriptFixture& fixture,const std::vector<std::string>& keys)
@@ -493,13 +554,13 @@ REQUIRE(value!=nullptr);
 std::int64_t read=-1;
 CHECK(dictionary->get(zodiac::String(keys[at]),&read,asTYPEID_INT64));
 CHECK(read==static_cast<std::int64_t>(at));
-expected+="int64 \""+keys[at]+"\" "+std::to_string(at)+"\n";
+expected+="int64 "+quoted(keys[at])+" "+std::to_string(at)+"\n";
 }
 CHECK(dictionary->serialize().bytes()==expected);
 expected="zodiac-dictionary 1\n";
 for(std::size_t at=0;at<keys.size();++at){
 if(at%2==0)CHECK(dictionary->remove(zodiac::String(keys[at])));
-else expected+="int64 \""+keys[at]+"\" "+std::to_string(at)+"\n";
+else expected+="int64 "+quoted(keys[at])+" "+std::to_string(at)+"\n";
 }
 spread=zodiac::DictionaryTestAccess::displacement(*dictionary);
 CHECK(spread.largest<=longest);
@@ -513,8 +574,8 @@ dictionary->release();
 TEST_CASE("keys chosen to collide in String::hash()'s bits do not pile up in one probe run")
 {
 // String::hash() is stable and visible to scripts, so a player or a save file can pick keys whose hashes share the bits a
-// table of 2048 slots would use (the low 11 or the high 11); the slot mapping is random per process, so they spread like
-// any other keys.
+// table of 2048 slots would use (the low 11 or the high 11); the slots are placed by String::table_hash(), keyed per
+// process, so they spread like any other keys.
 ScriptFixture fixture;
 constexpr std::size_t count=1024;
 INFO("low bits");
@@ -523,4 +584,25 @@ INFO("high bits");
 check_spread(fixture,keys_where("high",count,[](std::uint64_t hash){return (hash>>52)==0;}));
 INFO("ordinary keys");
 check_spread(fixture,keys_where("key",count,[](std::uint64_t){return true;}));
+}
+
+TEST_CASE("keys with equal String::hash() do not share a probe run")
+{
+// Keys whose whole 64-bit stable hashes are equal (colliding_keys builds them offline, as an attacker could) would share
+// one home slot under any mapping of String::hash(); the slots use String::table_hash(), whose secrets are drawn per
+// process, so equal stable hashes say nothing about the table hashes and the keys spread like any other keys.
+ScriptFixture fixture;
+constexpr std::size_t count=1024;
+for(const bool heap:{false,true}){
+const std::string what=heap?"32-byte heap keys":"16-byte inline keys";
+INFO(what);
+const std::vector<std::string> keys=colliding_keys(count,heap);
+const std::uint64_t shared=zodiac::String(keys[0]).hash();
+std::size_t equal=0;
+for(const std::string& key:keys)equal+=zodiac::String(key).hash()==shared?1:0;
+REQUIRE(equal==count);
+REQUIRE(std::is_sorted(keys.begin(),keys.end()));
+REQUIRE(std::adjacent_find(keys.begin(),keys.end())==keys.end());
+check_spread(fixture,keys);
+}
 }

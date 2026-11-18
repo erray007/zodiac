@@ -23,6 +23,11 @@
 using zodiac::String;
 using zodiac::StringError;
 
+// Table hashes taken by namespace-scope (default-priority) initializers, before main: the secrets must already be drawn, or
+// these would be hashes under all-zero keys that later calls do not reproduce. One inline and one heap string.
+const std::uint64_t early_inline_table_hash=String("early inline").table_hash();
+const std::uint64_t early_heap_table_hash=String("early heap text, longer than the 23 inline bytes").table_hash();
+
 namespace doctest {
 template<>
 struct StringMaker<zodiac::String> {
@@ -949,7 +954,75 @@ const std::uint64_t before=b.hash();
 b+="x";
 CHECK(b.hash()!=before);
 CHECK(b.hash()==String(b.bytes()).hash());
-CHECK(std::hash<String>{}(a)==static_cast<std::size_t>(a.hash()));
+}
+
+TEST_CASE("the table hash's secrets are drawn before any static initializer hashes")
+{
+bool any_nonzero=false;
+bool differs_from_stable=false;
+for(int index=0;index<5;++index){
+const std::uint64_t word=zodiac::string_detail::table_key_word(index);
+any_nonzero=any_nonzero||word!=0;
+differs_from_stable=differs_from_stable||word!=zodiac::string_detail::stable_key_word(index);
+}
+CHECK(any_nonzero);
+CHECK(differs_from_stable);
+// Every word drawn: a zero word would mean the draw left part of the keys unset (chance 5 * 2^-64 otherwise).
+for(int index=0;index<5;++index)CHECK(zodiac::string_detail::table_key_word(index)!=0);
+CHECK(zodiac::string_detail::stable_key_word(2)==0xE7037ED1A0B428DBu);
+CHECK(early_inline_table_hash==String("early inline").table_hash());
+CHECK(early_heap_table_hash==String("early heap text, longer than the 23 inline bytes").table_hash());
+CHECK(early_heap_table_hash==zodiac::string_detail::table_hash_bytes("early heap text, longer than the 23 inline bytes",48));
+}
+
+TEST_CASE("table_hash is equal for equal bytes, whatever the storage")
+{
+const String a(std::string(30,'h'));
+String b(std::string(20,'h'));
+b+=std::string(10,'h');
+const String shared=a;
+CHECK(a.table_hash()==b.table_hash());
+CHECK(shared.table_hash()==a.table_hash());
+CHECK(String("ş").table_hash()==String::from_code_point(U'ş').table_hash());
+CHECK(String("a").table_hash()!=String("b").table_hash());
+CHECK(String("").table_hash()!=String(std::string_view("\0",1)).table_hash());
+// Stable within the process: a second call (the cached value for heap text) and a fresh copy agree.
+const std::uint64_t first=a.table_hash();
+CHECK(a.table_hash()==first);
+CHECK(String(a.bytes()).table_hash()==first);
+CHECK(String("abc").table_hash()==String("abc").table_hash());
+const std::uint64_t before=b.table_hash();
+b+="x";
+CHECK(b.table_hash()!=before);
+CHECK(b.table_hash()==String(b.bytes()).table_hash());
+String inline_text("short");
+const std::uint64_t inline_before=inline_text.table_hash();
+inline_text+="er";
+CHECK(inline_text.table_hash()!=inline_before);
+CHECK(inline_text.table_hash()==String("shorter").table_hash());
+// Keyed per process, so it differs from the stable script hash.
+CHECK(String("abc").table_hash()!=String("abc").hash());
+CHECK(a.table_hash()!=a.hash());
+CHECK(std::hash<String>{}(a)==static_cast<std::size_t>(a.table_hash()));
+CHECK(std::hash<String>{}(String("abc"))==static_cast<std::size_t>(String("abc").table_hash()));
+}
+
+TEST_CASE("script hash stays uncached and stable on heap strings")
+{
+// Over 48 bytes: heap storage and the hash's three-lane path. hash() must not read the cached table hash.
+const std::string bytes="İstanbul'da IŞIK ve ışık, uzun bir cümle ile 48 baytı geçen metin";
+constexpr std::uint64_t golden=512401696878949126u;
+const String text(bytes);
+REQUIRE(text.byte_length()>String::inline_capacity);
+CHECK(text.hash()==golden);
+CHECK(text.hash()==zodiac::string_detail::hash_bytes(bytes.data(),bytes.size()));
+const std::uint64_t keyed=text.table_hash();
+CHECK(text.table_hash()==keyed);
+CHECK(text.hash()==golden);
+CHECK(text.hash()!=keyed);
+const String copy=text;
+CHECK(copy.table_hash()==keyed);
+CHECK(copy.hash()==golden);
 }
 
 TEST_CASE("hash values are fixed across platforms and runs")
