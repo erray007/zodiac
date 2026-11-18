@@ -136,7 +136,8 @@ asITypeInfo* type_=nullptr;
 int type_id_=0;
 };
 
-class Dictionary {
+// 64-byte aligned (C++17 aligned new) so the fields a lookup reads, which come first, share one cache line.
+class alignas(64) Dictionary {
 public:
 static constexpr int max_depth=100;
 
@@ -221,9 +222,15 @@ void free_entry(std::uint32_t index) noexcept;
 // Moves every entry of source (a private temporary) into this dictionary, replacing its content.
 void commit(Dictionary& source);
 
+// What a lookup reads comes first: the index, its mask, the cache get() converts with and the segments (with the object
+// on a 64-byte boundary, the first line holds these and segments 0-4, the first 496 entries).
+Slot* index_=nullptr;
+DictionaryCache* cache_;
+std::uint32_t mask_=0;
+std::uint32_t live_=0;
+Entry* segments_[segment_count]={};
 mutable int ref_count_=1;
 mutable bool gc_flag_=false;
-std::uint32_t live_=0;
 // Entries [0, used_) have been handed out; the free list holds the removed ones among them.
 std::uint32_t used_=0;
 std::uint32_t capacity_=0;
@@ -231,11 +238,7 @@ std::uint32_t free_count_=0;
 std::uint32_t free_;
 std::uint32_t first_;
 std::uint32_t last_;
-std::uint32_t mask_=0;
 std::uint32_t clearing_=0;
-Slot* index_=nullptr;
-DictionaryCache* cache_;
-Entry* segments_[segment_count]={};
 };
 
 // Registers dictionary_value and dictionary; throws std::runtime_error naming the declaration the engine refuses.

@@ -54,7 +54,9 @@ std::int64_t value_integer(const DictionaryValue* self) noexcept;
 double value_number(const DictionaryValue* self) noexcept;
 };
 
-struct Dictionary::Entry {
+// 64 bytes on a 64-byte boundary (segments come from the aligned operator new), so a lookup's key compare and value read
+// touch one cache line, not the two most entries of a malloc'ed segment straddled.
+struct alignas(64) Dictionary::Entry {
 String key;
 DictionaryValue value;
 // Insertion-order links of a live entry (no_entry at the ends); free_mark or pending_mark otherwise.
@@ -474,7 +476,7 @@ reset();
 
 // ---- Dictionary: storage ----
 
-Dictionary::Dictionary(DictionaryCache& cache) noexcept:free_(no_entry),first_(no_entry),last_(no_entry),cache_(&cache)
+Dictionary::Dictionary(DictionaryCache& cache) noexcept:cache_(&cache),free_(no_entry),first_(no_entry),last_(no_entry)
 {
 static_assert(sizeof(Entry)==64&&sizeof(Slot)==16);
 }
@@ -487,7 +489,7 @@ for(int segment=0;segment<segment_count&&segments_[segment];++segment){
 Entry* block=segments_[segment];
 const std::uint32_t size=first_segment_size<<segment;
 for(std::uint32_t at=0;at<size;++at)block[at].~Entry();
-std::free(block);
+::operator delete(block,std::align_val_t{alignof(Entry)});
 }
 }
 
@@ -522,7 +524,7 @@ void Dictionary::add_segment()
 const unsigned segment=static_cast<unsigned>(std::bit_width((capacity_/first_segment_size)+1))-1;
 if(segment>=static_cast<unsigned>(segment_count))throw std::bad_alloc();
 const std::uint32_t size=first_segment_size<<segment;
-auto* block=static_cast<Entry*>(std::malloc(sizeof(Entry)*size));
+auto* block=static_cast<Entry*>(::operator new(sizeof(Entry)*size,std::align_val_t{alignof(Entry)},std::nothrow));
 if(!block)throw std::bad_alloc();
 for(std::uint32_t at=0;at<size;++at)new(block+at) Entry{String(),DictionaryValue(),free_mark,no_entry};
 segments_[segment]=block;
