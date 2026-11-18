@@ -34,6 +34,7 @@ Zodiac is distributed as an installable package. A game developer installs only 
 
 - Windows x86_64, Windows 10 or later; toolchain llvm-mingw UCRT as pinned in `tools/toolchain.json` (foundation spec 8.8).
 - The kit's linker is LLVM `lld` from the same pinned llvm-mingw release used to build the kit, so module libraries and linker always match.
+- Release builds use full LTO (`cmake/ZodiacReleaseFlags.cmake`), so the kit's `lib/release` archives hold LLVM bitcode, not native objects, and `zodiac build` links every game through lld's LTO backend. A static module library linked by `zodiac build` must therefore hold native objects, or bitcode from the kit's exact LLVM version (the pinned llvm-mingw release); bitcode from any other LLVM version makes lld fail with "Invalid bitcode".
 - Everything redistributed in the kit respects its license (lld: Apache-2.0 with LLVM exception; mingw-w64 runtime: ZPL/public domain; libc++/compiler-rt: Apache-2.0 with LLVM exception). The kit carries a `THIRD_PARTY_LICENSES` file.
 - AngelScript bytecode is only valid against an identical registered interface, so release startup must register exactly the same modules, in the same order, with the same declarations, as the compile step.
 

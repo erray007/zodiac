@@ -45,8 +45,8 @@ set(CMAKE_CXX_FLAGS_INIT "-stdlib=libc++")
 # libc++ and libc++abi are linked statically, so binaries need no libc++ package at run time. -stdlib=libc++ stays in the compile flags only (clang ignores it at link time with -nostdlib++ and would warn). -nostdlib++ drops the driver's own -lc++, because the driver never adds libc++abi and
 # a static libc++.a does not pull it in; CMAKE_CXX_STANDARD_LIBRARIES is placed after every object and library, so the archives resolve in order (libc++, then the libc++abi it needs).
 # -fuse-ld=lld makes the driver treat the linker as lld (it then passes the LTO options to it instead of looking for the gold plugin); --ld-path names
-# the program found above, since a versioned package installs ld.lld-18 rather than ld.lld.
-set(ZODIAC_LINUX_LINK_FLAGS "-fuse-ld=lld --ld-path=${zodiac_lld} -nostdlib++ -static-libgcc")
+# the program found above, since a versioned package installs ld.lld-18 rather than ld.lld (quoted, so a path with spaces stays one argument).
+set(ZODIAC_LINUX_LINK_FLAGS "-fuse-ld=lld \"--ld-path=${zodiac_lld}\" -nostdlib++ -static-libgcc")
 set(CMAKE_EXE_LINKER_FLAGS_INIT "${ZODIAC_LINUX_LINK_FLAGS}")
 set(CMAKE_SHARED_LINKER_FLAGS_INIT "${ZODIAC_LINUX_LINK_FLAGS}")
 set(CMAKE_MODULE_LINKER_FLAGS_INIT "${ZODIAC_LINUX_LINK_FLAGS}")
