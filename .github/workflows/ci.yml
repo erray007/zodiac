@@ -125,30 +125,35 @@ jobs:
         env:
           ZODIAC_LONG_TESTS: "1"
         run: .tools/cmake/bin/cmake --workflow --preset linux
-      # The benchmark of spec 8.4 on an optimized build, as in the windows job, but report-only: GitHub's Linux runners vary
-      # from job to job, and one noisy runner failed operations no commit had touched. The windows job is the gate. Here a
-      # gate failure does not fail the job (continue-on-error), and the results are uploaded on every run, so the Linux
-      # numbers can still be read (see the windows job's comment on --detail for telling noise from a real regression).
+      # The benchmark of spec 8.4 on an optimized build, as in the windows job, with only its speed gate report-only: GitHub's
+      # Linux runners vary from job to job, and one noisy runner failed operations no commit had touched, so the windows job
+      # is the speed gate. Everything else still fails the job: bench_types exiting nonzero (a snippet that does not build or
+      # run, the two sides disagreeing on a checksum) and check_bench.py exiting with anything but 1 (results missing, unknown
+      # or malformed operations). Its exit code 1, a ratio over the limit, is a warning annotation only, so there is no retry.
+      # The results are uploaded on every run (see the windows job's comment on --detail for telling noise from a real
+      # regression).
       - name: Build the benchmark on the release preset
         run: |
           .tools/cmake/bin/cmake --preset linux-release
           .tools/cmake/bin/cmake --build --preset linux-release --target bench_types
-      - name: Benchmark against the sample add-ons (report-only)
-        continue-on-error: true
+      - name: Benchmark against the sample add-ons (speed gate report-only)
+        shell: bash
         run: |
           bench=build/linux-release/tests/bench/bench_types
           "$bench" --list > bench-ops.txt
-          run_bench() {
-            local status=0
-            "$bench" --detail --out "$1.json" 2> "$1-stderr.txt" || status=$?
-            cat "$1-stderr.txt"
-            return $status
-          }
-          run_bench bench
-          if ! python -I tools/check_bench.py bench.json --expected bench-ops.txt; then
-            echo "Measuring again once before failing."
-            run_bench bench-retry
-            python -I tools/check_bench.py bench-retry.json --expected bench-ops.txt
+          status=0
+          "$bench" --detail --out bench.json 2> bench-stderr.txt || status=$?
+          cat bench-stderr.txt
+          if [ "$status" -ne 0 ]; then
+            echo "::error::bench_types failed with exit code $status"
+            exit "$status"
+          fi
+          status=0
+          python -I tools/check_bench.py bench.json --expected bench-ops.txt || status=$?
+          if [ "$status" -eq 1 ]; then
+            echo "::warning::Linux benchmark: operations over the speed limit (report-only here; the windows job is the gate)"
+          elif [ "$status" -ne 0 ]; then
+            exit "$status"
           fi
       - name: Upload the benchmark results
         if: always()

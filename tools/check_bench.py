@@ -12,13 +12,15 @@ to stdout.
 Exit codes: 0 every ratio is at most LIMIT; 1 some ratio is above LIMIT (each such operation is named on stderr); 2 either file is missing
 or unreadable, a line is not such an object (malformed JSON, a missing or non-numeric field, a negative or non-finite number, an empty op
 name), an operation appears twice, the file holds no results, the expected list is empty, or an expected operation is missing or an
-unknown one is present (each named on stderr).
+unknown one is present (each named on stderr), the arguments are wrong, or the check itself fails unexpectedly. Only 1 means "too slow":
+the report-only Linux job tolerates exactly that code.
 """
 
 import argparse
 import json
 import math
 import sys
+import traceback
 from pathlib import Path
 
 LIMIT = 1.05
@@ -95,6 +97,17 @@ def table(results: list) -> str:
 
 
 def main(argv=None) -> int:
+    # An unexpected error would leave Python's exit code 1, which means "too slow"; it is a failure of the check (2) instead,
+    # so a caller that tolerates 1 (the report-only Linux job) never mistakes a crash for a slow operation.
+    try:
+        return _check(argv)
+    except Exception:
+        traceback.print_exc()
+        print("check_bench: internal error", file=sys.stderr)
+        return 2
+
+
+def _check(argv) -> int:
     parser = argparse.ArgumentParser(description="Fail when a Zodiac type is more than 5 % slower than its sample add-on.")
     parser.add_argument("results", type=Path, help="bench_types' JSON lines")
     parser.add_argument("--expected", type=Path, required=True, help="the operation names, one per line (bench_types --list)")

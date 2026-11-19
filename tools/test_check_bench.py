@@ -2,7 +2,8 @@
 
 Contract under test: ratios above 1.05 fail with exit code 1 and name every such operation, everything at or below passes
 with exit code 0, and any input that is not a complete set of well-formed result lines fails with exit code 2: complete
-means exactly the operations of the --expected list (bench_types --list), and a missing or unknown one is named."""
+means exactly the operations of the --expected list (bench_types --list), and a missing or unknown one is named; an unexpected
+error in the check is also 2, so exit code 1 always means "too slow"."""
 
 import io
 import json
@@ -108,6 +109,22 @@ class CheckBenchTests(unittest.TestCase):
         code, _, err = self.run_main("\n\n")
         self.assertEqual(code, 2)
         self.assertIn("no results", err)
+
+    def test_only_ratios_above_the_limit_give_exit_code_1(self):
+        # A format failure wins over slow operations in the same file: the run is not a valid measurement.
+        code, _, _ = self.run_main(line("string_find", 1.5) + "\n" + line("string_fnid", 1.5) + "\n", expected=["string_find"])
+        self.assertEqual(code, 2)
+        # An unexpected error in the check is 2, never Python's default 1, which would read as "too slow".
+        original = check_bench.parse
+        def broken(text):
+            raise RuntimeError("boom")
+        check_bench.parse = broken
+        try:
+            code, _, err = self.run_main(line("string_find", 0.5) + "\n")
+        finally:
+            check_bench.parse = original
+        self.assertEqual(code, 2)
+        self.assertIn("internal error", err)
 
     def test_a_missing_file_fails(self):
         out = io.StringIO()
