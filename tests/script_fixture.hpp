@@ -28,8 +28,10 @@ asIScriptEngine* engine=asCreateScriptEngine();
 REQUIRE(engine!=nullptr);
 engine->SetMessageCallback(asFUNCTION(collect_engine_message),&messages,asCALL_CDECL);
 // The same registrations as ScriptRuntime: the array first, since split and join use array<string>; the dictionary after
-// both, since keys() returns array<string>; then the library.
+// both, since keys() returns array<string>; the random numbers right after the array (random_choice is a method of
+// array<T>, added before the first instance exists); then the rest of the library.
 zodiac::register_array(engine);
+zodiac::register_random(engine);
 zodiac::register_string(engine);
 zodiac::register_dictionary(engine);
 zodiac::register_math(engine);

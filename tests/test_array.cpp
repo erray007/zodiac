@@ -112,7 +112,7 @@ for(asUINT index=0;index<type->GetMethodCount();++index){
 const std::string name=type->GetMethodByIndex(index)->GetName();
 if(!name.starts_with("op"))names.insert(name);
 }
-const std::set<std::string> expected{"length","empty","resize","reserve","clear","insert_at","insert_last","remove_at","remove_last","remove_range","find","find_by_ref","contains","sort","sort_descending","reverse","slice","join"};
+const std::set<std::string> expected{"length","empty","resize","reserve","clear","insert_at","insert_last","remove_at","remove_last","remove_range","find","find_by_ref","contains","sort","sort_descending","reverse","slice","join","random_choice"};
 CHECK(names==expected);
 CHECK(compiles(fixture,"array<int> a;a.insert_last(1);int[] b={1};"));
 CHECK_FALSE(compiles(fixture,"array<int> a;a.insertLast(1);"));

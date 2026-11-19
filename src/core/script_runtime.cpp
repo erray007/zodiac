@@ -145,8 +145,11 @@ ScriptRuntime::ScriptRuntime(Diagnostics& diagnostics,ModuleSearchPaths search_p
 engine_->SetMessageCallback(asFUNCTION(RuntimeCallbacks::message),this,asCALL_CDECL);
 // Zodiac's array first: string's split and join use array<string>; the dictionary after both, since keys() returns
 // array<string>. The sample dictionary add-on is not registered (it keys on std::string; Zodiac's dictionary replaces it).
-// Then the library, which uses the types (the sample maths add-on is not registered either; register_math replaces it).
+// The random numbers right after the array: they add random_choice to array<T>, which the engine only allows before the
+// first instance (string's array<string>) exists. Then the rest of the library (the sample maths add-on is not registered
+// either; register_math replaces it).
 register_array(engine_);
+register_random(engine_);
 register_string(engine_);
 register_dictionary(engine_);
 register_math(engine_);
