@@ -1,7 +1,7 @@
 // The script random numbers (contract in library.hpp): the global functions on the calling thread's generator
-// (thread_generator), the random_generator value type (a Xoshiro256 in place, copied as its 32 bytes), and
-// array<T>::random_choice. Every function is a noexcept native function; only random_choice can fail, and raises its script
-// exception itself out of line, so none needs the guarded<> wrapper.
+// (thread_generator), random_generator (a counted Xoshiro256 on the heap, allocated once per construction; every draw is
+// allocation-free), and array<T>::random_choice. Every function is a noexcept native function; only random_choice and the
+// factories can fail, and raise their script exception themselves, so none needs the guarded<> wrapper.
 // random_float(min, max) is min + unit() * (max - min), as std::uniform_real_distribution computes it: rounding can give max.
 #include <core/library/library.hpp>
 #include <core/library/random.hpp>
@@ -34,30 +34,71 @@ bool random_coin() noexcept
 return thread_generator().coin();
 }
 
-void construct_generator(Xoshiro256* memory) noexcept
+// The script's random_generator: a reference type (so random_choice can take it &inout) with value semantics. The
+// generator is the first member, and the count only ever changes on the script's thread.
+struct ScriptGenerator {
+Xoshiro256 generator;
+int references=1;
+};
+constexpr char kOutOfMemory[]="out of memory";
+
+// The factories' one allocation; nullptr after raising "out of memory".
+ScriptGenerator* allocate_generator() noexcept
 {
-new(memory) Xoshiro256;
-memory->seed_from_entropy();
+auto* object=new(std::nothrow) ScriptGenerator;
+if(!object)[[unlikely]]raise_script_exception(kOutOfMemory);
+return object;
 }
-void generator_seed(Xoshiro256& generator,std::uint64_t value) noexcept
+ScriptGenerator* make_generator() noexcept
 {
-generator.seed(value);
+ScriptGenerator* object=allocate_generator();
+if(object)object->generator.seed_from_entropy();
+return object;
 }
-std::int32_t generator_int(Xoshiro256& generator,std::int32_t min,std::int32_t max) noexcept
+ScriptGenerator* make_seeded_generator(std::uint64_t value) noexcept
 {
-return generator.range32(min,max);
+ScriptGenerator* object=allocate_generator();
+if(object)object->generator.seed(value);
+return object;
 }
-double generator_unit(Xoshiro256& generator) noexcept
+ScriptGenerator* copy_generator(const ScriptGenerator& other) noexcept
 {
-return generator.unit();
+ScriptGenerator* object=allocate_generator();
+if(object)object->generator=other.generator;
+return object;
 }
-double generator_between(Xoshiro256& generator,double min,double max) noexcept
+void generator_add_ref(ScriptGenerator& object) noexcept
 {
-return min+generator.unit()*(max-min);
+++object.references;
 }
-bool generator_coin(Xoshiro256& generator) noexcept
+void generator_release(ScriptGenerator& object) noexcept
 {
-return generator.coin();
+if(--object.references==0)delete &object;
+}
+ScriptGenerator& generator_assign(ScriptGenerator& object,const ScriptGenerator& other) noexcept
+{
+object.generator=other.generator;
+return object;
+}
+void generator_seed(ScriptGenerator& object,std::uint64_t value) noexcept
+{
+object.generator.seed(value);
+}
+std::int32_t generator_int(ScriptGenerator& object,std::int32_t min,std::int32_t max) noexcept
+{
+return object.generator.range32(min,max);
+}
+double generator_unit(ScriptGenerator& object) noexcept
+{
+return object.generator.unit();
+}
+double generator_between(ScriptGenerator& object,double min,double max) noexcept
+{
+return min+object.generator.unit()*(max-min);
+}
+bool generator_coin(ScriptGenerator& object) noexcept
+{
+return object.generator.coin();
 }
 
 // Raised out of line and reached by a tail jump, so the hot path of random_choice sets up no stack frame for it.
@@ -77,6 +118,10 @@ return array.at(static_cast<int>(generator.below(static_cast<std::uint32_t>(coun
 const void* random_choice(const ScriptArray& array) noexcept
 {
 return choice_of(array,thread_generator());
+}
+const void* random_choice_with(const ScriptArray& array,ScriptGenerator& object) noexcept
+{
+return choice_of(array,object.generator);
 }
 
 void check(int result,const char* declaration)
@@ -99,14 +144,21 @@ function(engine,"int random(int min, int max)",asFUNCTION(random_int));
 function(engine,"double random_float()",asFUNCTION(random_unit));
 function(engine,"double random_float(double min, double max)",asFUNCTION(random_between));
 function(engine,"bool random_bool()",asFUNCTION(random_coin));
-// asOBJ_APP_CLASS_ALLINTS is only valid with asOBJ_APP_CLASS (RegisterObjectType refuses it alone).
-check(engine->RegisterObjectType("random_generator",sizeof(Xoshiro256),asOBJ_VALUE|asOBJ_POD|asOBJ_APP_CLASS|asOBJ_APP_CLASS_ALLINTS),"random_generator");
-check(engine->RegisterObjectBehaviour("random_generator",asBEHAVE_CONSTRUCT,"void f()",asFUNCTION(construct_generator),asCALL_CDECL_OBJFIRST),"random_generator()");
+// A reference type, since AngelScript allows &inout only on counted reference types; it holds no handles, so it is not
+// garbage collected. Value semantics: the copy factory and opAssign copy the state.
+check(engine->RegisterObjectType("random_generator",0,asOBJ_REF),"random_generator");
+check(engine->RegisterObjectBehaviour("random_generator",asBEHAVE_FACTORY,"random_generator@ f()",asFUNCTION(make_generator),asCALL_CDECL),"random_generator()");
+check(engine->RegisterObjectBehaviour("random_generator",asBEHAVE_FACTORY,"random_generator@ f(uint64 seed)",asFUNCTION(make_seeded_generator),asCALL_CDECL),"random_generator(uint64 seed)");
+check(engine->RegisterObjectBehaviour("random_generator",asBEHAVE_FACTORY,"random_generator@ f(const random_generator &in other)",asFUNCTION(copy_generator),asCALL_CDECL),"random_generator(const random_generator &in)");
+check(engine->RegisterObjectBehaviour("random_generator",asBEHAVE_ADDREF,"void f()",asFUNCTION(generator_add_ref),asCALL_CDECL_OBJFIRST),"random_generator addref");
+check(engine->RegisterObjectBehaviour("random_generator",asBEHAVE_RELEASE,"void f()",asFUNCTION(generator_release),asCALL_CDECL_OBJFIRST),"random_generator release");
+method(engine,"random_generator","random_generator &opAssign(const random_generator &in other)",asFUNCTION(generator_assign));
 method(engine,"random_generator","void seed(uint64 value)",asFUNCTION(generator_seed));
 method(engine,"random_generator","int random(int min, int max)",asFUNCTION(generator_int));
 method(engine,"random_generator","double random_float()",asFUNCTION(generator_unit));
 method(engine,"random_generator","double random_float(double min, double max)",asFUNCTION(generator_between));
 method(engine,"random_generator","bool random_bool()",asFUNCTION(generator_coin));
 method(engine,"array<T>","const T &random_choice() const",asFUNCTION(random_choice));
+method(engine,"array<T>","const T &random_choice(random_generator &inout generator) const",asFUNCTION(random_choice_with));
 }
 }

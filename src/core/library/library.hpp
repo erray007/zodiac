@@ -7,8 +7,10 @@
 //   round is half away from zero; round(x, digits) rounds the shortest round-trip decimal form of x (round.hpp).
 // - register_random registers int random(int min, int max) (inclusive, bounds swapped when min > max), double random_float()
 //   (in [0, 1)), double random_float(double min, double max), bool random_bool(), all on the calling thread's generator
-//   (random.hpp), and the value type random_generator (asOBJ_POD; a default-constructed one is seeded from entropy) with
-//   void seed(uint64) and the same four as methods. It adds array<T>::random_choice() and random_choice(random_generator
+//   (random.hpp), and random_generator with void seed(uint64) and the same four as methods. random_generator is a counted
+//   reference type (controller ruling: AngelScript allows &inout only on such types) with value semantics: random_generator g
+//   is seeded from entropy, random_generator g(n) by seed(n), and copies (the copy factory, opAssign) copy the state; a
+//   failed allocation raises "out of memory". It adds array<T>::random_choice() and random_choice(random_generator
 //   &inout) (both const T&, raising "random_choice on an empty array"), so it must come after register_array and before
 //   anything makes an array instance (register_string makes array<string>): the engine refuses new template methods then. Native
 //   asCALL_CDECL and asCALL_CDECL_OBJFIRST functions; generator: xoshiro256** (random.hpp).

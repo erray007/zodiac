@@ -167,6 +167,11 @@ CHECK(holds(fixture,"random_generator g;g.seed(42);return g.random(1,100)==9&&g.
 CHECK(holds(fixture,"random_generator g;g.seed(42);return g.random_float()==double(0x15780b2e0c2ec716>>11)/9007199254740992.0;"));
 CHECK(holds(fixture,"random_generator g;g.seed(42);return !g.random_bool()&&!g.random_bool()&&g.random_bool()&&g.random_bool();"));
 CHECK(holds(fixture,"random_generator g;g.seed(42);random_generator c=g;return g.random(1,1000000)==c.random(1,1000000);"));
+// random_generator(n) is seed(n); the copy factory, opAssign and by-value parameters copy the state, handles share it.
+CHECK(holds(fixture,"random_generator g(42);return g.random(1,100)==9&&g.random(1,100)==38;"));
+CHECK(holds(fixture,"random_generator g(42);random_generator c;c=g;g.random(1,100);return c.random(1,100)==9&&g.random(1,100)==38;"));
+CHECK(holds(fixture,"random_generator g(42);random_generator c(g);c.random(1,100);return g.random(1,100)==9;"));
+CHECK(holds(fixture,"random_generator g(42);random_generator@ h=g;h.random(1,100);return g.random(1,100)==38;"));
 CHECK(holds(fixture,"random_generator a;random_generator b;return a.random(-2147483647-1,2147483647)!=b.random(-2147483647-1,2147483647)||a.random(-2147483647-1,2147483647)!=b.random(-2147483647-1,2147483647);"));
 }
 
@@ -174,7 +179,15 @@ TEST_CASE("script array random_choice")
 {
 ScriptFixture fixture;
 CHECK(holds(fixture,"array<int> a={1,2,3};for(int i=0;i<100;++i){int v=a.random_choice();if(v<1||v>3)return false;}return true;"));
+CHECK(holds(fixture,"array<int> a={1,2,3};random_generator g;for(int i=0;i<100;++i){int v=a.random_choice(g);if(v<1||v>3)return false;}return true;"));
+// random_choice(g) advances g itself: generators seeded alike agree, and a copy taken before the draws falls behind.
+CHECK(holds(fixture,"array<int> a;for(int i=0;i<1000;++i)a.insert_last(i);random_generator g(5);random_generator h(5);random_generator c=g;"
+"for(int i=0;i<100;++i)if(a.random_choice(g)!=a.random_choice(h))return false;"
+"int same=0;for(int i=0;i<100;++i)if(a.random_choice(g)==a.random_choice(c))++same;return same<50;"));
+CHECK(holds(fixture,"array<int> a;for(int i=0;i<1000;++i)a.insert_last(i);random_generator g(5);random_generator c(5);"
+"for(int i=0;i<10;++i)a.random_choice(g);for(int i=0;i<10;++i)c.random(0,999);return g.random(0,999999)==c.random(0,999999);"));
 CHECK(holds(fixture,"array<string> a={\"x\",\"y\"};string v=a.random_choice();return v==\"x\"||v==\"y\";"));
 CHECK(holds(fixture,"array<array<int>@> a={array<int>={4}};return a.random_choice()[0]==4;"));
 CHECK(error_of(fixture,"array<int> e;e.random_choice()")=="random_choice on an empty array");
+CHECK(error_of(fixture,"array<int> e;random_generator g;e.random_choice(g)")=="random_choice on an empty array");
 }
