@@ -495,6 +495,7 @@ zodiac::register_random(engine);
 zodiac::register_string(engine);
 zodiac::register_dictionary(engine);
 zodiac::register_math(engine);
+zodiac::register_time(engine);
 }
 else{
 RegisterStdString(engine);

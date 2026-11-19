@@ -16,7 +16,17 @@
 //   &inout) (both const T&, raising "random_choice on an empty array"), so it must come after register_array and before
 //   anything makes an array instance (register_string makes array<string>): the engine refuses new template methods then. Native
 //   asCALL_CDECL and asCALL_CDECL_OBJFIRST functions; generator: xoshiro256** (random.hpp).
-// - register_time registers ticks, ticks_us, timer and date_time (Task 3).
+// - register_time registers int64 ticks() and int64 ticks_us() (milliseconds and microseconds since the process started, on
+//   platform::monotonic_us, so they never decrease); timer, a POD value type that starts running, with the property getters
+//   int64 elapsed (ms, rounded down), double elapsed_seconds and bool running, and restart() (0 and running), pause() and
+//   resume() (both idempotent) and set(int64 ms) (sets elapsed, keeps the running state; saturates at +-2^62 us); and
+//   date_time, a POD value type holding a DateTime (date_time.hpp): date_time() is 1970-01-01 00:00:00.000,
+//   date_time(year, month, day, hour = 0, minute = 0, second = 0, millisecond = 0) raises "invalid date" for parts
+//   DateTime::from_parts refuses, date_time::now() (local) and date_time::utc_now() in namespace date_time, the int
+//   methods year() month() day() hour() minute() second() millisecond() weekday() (0 = Monday) day_of_year(),
+//   to_string(format = "{yyyy}-{MM}-{dd} {HH}:{mm}:{ss}") (DateTime::format), + - += -= with int64 milliseconds,
+//   date_time - date_time as int64 milliseconds (results outside int64 raise "integer overflow"), opEquals and opCmp.
+//   to_string uses string, so it comes after register_string.
 // - Each throws std::runtime_error naming the declaration when the engine refuses one, as register_exception_helpers does.
 #pragma once
 

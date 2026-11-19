@@ -147,12 +147,13 @@ engine_->SetMessageCallback(asFUNCTION(RuntimeCallbacks::message),this,asCALL_CD
 // array<string>. The sample dictionary add-on is not registered (it keys on std::string; Zodiac's dictionary replaces it).
 // The random numbers right after the array: they add random_choice to array<T>, which the engine only allows before the
 // first instance (string's array<string>) exists. Then the rest of the library (the sample maths add-on is not registered
-// either; register_math replaces it).
+// either; register_math replaces it), and the time library, whose date_time.to_string returns a string.
 register_array(engine_);
 register_random(engine_);
 register_string(engine_);
 register_dictionary(engine_);
 register_math(engine_);
+register_time(engine_);
 register_exception_helpers(engine_);
 host_.set_log_handler([this](zodiac_log_level level,std::string_view message){diagnostics_.report(level,message);});
 }

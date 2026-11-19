@@ -109,6 +109,7 @@ zodiac_add_test(test_array SOURCES test_array.cpp script_fixture.hpp LIBRARIES z
 zodiac_add_test(test_dictionary SOURCES test_dictionary.cpp script_fixture.hpp LIBRARIES zodiac_core)
 zodiac_add_test(test_math SOURCES test_math.cpp script_fixture.hpp LIBRARIES zodiac_core)
 zodiac_add_test(test_random SOURCES test_random.cpp script_fixture.hpp LIBRARIES zodiac_core)
+zodiac_add_test(test_time SOURCES test_time.cpp script_fixture.hpp LIBRARIES zodiac_core)
 zodiac_add_test(test_module_registry SOURCES test_module_registry.cpp script_fixture.hpp LIBRARIES zodiac_core)
 target_compile_definitions(test_module_registry PRIVATE
 "ZODIAC_TEST_MODULE_DIR=\"${CMAKE_BINARY_DIR}/modules\""
