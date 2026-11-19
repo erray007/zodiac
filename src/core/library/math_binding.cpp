@@ -1,7 +1,8 @@
 // The script maths library (contract in library.hpp). Every function is a noexcept native asCALL_CDECL function; the two
 // that can fail raise their script exception themselves, so none needs the guarded<> wrapper.
 // floor, ceil, trunc and round are computed inline (truncation through int64 below 2^52, where every double with a
-// fraction lies), so they cost no call into the C library on targets without SSE4.1 rounding; the others call the C library.
+// fraction lies), so they cost no call into the C library on targets without SSE4.1 rounding; sqrt is one instruction; the
+// others are the C library's own functions, registered by address.
 #include <core/library/library.hpp>
 #include <core/library/round.hpp>
 #include <core/types/script_guard.hpp>
@@ -9,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <math.h>
 #include <numbers>
 #include <stdexcept>
 #include <string>
@@ -88,58 +90,9 @@ return std::sqrt(x);
 return std::sqrt(x);
 #endif
 }
-double pow_of(double x,double y) noexcept
-{
-return std::pow(x,y);
-}
-double exp_of(double x) noexcept
-{
-return std::exp(x);
-}
-double log_of(double x) noexcept
-{
-return std::log(x);
-}
-double log10_of(double x) noexcept
-{
-return std::log10(x);
-}
-double sin_of(double x) noexcept
-{
-return std::sin(x);
-}
-double cos_of(double x) noexcept
-{
-return std::cos(x);
-}
-double tan_of(double x) noexcept
-{
-return std::tan(x);
-}
-double asin_of(double x) noexcept
-{
-return std::asin(x);
-}
-double acos_of(double x) noexcept
-{
-return std::acos(x);
-}
-double atan_of(double x) noexcept
-{
-return std::atan(x);
-}
-double atan2_of(double y,double x) noexcept
-{
-return std::atan2(y,x);
-}
-double hypot_of(double x,double y) noexcept
-{
-return std::hypot(x,y);
-}
-double fmod_of(double x,double y) noexcept
-{
-return std::fmod(x,y);
-}
+// The C library's own double functions, registered by address so a call goes straight to them.
+using unary=double(*)(double);
+using binary=double(*)(double,double);
 
 // The constants scripts read; the engine only ever reads them through the const declarations.
 constinit double pi=std::numbers::pi;
@@ -184,19 +137,19 @@ function(engine,"double round(double)",asFUNCTION(round_half_away));
 function(engine,"double round(double,int)",asFUNCTION(round_digits));
 function(engine,"double trunc(double)",asFUNCTION(trunc_of));
 function(engine,"double sqrt(double)",asFUNCTION(sqrt_of));
-function(engine,"double pow(double,double)",asFUNCTION(pow_of));
-function(engine,"double exp(double)",asFUNCTION(exp_of));
-function(engine,"double log(double)",asFUNCTION(log_of));
-function(engine,"double log10(double)",asFUNCTION(log10_of));
-function(engine,"double sin(double)",asFUNCTION(sin_of));
-function(engine,"double cos(double)",asFUNCTION(cos_of));
-function(engine,"double tan(double)",asFUNCTION(tan_of));
-function(engine,"double asin(double)",asFUNCTION(asin_of));
-function(engine,"double acos(double)",asFUNCTION(acos_of));
-function(engine,"double atan(double)",asFUNCTION(atan_of));
-function(engine,"double atan2(double,double)",asFUNCTION(atan2_of));
-function(engine,"double hypot(double,double)",asFUNCTION(hypot_of));
-function(engine,"double fmod(double,double)",asFUNCTION(fmod_of));
+function(engine,"double pow(double,double)",asFUNCTION(static_cast<binary>(::pow)));
+function(engine,"double exp(double)",asFUNCTION(static_cast<unary>(::exp)));
+function(engine,"double log(double)",asFUNCTION(static_cast<unary>(::log)));
+function(engine,"double log10(double)",asFUNCTION(static_cast<unary>(::log10)));
+function(engine,"double sin(double)",asFUNCTION(static_cast<unary>(::sin)));
+function(engine,"double cos(double)",asFUNCTION(static_cast<unary>(::cos)));
+function(engine,"double tan(double)",asFUNCTION(static_cast<unary>(::tan)));
+function(engine,"double asin(double)",asFUNCTION(static_cast<unary>(::asin)));
+function(engine,"double acos(double)",asFUNCTION(static_cast<unary>(::acos)));
+function(engine,"double atan(double)",asFUNCTION(static_cast<unary>(::atan)));
+function(engine,"double atan2(double,double)",asFUNCTION(static_cast<binary>(::atan2)));
+function(engine,"double hypot(double,double)",asFUNCTION(static_cast<binary>(::hypot)));
+function(engine,"double fmod(double,double)",asFUNCTION(static_cast<binary>(::fmod)));
 constant(engine,"const double PI",&pi);
 constant(engine,"const double TAU",&tau);
 constant(engine,"const double E",&e);
