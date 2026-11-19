@@ -6,7 +6,9 @@
 //   "integer overflow") and clamp (low greater than high: "clamp: low is greater than high") raise script exceptions.
 //   round is half away from zero; round(x, digits) rounds the shortest round-trip decimal form of x (round.hpp).
 // - register_random registers int random(int min, int max) (inclusive, bounds swapped when min > max), double random_float()
-//   (in [0, 1)), double random_float(double min, double max), bool random_bool(), all on the calling thread's generator
+//   (in [0, 1)), double random_float(double min, double max) (in [min, max), bounds swapped when min > max; equal bounds give
+//   min, a NaN bound gives NaN, an infinite bound with unequal bounds gives NaN; no overflow for any finite bounds, a rounding
+//   to max gives the double just below it; Xoshiro256::between), bool random_bool(), all on the calling thread's generator
 //   (random.hpp), and random_generator with void seed(uint64) and the same four as methods. random_generator is a counted
 //   reference type (controller ruling: AngelScript allows &inout only on such types) with value semantics: random_generator g
 //   is seeded from entropy, random_generator g(n) by seed(n), and copies (the copy factory, opAssign) copy the state; a

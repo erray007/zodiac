@@ -2,7 +2,6 @@
 // (thread_generator), random_generator (a counted Xoshiro256 on the heap, allocated once per construction; every draw is
 // allocation-free), and array<T>::random_choice. Every function is a noexcept native function; only random_choice and the
 // factories can fail, and raise their script exception themselves, so none needs the guarded<> wrapper.
-// random_float(min, max) is min + unit() * (max - min), as std::uniform_real_distribution computes it: rounding can give max.
 #include <core/library/library.hpp>
 #include <core/library/random.hpp>
 #include <core/types/array.hpp>
@@ -27,7 +26,7 @@ return thread_generator().unit();
 }
 double random_between(double min,double max) noexcept
 {
-return min+thread_generator().unit()*(max-min);
+return thread_generator().between(min,max);
 }
 bool random_coin() noexcept
 {
@@ -94,7 +93,7 @@ return object.generator.unit();
 }
 double generator_between(ScriptGenerator& object,double min,double max) noexcept
 {
-return min+object.generator.unit()*(max-min);
+return object.generator.between(min,max);
 }
 bool generator_coin(ScriptGenerator& object) noexcept
 {

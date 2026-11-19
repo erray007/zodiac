@@ -11,8 +11,13 @@
 //   min > max, by Lemire's multiply-shift with rejection (unbiased; the full int64 range is next() itself). range32 is the
 //   same for int bounds, the same values range gives for them. below(count) is uniform in [0, count), count > 0.
 //   unit() is (next() >> 11) * 2^-53, in [0, 1). coin() is the top bit of next().
+// - between(min, max) is uniform in [low, high), low and high being the bounds in either order (swapped when min > max),
+//   from one unit() draw u: low + u * (high - low), or low * (1 - u) + high * u when high - low overflows, clamped into
+//   [low, high) (a rounding to high gives the double just below it). Equal bounds give low; a NaN bound gives NaN; an
+//   infinite bound with unequal bounds gives NaN (no uniform distribution exists there). It always draws exactly once.
 // - thread_generator() is the calling thread's generator (thread_local), seeded from entropy on its first use in the thread.
 #pragma once
+#include <bit>
 #include <cstdint>
 #include <type_traits>
 
@@ -67,6 +72,21 @@ double unit() noexcept
 {
 return static_cast<double>(next()>>11)*0x1p-53;
 }
+// Uniform in [low, high) of the bounds in either order: low + unit() * width when the width is finite and positive, which
+// is never below low and is at most high, high itself (rounding) becoming the double just below it; the rest out of line.
+double between(double min,double max) noexcept
+{
+const double low=max<min?max:min;
+const double high=max<min?min:max;
+const double u=unit();
+const double width=high-low;
+// Finite and positive in one compare: their bit patterns are exactly 1 to 0x7FEFFFFFFFFFFFFF (zero, negatives, the
+// infinities and NaN all fall outside once 1 is subtracted).
+if(std::bit_cast<std::uint64_t>(width)-1>=0x7FEFFFFFFFFFFFFFu)[[unlikely]]return between_rare(low,high,u);
+const double result=low+u*width;
+if(result<high)[[likely]]return result;
+return just_below(high,low);
+}
 bool coin() noexcept
 {
 return (next()>>63)!=0;
@@ -86,6 +106,10 @@ if(static_cast<std::uint64_t>(product)<span)[[unlikely]]return rejected(product,
 return static_cast<std::uint64_t>(product>>64);
 }
 [[gnu::noinline,gnu::cold]] std::uint64_t rejected(wide product,std::uint64_t span) noexcept;
+// between for a NaN bound, equal bounds, an infinite bound, or a width past the largest double.
+[[gnu::noinline,gnu::cold]] static double between_rare(double low,double high,double u) noexcept;
+// The double next to high toward low (high > low).
+[[gnu::noinline,gnu::cold]] static double just_below(double high,double low) noexcept;
 
 std::uint64_t state_[4]={};
 };

@@ -5,7 +5,9 @@
 #include <platform/entropy.hpp>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace zodiac {
 namespace {
@@ -32,6 +34,24 @@ std::uint64_t Xoshiro256::rejected(wide product,std::uint64_t span) noexcept
 const std::uint64_t threshold=(0-span)%span;
 while(static_cast<std::uint64_t>(product)<threshold)product=static_cast<wide>(next())*span;
 return static_cast<std::uint64_t>(product>>64);
+}
+
+double Xoshiro256::between_rare(double low,double high,double u) noexcept
+{
+if(std::isnan(low)||std::isnan(high))return std::numeric_limits<double>::quiet_NaN();
+if(low==high)return low;
+if(std::isinf(low)||std::isinf(high))return std::numeric_limits<double>::quiet_NaN();
+// Finite bounds further apart than the largest double: each product is at most a bound in magnitude, and the two have
+// opposite signs, so nothing overflows; rounding may step past either bound by an ulp.
+const double result=low*(1-u)+high*u;
+if(result<low)return low;
+if(result>=high)return just_below(high,low);
+return result;
+}
+
+double Xoshiro256::just_below(double high,double low) noexcept
+{
+return std::nextafter(high,low);
 }
 
 void Xoshiro256::seed_from_entropy() noexcept

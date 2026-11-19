@@ -4,6 +4,7 @@
 // generator, and the script functions, random_generator and array<T>::random_choice with its exception.
 #include "script_fixture.hpp"
 #include <core/library/random.hpp>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -99,6 +100,68 @@ REQUIRE(value<1.0);
 }
 }
 
+TEST_CASE("seed(0) gives a working generator")
+{
+zodiac::Xoshiro256 generator;
+generator.seed(0);
+for(int i=0;i<8;++i)CHECK(generator.next()!=0);
+}
+
+TEST_CASE("between is half-open, swaps reversed bounds and never overflows")
+{
+zodiac::Xoshiro256 generator;
+generator.seed(11);
+for(int i=0;i<1000;++i){
+const double value=generator.between(5.0,2.0);
+REQUIRE(value>=2.0);
+REQUIRE(value<5.0);
+}
+// Two adjacent doubles: about half the draws round to the upper bound, which becomes the lower one.
+const double next_to_one=std::nextafter(1.0,2.0);
+for(int i=0;i<1000;++i)REQUIRE(generator.between(1.0,next_to_one)==1.0);
+for(int i=0;i<1000;++i)REQUIRE(generator.between(next_to_one,1.0)==1.0);
+// A width past the largest double.
+constexpr double largest=std::numeric_limits<double>::max();
+bool negative=false,positive=false;
+for(int i=0;i<1000;++i){
+const double value=generator.between(-largest,largest);
+REQUIRE(std::isfinite(value));
+REQUIRE(value<largest);
+negative|=value<0;
+positive|=value>0;
+}
+CHECK(negative);
+CHECK(positive);
+for(int i=0;i<1000;++i){
+const double value=generator.between(largest,-largest);
+REQUIRE(std::isfinite(value));
+REQUIRE(value<largest);
+}
+constexpr double infinity=std::numeric_limits<double>::infinity();
+const double nan=std::numeric_limits<double>::quiet_NaN();
+CHECK(generator.between(3.0,3.0)==3.0);
+CHECK(generator.between(infinity,infinity)==infinity);
+CHECK(std::isnan(generator.between(nan,1.0)));
+CHECK(std::isnan(generator.between(1.0,nan)));
+CHECK(std::isnan(generator.between(-infinity,1.0)));
+CHECK(std::isnan(generator.between(1.0,infinity)));
+CHECK(std::isnan(generator.between(-infinity,infinity)));
+}
+
+TEST_CASE("between draws once on every path")
+{
+zodiac::Xoshiro256 generator,twin;
+generator.seed(3);
+twin.seed(3);
+const double nan=std::numeric_limits<double>::quiet_NaN();
+const double bounds[][2]={{0.0,1.0},{3.0,3.0},{nan,1.0},{-std::numeric_limits<double>::max(),std::numeric_limits<double>::max()},{1.0,std::nextafter(1.0,2.0)}};
+for(const auto& pair:bounds){
+generator.between(pair[0],pair[1]);
+twin.unit();
+}
+CHECK(generator.next()==twin.next());
+}
+
 TEST_CASE("range(0, 9) is uniform by a chi-square test over 100 000 draws")
 {
 zodiac::Xoshiro256 generator;
@@ -152,7 +215,11 @@ CHECK(holds(fixture,"for(int i=0;i<1000;++i)if(random(3,3)!=3)return false;retur
 CHECK(holds(fixture,"for(int i=0;i<1000;++i){int v=random(5,1);if(v<1||v>5)return false;}return true;"));
 CHECK(holds(fixture,"for(int i=0;i<1000;++i){int v=random(-2147483647-1,2147483647);if(v<-2147483647-1||v>2147483647)return false;}return true;"));
 CHECK(holds(fixture,"for(int i=0;i<1000;++i){double v=random_float();if(v<0||v>=1)return false;}return true;"));
-CHECK(holds(fixture,"for(int i=0;i<1000;++i){double v=random_float(2.0,5.0);if(v<2||v>5)return false;}return true;"));
+CHECK(holds(fixture,"for(int i=0;i<1000;++i){double v=random_float(2.0,5.0);if(v<2||v>=5)return false;}return true;"));
+CHECK(holds(fixture,"for(int i=0;i<1000;++i){double v=random_float(5.0,2.0);if(v<2||v>=5)return false;}return true;"));
+// 1.0 and the double after it: the upper bound is never returned.
+CHECK(holds(fixture,"const double up=1.0+double(1)/4503599627370496.0;for(int i=0;i<1000;++i)if(random_float(1.0,up)!=1.0)return false;return true;"));
+CHECK(holds(fixture,"random_generator g;const double up=1.0+double(1)/4503599627370496.0;for(int i=0;i<1000;++i){if(g.random_float(up,1.0)!=1.0)return false;double v=g.random_float(5.0,2.0);if(v<2||v>=5)return false;}return true;"));
 CHECK(holds(fixture,"int t=0;for(int i=0;i<1000;++i)if(random_bool())++t;return t>0&&t<1000;"));
 }
 
@@ -180,6 +247,9 @@ TEST_CASE("script array random_choice")
 ScriptFixture fixture;
 CHECK(holds(fixture,"array<int> a={1,2,3};for(int i=0;i<100;++i){int v=a.random_choice();if(v<1||v>3)return false;}return true;"));
 CHECK(holds(fixture,"array<int> a={1,2,3};random_generator g;for(int i=0;i<100;++i){int v=a.random_choice(g);if(v<1||v>3)return false;}return true;"));
+// Every element is reached (the chance of missing one in 100 draws is below 10^-17).
+CHECK(holds(fixture,"array<int> a={1,2,3};array<bool> seen={false,false,false};for(int i=0;i<100;++i)seen[a.random_choice()-1]=true;return seen[0]&&seen[1]&&seen[2];"));
+CHECK(holds(fixture,"array<int> a={1,2,3};array<bool> seen={false,false,false};random_generator g;for(int i=0;i<100;++i)seen[a.random_choice(g)-1]=true;return seen[0]&&seen[1]&&seen[2];"));
 // random_choice(g) advances g itself: generators seeded alike agree, and a copy taken before the draws falls behind.
 CHECK(holds(fixture,"array<int> a;for(int i=0;i<1000;++i)a.insert_last(i);random_generator g(5);random_generator h(5);random_generator c=g;"
 "for(int i=0;i<100;++i)if(a.random_choice(g)!=a.random_choice(h))return false;"
