@@ -83,9 +83,7 @@ constexpr std::uint64_t kPow5[17]={1,5,25,125,625,3125,15625,78125,390625,195312
 {
 const double p=kPow10[digits];
 const double a=std::fabs(x*p);
-if(!(a<0x1p47))[[unlikely]]{
-[[clang::musttail]] return round_digits_exact(x,digits);
-}
+if(!(a<0x1p47))[[unlikely]]return round_digits_exact(x,digits);
 // a >= 0.4 here, so x is normal: M = 2^52 + its fraction bits, E = its biased exponent - 1075.
 const std::uint64_t bits=std::bit_cast<std::uint64_t>(x);
 const std::uint64_t significand=(bits&((std::uint64_t(1)<<52)-1))|(std::uint64_t(1)<<52);
@@ -119,7 +117,7 @@ double rounded;
 if(static_cast<unsigned>(digits)<=16u){
 const double p=kPow10[digits];
 if(fast_round(x*p,x,rounded))return rounded/p;
-[[clang::musttail]] return near_half_round(x,digits);
+return near_half_round(x,digits);
 }
 if(digits<0){
 if(digits>=-22){
@@ -128,7 +126,7 @@ if(fast_round(x/q,x,rounded))return rounded*q;
 }
 }
 else return x;
-[[clang::musttail]] return round_digits_exact(x,digits);
+return round_digits_exact(x,digits);
 }
 
 // Kept out of round_digits: inlined, its registers and stack frame were saved and restored on every fast-path call too

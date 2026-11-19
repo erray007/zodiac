@@ -22,26 +22,26 @@ constexpr char kOverflow[]="integer overflow";
 constexpr char kClampOrder[]="clamp: low is greater than high";
 
 // The failures raise their exception out of line and return x, reached by a tail jump: with the call inline, the hot
-// path of abs and clamp set up a stack frame (and clamp saved a vector register) on every call.
+// path of abs and clamp set up a stack frame (and clamp saved a vector register) on every call. The empty asm hides that
+// x comes back, or clang keeps x alive across a call to them instead of jumping.
 template<class T>
 [[gnu::noinline,gnu::cold]] T overflow_error(T x) noexcept
 {
 raise_script_exception(kOverflow);
+asm volatile("":"+m"(x));
 return x;
 }
 template<class T>
-[[gnu::noinline,gnu::cold]] T clamp_order_error(T x,T,T) noexcept
+[[gnu::noinline,gnu::cold]] T clamp_order_error(T x) noexcept
 {
 raise_script_exception(kClampOrder);
+asm volatile("":"+m"(x));
 return x;
 }
-// musttail: clang otherwise sees that the error functions return x and keeps x alive across a call instead.
 template<class T>
 T abs_integer(T x) noexcept
 {
-if(x==std::numeric_limits<T>::min())[[unlikely]]{
-[[clang::musttail]] return overflow_error(x);
-}
+if(x==std::numeric_limits<T>::min())[[unlikely]]return overflow_error(x);
 return x<0?-x:x;
 }
 float abs_float(float x) noexcept
@@ -66,9 +66,7 @@ return a<b?b:a;
 template<class T>
 T clamp_of(T x,T low,T high) noexcept
 {
-if(high<low)[[unlikely]]{
-[[clang::musttail]] return clamp_order_error(x,low,high);
-}
+if(high<low)[[unlikely]]return clamp_order_error(x);
 return x<low?low:high<x?high:x;
 }
 // x truncated toward zero when |x| < 2^52; at or past it (and for NaN and the infinities) x is already its own floor,
