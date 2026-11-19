@@ -1,11 +1,12 @@
-// bench_types: the speed gate of spec 8.4. Measures Zodiac's script string, array<T>, dictionary and maths against AngelScript's
-// sample add-ons (scriptstdstring, scriptarray, scriptdictionary, scriptmath) in one process.
+// bench_types: the speed gate of spec 8.4. Measures Zodiac's script string, array<T>, dictionary, maths and random numbers against
+// AngelScript's sample add-ons (scriptstdstring, scriptarray, scriptdictionary, scriptmath) in one process.
 // Contract:
-// - Two kinds of engine: Zodiac's types and library (registered as ScriptRuntime does: array, string, dictionary, maths), and the
-//   add-ons (RegisterStdString, RegisterScriptArray as the default array, RegisterStdStringUtils, RegisterScriptDictionary,
-//   RegisterScriptMath in its double configuration), both native. The maths Zodiac has and scriptmath does not (integer abs, min,
-//   clamp, round, round with digits, hypot) are plain C++ natives on the add-on engine (bench_natives): what a game without
-//   Zodiac's library would register itself.
+// - Two kinds of engine: Zodiac's types and library (registered as ScriptRuntime does: array, random, string, dictionary, maths),
+//   and the add-ons (RegisterStdString, RegisterScriptArray as the default array, the bench's random numbers,
+//   RegisterStdStringUtils, RegisterScriptDictionary, RegisterScriptMath in its double configuration), both native. The maths
+//   Zodiac has and scriptmath does not (integer abs, min, clamp, round, round with digits, hypot) are plain C++ natives on the
+//   add-on engine (bench_natives), and so are the random numbers, on std::mt19937_64 with the standard distributions
+//   (bench_random): what a game without Zodiac's library would register itself.
 // - Every operation of spec 8.4 is a pair of AngelScript snippets with the same semantics, the add-on side written the way a
 //   script would have to write it with the add-ons (where the add-on has no such operation, e.g. character indexing on Turkish
 //   text, it is the script code doing the same work). Each snippet defines int64 run(int reps), which does ITEMS units of work
@@ -49,9 +50,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <new>
+#include <random>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <vector>
 #if defined(_WIN32)
 #define NOMINMAX
@@ -282,6 +286,37 @@ R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i
 {"math_round_digits",1000,
 R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=round(i*0.0137+0.00031,2);return int64(s*100);})",
 R"(int64 run(int reps){double s=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)s+=round(i*0.0137+0.00031,2);return int64(s*100);})"},
+// Random numbers against std::mt19937_64 with the standard distributions (bench_random). The two generators give different
+// values, so each checksum counts results inside their range, a test both sides pay alike (random_bool's ?1:1 still evaluates
+// the call and branches on it).
+{"random_int",1000,
+R"(int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)if(random(1,100)<=100)++n;return n;})",
+R"(int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)if(random(1,100)<=100)++n;return n;})"},
+{"random_float",1000,
+R"(int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)if(random_float()<1.0)++n;return n;})",
+R"(int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)if(random_float()<1.0)++n;return n;})"},
+{"random_float_range",1000,
+R"(int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)if(random_float(2.0,5.0)<=5.0)++n;return n;})",
+R"(int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)if(random_float(2.0,5.0)<=5.0)++n;return n;})"},
+{"random_bool",1000,
+R"(int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)n+=random_bool()?1:1;return n;})",
+R"(int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)n+=random_bool()?1:1;return n;})"},
+// A uniform element of a 16-element array<int>.
+{"random_choice",1000,
+R"(array<int> a;
+void setup(){for(int i=0;i<16;++i)a.insert_last(i);}
+int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)if(a.random_choice()<16)++n;return n;})",
+R"(array<int> a;
+void setup(){for(int i=0;i<16;++i)a.insertLast(i);}
+int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)if(a.random_choice()<16)++n;return n;})"},
+// random(1, 100) of a seeded random_generator global (Xoshiro256 in place against std::mt19937_64 in place).
+{"generator_random_int",1000,
+R"(random_generator g;
+void setup(){g.seed(42);}
+int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)if(g.random(1,100)<=100)++n;return n;})",
+R"(random_generator g;
+void setup(){g.seed(42);}
+int64 run(int reps){int64 n=0;for(int r=0;r<reps;++r)for(int i=0;i<ITEMS;++i)if(g.random(1,100)<=100)++n;return n;})"},
 };
 
 // The add-on engine's counterparts of Zodiac's maths that scriptmath lacks: plain C++, as a game would bind them itself.
@@ -321,6 +356,64 @@ engine->RegisterGlobalFunction("double clamp(double,double,double)",asFUNCTION(c
 engine->RegisterGlobalFunction("double round(double)",asFUNCTION(round_double),asCALL_CDECL);
 engine->RegisterGlobalFunction("double hypot(double,double)",asFUNCTION(hypot_double),asCALL_CDECL);
 engine->RegisterGlobalFunction("double round(double,int)",asFUNCTION(round_digits),asCALL_CDECL);
+}
+}
+
+// The add-on engine's random numbers: std::mt19937_64 with std::uniform_int_distribution and std::uniform_real_distribution,
+// the plain C++ a game would bind itself (one global generator; random_generator a std::mt19937_64 in place, seeded from
+// std::random_device; random_choice a method of the add-on's array<T>).
+namespace bench_random {
+std::mt19937_64 generator{0x5EEDu};
+int random_int(int min,int max)
+{
+return std::uniform_int_distribution<int>(min,max)(generator);
+}
+double random_float()
+{
+return std::uniform_real_distribution<double>(0.0,1.0)(generator);
+}
+double random_float_range(double min,double max)
+{
+return std::uniform_real_distribution<double>(min,max)(generator);
+}
+bool random_bool()
+{
+return std::uniform_int_distribution<int>(0,1)(generator)!=0;
+}
+const void* random_choice(const CScriptArray& array)
+{
+const asUINT size=array.GetSize();
+if(size==0){
+if(asIScriptContext* context=asGetActiveContext())context->SetException("random_choice on an empty array");
+return nullptr;
+}
+return array.At(std::uniform_int_distribution<asUINT>(0,size-1)(generator));
+}
+void construct_generator(std::mt19937_64* memory)
+{
+new(memory) std::mt19937_64(std::random_device{}());
+}
+void generator_seed(std::mt19937_64& random,std::uint64_t value)
+{
+random.seed(value);
+}
+int generator_int(std::mt19937_64& random,int min,int max)
+{
+return std::uniform_int_distribution<int>(min,max)(random);
+}
+// After RegisterScriptArray and before anything makes an array instance (RegisterStdStringUtils makes array<string>).
+void register_all(asIScriptEngine* engine)
+{
+static_assert(std::is_trivially_copyable_v<std::mt19937_64>);
+engine->RegisterGlobalFunction("int random(int,int)",asFUNCTION(random_int),asCALL_CDECL);
+engine->RegisterGlobalFunction("double random_float()",asFUNCTION(random_float),asCALL_CDECL);
+engine->RegisterGlobalFunction("double random_float(double,double)",asFUNCTION(random_float_range),asCALL_CDECL);
+engine->RegisterGlobalFunction("bool random_bool()",asFUNCTION(random_bool),asCALL_CDECL);
+engine->RegisterObjectMethod("array<T>","const T &random_choice() const",asFUNCTION(random_choice),asCALL_CDECL_OBJFIRST);
+engine->RegisterObjectType("random_generator",sizeof(std::mt19937_64),asOBJ_VALUE|asOBJ_POD|asOBJ_APP_CLASS|asOBJ_APP_CLASS_ALLINTS);
+engine->RegisterObjectBehaviour("random_generator",asBEHAVE_CONSTRUCT,"void f()",asFUNCTION(construct_generator),asCALL_CDECL_OBJFIRST);
+engine->RegisterObjectMethod("random_generator","void seed(uint64)",asFUNCTION(generator_seed),asCALL_CDECL_OBJFIRST);
+engine->RegisterObjectMethod("random_generator","int random(int,int)",asFUNCTION(generator_int),asCALL_CDECL_OBJFIRST);
 }
 }
 
@@ -398,6 +491,7 @@ if(!engine)fail(2,"cannot create an AngelScript engine");
 engine->SetMessageCallback(asFUNCTION(print_message),nullptr,asCALL_CDECL);
 if(zodiac_types){
 zodiac::register_array(engine);
+zodiac::register_random(engine);
 zodiac::register_string(engine);
 zodiac::register_dictionary(engine);
 zodiac::register_math(engine);
@@ -405,6 +499,7 @@ zodiac::register_math(engine);
 else{
 RegisterStdString(engine);
 RegisterScriptArray(engine,true);
+bench_random::register_all(engine);
 RegisterStdStringUtils(engine);
 RegisterScriptDictionary(engine);
 RegisterScriptMath(engine);
