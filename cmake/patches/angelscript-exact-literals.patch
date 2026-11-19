@@ -1,0 +1,431 @@
+Zodiac's change to AngelScript 2.39.0 (altered source, zlib licence term 2; listed in THIRD_PARTY_LICENSES).
+Applied by cmake/ZodiacApplyPatch.cmake to the fetched SDK (cmake/Dependencies.cmake), whose files it gives LF line endings first.
+
+Decimal literals compile to the nearest double or float, ties to even, as std::from_chars rounds. AngelScript's own
+asStringScanDouble rounded at every digit and again in pow(10.0, exponent) (0.04 came out one ulp off, 5e-324 as zero),
+and a float literal was that double rounded once more. A double literal whose double lies exactly halfway between two
+floats also carries the float nearest its decimal value, which a conversion of the constant to float uses.
+
+diff --git a/angelscript/source/as_compiler.cpp b/angelscript/source/as_compiler.cpp
+--- a/angelscript/source/as_compiler.cpp
++++ b/angelscript/source/as_compiler.cpp
+@@ -9728,7 +9728,8 @@ void asCCompiler::ImplicitConversionConstant(asCExprContext *from, const asCData
+ 		if( from->type.dataType.IsDoubleType() )
+ 		{
+ 			double ic = from->type.GetConstantD();
+-			float fc = float(ic);
++// Zodiac (altered source): a double literal carries the float nearest it when float(ic) is another float.
++float fc = from->type.hasLiteralFloat ? from->type.literalFloat : float(ic);
+
+ 			from->type.SetConstantF(asCDataType::CreatePrimitive(to.GetTokenType(), true), fc);
+ 		}
+@@ -12050,7 +12051,8 @@ int asCCompiler::CompileExpressionValue(asCScriptNode *node, asCExprContext *ctx
+ 			// TODO: Check for overflow
+
+ 			size_t numScanned;
+-			float v = float(asStringScanDouble(value.AddressOf(), &numScanned));
++// Zodiac (altered source): rounded once, to the float nearest the literal.
++float v = asStringScanFloat(value.AddressOf(), &numScanned);
+ 			ctx->type.SetConstantF(asCDataType::CreatePrimitive(ttFloat, true), v);
+ #ifndef AS_USE_DOUBLE_AS_FLOAT
+ 			// Don't check this if we have double as float, because then the whole token would be scanned (i.e. no f suffix)
+@@ -12066,6 +12068,17 @@ int asCCompiler::CompileExpressionValue(asCScriptNode *node, asCExprContext *ctx
+ 			size_t numScanned;
+ 			double v = asStringScanDouble(value.AddressOf(), &numScanned);
+ 			ctx->type.SetConstantD(asCDataType::CreatePrimitive(ttDouble, true), v);
++// Zodiac (altered source): a conversion of this constant to float must give the float nearest the literal, which
++// float(v) misses only when v lies halfway between two floats (asIsFloatMidpoint); the literal is then read as a float.
++if( asIsFloatMidpoint(v) )
++{
++const float nearest = asStringScanFloat(value.AddressOf(), 0);
++if( nearest != float(v) )
++{
++ctx->type.hasLiteralFloat = true;
++ctx->type.literalFloat = nearest;
++}
++}
+ 			asASSERT(numScanned == vnode->tokenLength);
+ 		}
+ 		else if( vnode->tokenType == ttTrue ||
+@@ -13785,7 +13798,14 @@ int asCCompiler::CompileExpressionPreOp(asCScriptNode *node, asCExprContext *ctx
+ 				else if( ctx->type.dataType.IsFloatType() )
+ 					ctx->type.SetConstantF(-ctx->type.GetConstantF());
+ 				else if( ctx->type.dataType.IsDoubleType() )
++{
++// Zodiac (altered source): a negated literal keeps the float nearest it, negated (rounding to nearest is symmetric).
++const bool hasLiteralFloat = ctx->type.hasLiteralFloat;
++const float literalFloat = ctx->type.literalFloat;
+ 					ctx->type.SetConstantD(-ctx->type.GetConstantD());
++ctx->type.hasLiteralFloat = hasLiteralFloat;
++ctx->type.literalFloat = -literalFloat;
++}
+ 				else
+ 				{
+ 					Error(TXT_ILLEGAL_OPERATION, node);
+@@ -18209,6 +18229,9 @@ asCExprValue::asCExprValue()
+ 	isRefToLocal     = false;
+ 	isRefSafe        = false;
+ 	dummy            = 0;
++// Zodiac (altered source)
++hasLiteralFloat = false;
++literalFloat = 0;
+ }
+
+ void asCExprValue::Set(const asCDataType &dt)
+@@ -18223,6 +18246,8 @@ void asCExprValue::Set(const asCDataType &dt)
+ 	isLValue         = false;
+ 	isRefToLocal     = false;
+ 	isRefSafe        = false;
++// Zodiac (altered source)
++hasLiteralFloat = false;
+ }
+
+ void asCExprValue::SetVariable(const asCDataType &in_dt, int in_stackOffset, bool in_isTemporary)
+@@ -18316,6 +18341,8 @@ void asCExprValue::SetConstantD(double value)
+ {
+ 	asASSERT(dataType.GetSizeInMemoryBytes() == 8);
+ 	doubleValue = value;
++// Zodiac (altered source): a new value is no longer the literal's.
++hasLiteralFloat = false;
+ }
+
+ asQWORD asCExprValue::GetConstantQW()
+diff --git a/angelscript/source/as_compiler.h b/angelscript/source/as_compiler.h
+--- a/angelscript/source/as_compiler.h
++++ b/angelscript/source/as_compiler.h
+@@ -101,8 +101,12 @@ struct asCExprValue
+ 	bool  isExplicitHandle : 1;
+ 	bool  isRefToLocal : 1; // The reference may be to a local variable
+ 	bool  isRefSafe : 1; // the life-time of the ref is guaranteed for the duration of the access
+-	short dummy : 9;
++// Zodiac (altered source): set on a double literal's constant when float(the double) is not the float nearest the
++// literal's decimal value, which literalFloat then holds (see CompileExpressionValue). Cleared with the value.
++bool  hasLiteralFloat : 1;
++	short dummy : 8;
+ 	int   stackOffset; // used both for stack offset and indexing global variables
++float literalFloat;
+
+ private:
+ 	// These values must not be accessed directly in order to avoid problems with endianess.
+diff --git a/angelscript/source/as_string_util.cpp b/angelscript/source/as_string_util.cpp
+--- a/angelscript/source/as_string_util.cpp
++++ b/angelscript/source/as_string_util.cpp
+@@ -40,6 +40,15 @@
+
+ #include "as_string.h"
+ #include "as_string_util.h"
++#include "as_memory.h"
++
++// Zodiac (altered source): the headers of the correctly rounded number scanner below.
++#include <charconv>
++#include <cmath>
++#include <limits>
++#include <locale.h>
++#include <stdlib.h>
++#include <system_error>
+
+ BEGIN_AS_NAMESPACE
+
+@@ -74,100 +83,201 @@ int asCompareStrings(const char *str1, size_t len1, const char *str2, size_t len
+ 	return result;
+ }
+
+-double asStringScanDouble(const char *string, size_t *numScanned)
++// Zodiac (altered source, zlib licence term 2): asStringScanDouble and asStringScanFloat replace AngelScript 2.39.0's
++// asStringScanDouble, which summed digit*fraction with fraction*=0.1 and then multiplied by pow(10.0, exponent), rounding
++// at every step (0.04 came out one ulp above the double nearest 0.04, 5e-324 as zero), and whose result the compiler
++// then rounded once more for a float literal. They round the literal's decimal value once, to the nearest double or
++// float, ties to even, as IEEE 754 and std::from_chars do. The text without its digit separators goes to std::from_chars
++// where the C++ library has it for floating point (libc++ 20 and later, which Zodiac's toolchains have; libstdc++ 11 and
++// later; MSVC), to strtod_l or strtof_l in the "C" locale otherwise (correctly rounded in glibc), so the decimal point
++// is always '.' whatever the locale. The walk over the literal and numScanned are the original's.
++#if (defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L) || (defined(_LIBCPP_VERSION) && _LIBCPP_VERSION >= 200000)
++#define AS_ZODIAC_FROM_CHARS 1
++#else
++#define AS_ZODIAC_FROM_CHARS 0
++#if defined(_WIN32)
++static _locale_t asCLocale()
+ {
+-	// I decided to do my own implementation of strtod() because this function
+-	// doesn't seem to be present on all systems. iOS 5 for example doesn't appear
+-	// to include the function in the standard lib.
+-
+-	// Another reason is that the standard implementation of strtod() is dependent
+-	// on the locale on some systems, i.e. it may use comma instead of dot for
+-	// the decimal indicator. This can be avoided by forcing the locale to "C" with
+-	// setlocale(), but this is another thing that is highly platform dependent.
+-
+-	double value = 0;
+-	double fraction = 0.1;
+-	int exponent = 0;
+-	bool negativeExponent = false;
+-	int c = 0;
+-
+-	// The tokenizer separates the sign from the number in
+-	// two tokens so we'll never have a sign to parse here
+-
+-	// Parse the integer value
+-	for( ;; )
+-	{
+-		if (string[c] >= '0' && string[c] <= '9')
+-			value = value * 10 + double(string[c] - '0');
+-		else if (string[c] == '\'' && string[c + 1] && string[c + 1] >= '0' && string[c + 1] <= '9')
+-			; // skip separators
+-		else
+-			break;
+-
+-		c++;
+-	}
+-
+-	if( string[c] == '.' )
+-	{
+-		c++;
+-
+-		// Parse the fraction
+-		for( ;; )
+-		{
+-			if( string[c] >= '0' && string[c] <= '9' )
+-				value += fraction * double(string[c] - '0');
+-			else if (string[c] == '\'' && string[c + 1] && string[c + 1] >= '0' && string[c + 1] <= '9')
+-			{
+-				// skip separators
+-				c++;
+-				continue;
+-			}
+-			else
+-				break;
+-
+-			c++;
+-			fraction *= 0.1;
+-		}
+-	}
+-
+-	if( string[c] == 'e' || string[c] == 'E' )
+-	{
+-		c++;
++static const _locale_t locale = _create_locale(LC_ALL, "C");
++return locale;
++}
++static void asReadReal(const char *text, double &value)
++{
++value = _strtod_l(text, 0, asCLocale());
++}
++static void asReadReal(const char *text, float &value)
++{
++value = _strtof_l(text, 0, asCLocale());
++}
++#else
++static locale_t asCLocale()
++{
++static const locale_t locale = newlocale(LC_ALL_MASK, "C", (locale_t)0);
++return locale;
++}
++static void asReadReal(const char *text, double &value)
++{
++value = strtod_l(text, 0, asCLocale());
++}
++static void asReadReal(const char *text, float &value)
++{
++value = strtof_l(text, 0, asCLocale());
++}
++#endif
++#endif
+
+-		// Parse the sign of the exponent
+-		if( string[c] == '-' )
+-		{
+-			negativeExponent = true;
+-			c++;
+-		}
+-		else if( string[c] == '+' )
+-			c++;
++static inline bool asIsDecimalDigit(char ch)
++{
++return ch >= '0' && ch <= '9';
++}
+
+-		// Parse the exponent value
+-		for( ;; )
+-		{
+-			if( string[c] >= '0' && string[c] <= '9' )
+-				exponent = exponent*10 + int(string[c] - '0');
+-			else if (string[c] == '\'' && string[c + 1] && string[c + 1] >= '0' && string[c + 1] <= '9')
+-				; // skip separators
+-			else
+-				break;
++// A ' that the tokenizer accepted as a separator: a digit follows it (and one precedes it).
++static inline bool asIsDigitSeparator(const char *string, size_t c)
++{
++return string[c] == '\'' && asIsDecimalDigit(string[c + 1]);
++}
+
+-			c++;
+-		}
+-	}
++template<class T>
++static T asScanReal(const char *string, size_t *numScanned)
++{
++// The tokenizer has matched the literal (digits, then '.' and digits, then e or E, a sign and digits) and keeps its sign
++// in a token of its own. lead is the decimal exponent of its first nonzero digit (d.ddd*10^lead) before the exponent
++// part: from_chars reports an overflow and an underflow alike, and lead+exponent tells them apart.
++size_t c = 0;
++size_t separators = 0;
++bool nonzero = false;
++long long lead = 0;
++long long exponent = 0;
++long long integerDigits = 0;
++for( ;; c++ )
++{
++if( asIsDecimalDigit(string[c]) )
++{
++if( !nonzero && string[c] != '0' )
++{
++nonzero = true;
++lead = integerDigits;
++}
++integerDigits++;
++}
++else if( asIsDigitSeparator(string, c) )
++separators++;
++else
++break;
++}
++if( nonzero )
++lead = integerDigits - 1 - lead;
++if( string[c] == '.' )
++{
++c++;
++for( long long fractionDigits = 0;; c++ )
++{
++if( asIsDecimalDigit(string[c]) )
++{
++if( !nonzero && string[c] != '0' )
++{
++nonzero = true;
++lead = -(fractionDigits + 1);
++}
++fractionDigits++;
++}
++else if( asIsDigitSeparator(string, c) )
++separators++;
++else
++break;
++}
++}
++if( string[c] == 'e' || string[c] == 'E' )
++{
++c++;
++bool negative = false;
++if( string[c] == '-' )
++{
++negative = true;
++c++;
++}
++else if( string[c] == '+' )
++c++;
++for( ;; c++ )
++{
++if( asIsDecimalDigit(string[c]) )
++{
++// Saturates far beyond any finite double, and far beyond any literal's lead.
++if( exponent < 1000000000000000LL )
++exponent = exponent * 10 + (string[c] - '0');
++}
++else if( asIsDigitSeparator(string, c) )
++separators++;
++else
++break;
++}
++if( negative )
++exponent = -exponent;
++}
++if( numScanned )
++*numScanned = c;
++
++// The text without separators: the literal itself when it has none and from_chars reads it, else a copy, NUL-terminated
++// for strtod_l, on the stack unless it is long.
++const size_t length = c - separators;
++char local[128];
++char *heap = 0;
++const char *text = string;
++#if AS_ZODIAC_FROM_CHARS
++if( separators )
++#endif
++{
++char *copy = local;
++if( length >= sizeof(local) )
++{
++// asNEWARRAY does not parenthesize its count.
++heap = asNEWARRAY(char, (length + 1));
++if( heap == 0 )
++return T(0);
++copy = heap;
++}
++size_t n = 0;
++for( size_t i = 0; i < c; i++ )
++if( string[i] != '\'' )
++copy[n++] = string[i];
++copy[n] = 0;
++text = copy;
++}
++T value = 0;
++#if AS_ZODIAC_FROM_CHARS
++if( std::from_chars(text, text + length, value).ec == std::errc::result_out_of_range )
++value = nonzero && lead + exponent > 0 ? std::numeric_limits<T>::infinity() : T(0);
++#else
++asReadReal(text, value);
++#endif
++if( heap )
++asDELETEARRAY(heap);
++return value;
++}
+
+-	if( exponent )
+-	{
+-		if( negativeExponent )
+-			exponent = -exponent;
+-		value *= pow(10.0, exponent);
+-	}
++double asStringScanDouble(const char *string, size_t *numScanned)
++{
++return asScanReal<double>(string, numScanned);
++}
+
+-	if( numScanned )
+-		*numScanned = c;
++float asStringScanFloat(const char *string, size_t *numScanned)
++{
++return asScanReal<float>(string, numScanned);
++}
+
+-	return value;
++// True when value lies exactly halfway between two adjacent floats, or at the float overflow threshold FLT_MAX+ulp/2.
++// Only such a double can make float(value) differ from the float nearest the decimal value that value is nearest to:
++// any float midpoint between that decimal and value is itself a double, nearer the decimal than value.
++bool asIsFloatMidpoint(double value)
++{
++const float nearest = float(value);
++if( double(nearest) == value )
++return false;
++if( std::isinf(nearest) )
++return std::fabs(value) == 0x1.ffffffp127;
++const float other = std::nextafter(nearest, double(nearest) < value ? std::numeric_limits<float>::infinity() : -std::numeric_limits<float>::infinity());
++// Two adjacent floats and their half sum are exact in double.
++return (double(nearest) + double(other)) * 0.5 == value;
+ }
+
+ // Converts a character to the decimal number based on the radix
+diff --git a/angelscript/source/as_string_util.h b/angelscript/source/as_string_util.h
+--- a/angelscript/source/as_string_util.h
++++ b/angelscript/source/as_string_util.h
+@@ -39,6 +39,10 @@ BEGIN_AS_NAMESPACE
+ int     asCompareStrings(const char *str1, size_t len1, const char *str2, size_t len2);
+
+ double  asStringScanDouble(const char *string, size_t *numScanned);
++// Zodiac (altered source): the float nearest the literal, rounded once, and the test for a double that rounds twice to
++// a float (see as_string_util.cpp).
++float   asStringScanFloat(const char *string, size_t *numScanned);
++bool    asIsFloatMidpoint(double value);
+ asQWORD asStringScanUInt64(const char *string, int base, size_t *numScanned, bool *overflow);
+
+ int     asStringEncodeUTF8(unsigned int value, char *outEncodedBuffer);

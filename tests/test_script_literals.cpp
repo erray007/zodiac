@@ -193,7 +193,8 @@ ScriptFixture fixture;
 REQUIRE(fixture.engine->RegisterGlobalFunction("void collect_double(double)",asFUNCTION(collect_double),asCALL_CDECL)>=0);
 REQUIRE(fixture.engine->RegisterGlobalFunction("void collect_float(float)",asFUNCTION(collect_float),asCALL_CDECL)>=0);
 constexpr int kValues=100000;
-constexpr int kBatch=10000;
+// Scripts of 3000 calls: one script of 30 000 compiles more slowly per call.
+constexpr int kBatch=1000;
 std::mt19937_64 random(0x5A0D1AC5u);
 // Half any finite bit pattern (every exponent, subnormals included), half the short decimals scripts usually hold.
 const auto next_double=[&random](int i){

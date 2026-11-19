@@ -1,9 +1,15 @@
 include(FetchContent)
 set(FETCHCONTENT_QUIET ON)
+# Zodiac's change to AngelScript (marked in the source and in THIRD_PARTY_LICENSES, as its zlib license asks): decimal literals compile to the
+# nearest double or float. The patch's hash is on the command line so that FetchContent applies the patch again when it changes.
+find_package(Git REQUIRED)
+set(ZODIAC_AS_PATCH "${CMAKE_CURRENT_LIST_DIR}/patches/angelscript-exact-literals.patch")
+file(SHA256 "${ZODIAC_AS_PATCH}" ZODIAC_AS_PATCH_SHA256)
 FetchContent_Declare(angelscript_sdk
 URL https://www.angelcode.com/angelscript/sdk/files/angelscript_2.39.0.zip
 URL_HASH SHA256=f029bea4e52c360c750d3a805b80f9317d177241fadbc8f93845e38355d11287
 DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+PATCH_COMMAND "${CMAKE_COMMAND}" "-DGIT=${GIT_EXECUTABLE}" "-DPATCH=${ZODIAC_AS_PATCH}" "-DPATCH_SHA256=${ZODIAC_AS_PATCH_SHA256}" "-DSOURCE_DIR=<SOURCE_DIR>" -P "${CMAKE_CURRENT_LIST_DIR}/ZodiacApplyPatch.cmake"
 )
 FetchContent_Declare(tomlplusplus
 URL https://github.com/marzer/tomlplusplus/archive/refs/tags/v3.4.0.tar.gz
