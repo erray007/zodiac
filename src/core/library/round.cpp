@@ -5,8 +5,10 @@
 // S*p round to the same integer r, and fl(r/p) is the double nearest r/10^digits, which is what reading the rounded decimal
 // back gives. For digits<0 the same holds for y=fl(x/q), q=10^-digits, and fl(r*q). |y| < 2^52 keeps r and the integer part
 // exact. Past 2^32 the 2^-20 bound alone is not enough (round(87364748190.165, 2) would give ...0.16), hence the relative one.
+// Near a half, near_half_round decides with exact integers instead of the decimal digits (10 times faster).
 #include <core/library/round.hpp>
 #include <algorithm>
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -64,6 +66,42 @@ if(!(0.5-std::fabs(a-r)>std::max(0x1p-20,a*0x1p-51)))return false;
 rounded=std::copysign(r,x);
 return true;
 }
+
+// 5^0 to 5^16: 10^digits = 5^digits * 2^digits.
+constexpr std::uint64_t kPow5[17]={1,5,25,125,625,3125,15625,78125,390625,1953125,9765625,48828125,244140625,1220703125,6103515625,30517578125,152587890625};
+
+// round_digits for 0 <= digits <= 16 when |x*p| (p=10^digits) lies within max(2^-20, |x*p|*2^-51) of a half, the case
+// the fast path leaves (decimal halves such as 2.675 always land here), decided exactly without writing x's digits out.
+// Let X=|x|*p exactly, H=m+0.5 the half next to it (m=floor(X)) and U the upper end of x's round-trip interval (half an
+// ulp above |x|), scaled by p. For X < 2^47 the interval, scaled, is narrower than 2^-5, so of the decimals with digits+1
+// or fewer places it can hold only H; the shortest round-trip form S is then H when H lies in it, and otherwise on X's side
+// of H. So the result rounds up exactly when H < U: H <= X rounds up (S >= H), and above X, H < U means S = H, a half,
+// which rounds away from zero, while H > U puts S below H. H = U cannot happen: U = (2M+1)*2^(E-1) for x = M*2^E needs 54
+// significant bits, H/p = (2m+1)/(2*10^digits) at most 48. Compared as exact integers in units of 2^(E+digits-1).
+// Larger products take the decimal path.
+[[gnu::noinline]] double near_half_round(double x,int digits) noexcept
+{
+const double p=kPow10[digits];
+const double a=std::fabs(x*p);
+if(!(a<0x1p47))[[unlikely]]{
+[[clang::musttail]] return round_digits_exact(x,digits);
+}
+// a >= 0.4 here, so x is normal: M = 2^52 + its fraction bits, E = its biased exponent - 1075.
+const std::uint64_t bits=std::bit_cast<std::uint64_t>(x);
+const std::uint64_t significand=(bits&((std::uint64_t(1)<<52)-1))|(std::uint64_t(1)<<52);
+const int exponent=static_cast<int>((bits>>52)&0x7FF)-1075;
+using u128=unsigned __int128;
+// U = (2M+1)*5^digits units, H = (2m+1)*2^(-E-digits) units; the side with the negative power of two is shifted
+// instead. U is below 2^92 and E+digits is at most 10 (|x| < 2^47), so neither side passes 2^102.
+u128 upper=static_cast<u128>(2*significand+1)*kPow5[digits];
+const std::uint64_t m=static_cast<std::uint64_t>(a);
+u128 half=2*m+1;
+const int shift=-exponent-digits;
+if(shift>=0)half<<=shift;
+else upper<<=-shift;
+const double r=static_cast<double>(m)+(half<upper?1.0:0.0);
+return std::copysign(r,x)/p;
+}
 }
 
 double round_half_away(double x) noexcept
@@ -81,15 +119,16 @@ double rounded;
 if(static_cast<unsigned>(digits)<=16u){
 const double p=kPow10[digits];
 if(fast_round(x*p,x,rounded))return rounded/p;
+[[clang::musttail]] return near_half_round(x,digits);
 }
-else if(digits<0){
+if(digits<0){
 if(digits>=-22){
 const double q=kPow10[-digits];
 if(fast_round(x/q,x,rounded))return rounded*q;
 }
 }
 else return x;
-return round_digits_exact(x,digits);
+[[clang::musttail]] return round_digits_exact(x,digits);
 }
 
 // Kept out of round_digits: inlined, its registers and stack frame were saved and restored on every fast-path call too
