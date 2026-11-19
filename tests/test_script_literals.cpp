@@ -162,8 +162,13 @@ CHECK(same(float_of(fixture,"float x=340282356779733661637539395458142568447.0; 
 CHECK(same(float_of(fixture,"return 340282356779733661637539395458142568448.0f;"),std::numeric_limits<float>::infinity()));
 CHECK(same(float_of(fixture,"return 1e39f;"),std::numeric_limits<float>::infinity()));
 CHECK(same(float_of(fixture,"return 1e-50f;"),0.0f));
-// A double expression keeps double semantics: the sum is rounded to a double, then to a float.
+// A double expression keeps double semantics: the sum is rounded to a double, then to a float. When the left operand is
+// a literal that carries the float nearest it, folding the expression must drop that float, or the result would be
+// 1+2^-23 instead of 1.
 CHECK(same(float_of(fixture,"float x=1.0+0.000000059604644775390625001; return x;"),1.0f));
+CHECK(same(float_of(fixture,"float x=1.000000059604644775390625001+0.0; return x;"),1.0f));
+CHECK(same(float_of(fixture,"float x=1.000000059604644775390625001*1.0; return x;"),1.0f));
+CHECK(same(float_of(fixture,"float x=-1.000000059604644775390625001*1.0; return x;"),-1.0f));
 }
 
 TEST_CASE("integer, based, separated and exponent literals keep working")

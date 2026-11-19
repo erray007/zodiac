@@ -126,7 +126,7 @@ diff --git a/angelscript/source/as_string_util.cpp b/angelscript/source/as_strin
 
  BEGIN_AS_NAMESPACE
 
-@@ -74,100 +83,201 @@ int asCompareStrings(const char *str1, size_t len1, const char *str2, size_t len
+@@ -74,100 +83,226 @@ int asCompareStrings(const char *str1, size_t len1, const char *str2, size_t len
  	return result;
  }
 
@@ -136,15 +136,19 @@ diff --git a/angelscript/source/as_string_util.cpp b/angelscript/source/as_strin
 +// at every step (0.04 came out one ulp above the double nearest 0.04, 5e-324 as zero), and whose result the compiler
 +// then rounded once more for a float literal. They round the literal's decimal value once, to the nearest double or
 +// float, ties to even, as IEEE 754 and std::from_chars do. The text without its digit separators goes to std::from_chars
-+// where the C++ library has it for floating point (libc++ 20 and later, which Zodiac's toolchains have; libstdc++ 11 and
-+// later; MSVC), to strtod_l or strtof_l in the "C" locale otherwise (correctly rounded in glibc), so the decimal point
-+// is always '.' whatever the locale. The walk over the literal and numScanned are the original's.
-+#if (defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L) || (defined(_LIBCPP_VERSION) && _LIBCPP_VERSION >= 200000)
++// where the C++ library has a correctly rounded one for floating point (libc++ 20 and later, which Zodiac's toolchains
++// have; libstdc++ 12 and later; MSVC's STL), to strtod_l or strtof_l in the "C" locale otherwise (correctly rounded in
++// glibc), so the decimal point is always '.' whatever the locale. The walk over the literal and numScanned are the
++// original's.
++#if (defined(_LIBCPP_VERSION) && _LIBCPP_VERSION >= 200000) || (defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE >= 12) || (defined(_MSVC_STL_VERSION) && defined(__cpp_lib_to_chars))
 +#define AS_ZODIAC_FROM_CHARS 1
 +#else
 +#define AS_ZODIAC_FROM_CHARS 0
++// The "C" locale, made once; null when the C library could not make it, in which case strtod and strtof read the text
++// in the current locale, with '.' replaced by its decimal point (see asScanReal).
 +#if defined(_WIN32)
-+static _locale_t asCLocale()
++typedef _locale_t asCLocaleHandle;
++static asCLocaleHandle asCLocale()
  {
 -	// I decided to do my own implementation of strtod() because this function
 -	// doesn't seem to be present on all systems. iOS 5 for example doesn't appear
@@ -206,27 +210,28 @@ diff --git a/angelscript/source/as_string_util.cpp b/angelscript/source/as_strin
 +static const _locale_t locale = _create_locale(LC_ALL, "C");
 +return locale;
 +}
-+static void asReadReal(const char *text, double &value)
++static void asReadReal(const char *text, asCLocaleHandle locale, double &value)
 +{
-+value = _strtod_l(text, 0, asCLocale());
++value = locale ? _strtod_l(text, 0, locale) : strtod(text, 0);
 +}
-+static void asReadReal(const char *text, float &value)
++static void asReadReal(const char *text, asCLocaleHandle locale, float &value)
 +{
-+value = _strtof_l(text, 0, asCLocale());
++value = locale ? _strtof_l(text, 0, locale) : strtof(text, 0);
 +}
 +#else
-+static locale_t asCLocale()
++typedef locale_t asCLocaleHandle;
++static asCLocaleHandle asCLocale()
 +{
 +static const locale_t locale = newlocale(LC_ALL_MASK, "C", (locale_t)0);
 +return locale;
 +}
-+static void asReadReal(const char *text, double &value)
++static void asReadReal(const char *text, asCLocaleHandle locale, double &value)
 +{
-+value = strtod_l(text, 0, asCLocale());
++value = locale ? strtod_l(text, 0, locale) : strtod(text, 0);
 +}
-+static void asReadReal(const char *text, float &value)
++static void asReadReal(const char *text, asCLocaleHandle locale, float &value)
 +{
-+value = strtof_l(text, 0, asCLocale());
++value = locale ? strtof_l(text, 0, locale) : strtof(text, 0);
 +}
 +#endif
 +#endif
@@ -343,8 +348,17 @@ diff --git a/angelscript/source/as_string_util.cpp b/angelscript/source/as_strin
 +*numScanned = c;
 +
 +// The text without separators: the literal itself when it has none and from_chars reads it, else a copy, NUL-terminated
-+// for strtod_l, on the stack unless it is long.
++// for strtod_l, on the stack unless it is long. Without the "C" locale (never expected: asASSERT), strtod reads the copy
++// in the current locale, whose decimal point (one or more bytes) then replaces the '.'.
 +const size_t length = c - separators;
++#if AS_ZODIAC_FROM_CHARS
++const char *point = ".";
++#else
++const asCLocaleHandle locale = asCLocale();
++asASSERT(locale != 0);
++const char *point = locale ? "." : localeconv()->decimal_point;
++#endif
++const size_t pointLength = strlen(point);
 +char local[128];
 +char *heap = 0;
 +const char *text = string;
@@ -352,19 +366,30 @@ diff --git a/angelscript/source/as_string_util.cpp b/angelscript/source/as_strin
 +if( separators )
 +#endif
 +{
++// The text, the decimal point's bytes past the first and a NUL.
++const size_t capacity = length + pointLength;
 +char *copy = local;
-+if( length >= sizeof(local) )
++if( capacity > sizeof(local) )
 +{
 +// asNEWARRAY does not parenthesize its count.
-+heap = asNEWARRAY(char, (length + 1));
++heap = asNEWARRAY(char, capacity);
++// Out of memory: the literal compiles to 0. The scanner has no way to report an error to the compiler, and the
++// engine cannot go on compiling without memory anyway.
 +if( heap == 0 )
 +return T(0);
 +copy = heap;
 +}
 +size_t n = 0;
 +for( size_t i = 0; i < c; i++ )
-+if( string[i] != '\'' )
++{
++if( string[i] == '.' )
++{
++memcpy(copy + n, point, pointLength);
++n += pointLength;
++}
++else if( string[i] != '\'' )
 +copy[n++] = string[i];
++}
 +copy[n] = 0;
 +text = copy;
 +}
@@ -373,7 +398,7 @@ diff --git a/angelscript/source/as_string_util.cpp b/angelscript/source/as_strin
 +if( std::from_chars(text, text + length, value).ec == std::errc::result_out_of_range )
 +value = nonzero && lead + exponent > 0 ? std::numeric_limits<T>::infinity() : T(0);
 +#else
-+asReadReal(text, value);
++asReadReal(text, locale, value);
 +#endif
 +if( heap )
 +asDELETEARRAY(heap);
