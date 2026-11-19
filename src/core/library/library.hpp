@@ -27,6 +27,13 @@
 //   to_string(format = "{yyyy}-{MM}-{dd} {HH}:{mm}:{ss}") (DateTime::format), + - += -= with int64 milliseconds,
 //   date_time - date_time as int64 milliseconds (results outside int64 raise "integer overflow"), opEquals and opCmp.
 //   to_string uses string, so it comes after register_string.
+//   Every date_time is a zone-less civil time: now() is the local wall-clock reading and utc_now() the UTC one, each stored
+//   as if it were a time without zone (platform::utc_to_local_civil_ms; the zone is re-read within about a second of a
+//   change). So now() - utc_now() is the local zone's offset from UTC in milliseconds, mixing the two in arithmetic or
+//   comparisons mixes zones, and arithmetic on now() values is wall-clock arithmetic: adding 24 hours across a daylight
+//   saving change keeps the wall-clock time (the real time elapsed was 23 or 25 hours). Measure durations with ticks() or
+//   timer, never with now().
+//   ticks() and timers keep counting while the system is suspended (platform::monotonic_us).
 // - Each throws std::runtime_error naming the declaration when the engine refuses one, as register_exception_helpers does.
 #pragma once
 

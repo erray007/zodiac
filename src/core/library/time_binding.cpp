@@ -232,6 +232,8 @@ void register_time(asIScriptEngine* engine)
 function(engine,"int64 ticks()",asFUNCTION(ticks));
 function(engine,"int64 ticks_us()",asFUNCTION(ticks_us));
 
+// asOBJ_APP_CLASS_ALLINTS only describes the layout (an int64 and a bool) for the calling-convention code: no native
+// function takes or returns a timer by value, every one takes it by reference.
 check(engine->RegisterObjectType("timer",sizeof(Timer),asOBJ_VALUE|asOBJ_POD|asOBJ_APP_CLASS_ALLINTS|asGetTypeTraits<Timer>()),"timer");
 check(engine->RegisterObjectBehaviour("timer",asBEHAVE_CONSTRUCT,"void f()",asFUNCTION(timer_construct),asCALL_CDECL_OBJLAST),"timer()");
 method(engine,"timer","int64 get_elapsed() const property",asFUNCTION(timer_elapsed));

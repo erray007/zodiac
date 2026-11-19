@@ -64,7 +64,7 @@ default:return nullptr;
 case 2:
 if(token[0]!=token[1])return nullptr;
 switch(*token){
-case 'y':return write_two(out,static_cast<int>(date_time_detail::floor_mod(parts.date.year,100)));
+case 'y':return write_two(out,parts.date.year<0?-(parts.date.year%100):parts.date.year%100);
 case 'M':return write_two(out,parts.date.month);
 case 'd':return write_two(out,parts.date.day);
 case 'H':return write_two(out,parts.hour);

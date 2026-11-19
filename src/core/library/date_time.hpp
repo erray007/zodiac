@@ -10,7 +10,7 @@
 //   (http://howardhinnant.github.io/date_algorithms.html), which are exact for the whole range; times before 1970 round
 //   down (-1 ms is 1969-12-31 23:59:59.999). weekday() is 0 for Monday to 6 for Sunday, day_of_year() 1 to 366.
 // - format(fmt) copies fmt, replacing the tokens {yyyy} (the year, at least 4 digits, with a '-' before negative years),
-//   {yy} (the year modulo 100, 2 digits), {MM} {dd} {HH} {mm} {ss} (2 digits), {M} {d} {H} (no padding) and {fff}
+//   {yy} (the year's absolute value modulo 100, 2 digits: -44 is "44"), {MM} {dd} {HH} {mm} {ss} (2 digits), {M} {d} {H} (no padding) and {fff}
 //   (3 digits). "{{" is '{' and "}}" is '}'; any other brace, and a brace pair holding anything else ("{x}"), stays as it
 //   is. It throws only std::bad_alloc.
 // - DateTime is an aggregate of one int64, trivially copyable, so the binding registers it as a POD value type returned in

@@ -4,6 +4,7 @@
 #include "script_fixture.hpp"
 #include <core/library/date_time.hpp>
 #include <platform/clock.hpp>
+#include <platform/local_offset_cache.hpp>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -152,7 +153,12 @@ CHECK(moment.format("}} } { {} {yyyy {mmm} {fff").bytes()=="} } { {} {yyyy {mmm}
 CHECK(moment.format("{{yyyy}}").bytes()=="{yyyy}");
 CHECK(moment.format("").bytes().empty());
 CHECK(date(7,3,4).format("{yyyy} {yy}").bytes()=="0007 07");
-CHECK(date(-44,3,15).format("{yyyy} {yy}").bytes()=="-0044 56");
+CHECK(date(-44,3,15).format("{yyyy} {yy}").bytes()=="-0044 44");
+CHECK(date(-2026,3,15).format("{yy}").bytes()=="26");
+CHECK(date(-100,3,15).format("{yy}").bytes()=="00");
+// Tokens next to multi-byte UTF-8 text, which is copied byte for byte.
+CHECK(date(2026,11,9).format("{dd} Kasım ğ {yyyy}").bytes()=="09 Kasım ğ 2026");
+CHECK(date(2026,11,9).format("ş{d}ü{{ç}}{M}€").bytes()=="ş9ü{ç}11€");
 // A format longer than the stack buffer, every token expanding.
 std::string long_format;
 std::string expected;
@@ -181,6 +187,55 @@ CHECK(offset>-86400000);
 CHECK(offset<86400000);
 CHECK(zodiac::platform::utc_to_local_civil_ms(std::numeric_limits<std::int64_t>::max())==std::numeric_limits<std::int64_t>::max());
 CHECK(zodiac::platform::utc_to_local_civil_ms(std::numeric_limits<std::int64_t>::min())==std::numeric_limits<std::int64_t>::min());
+}
+
+namespace {
+// A zone with offset +1 h before second 600 (a minute boundary), +2 h from it, +3 h from second 1234 (an odd second, like
+// historical transitions), and no conversion at or after second 100 000. It counts its refreshes.
+struct FakeZone {
+int refreshes=0;
+void refresh() noexcept
+{
+++refreshes;
+}
+std::optional<std::int64_t> offset_seconds(std::int64_t utc_seconds) const noexcept
+{
+if(utc_seconds>=100000)return std::nullopt;
+return utc_seconds<600?3600:utc_seconds<1234?7200:10800;
+}
+};
+}
+
+TEST_CASE("LocalOffsetCache is exact around transitions and refreshes the zone at most once a second")
+{
+zodiac::platform::detail::LocalOffsetCache<FakeZone> cache;
+const std::int64_t start_us=zodiac::platform::monotonic_us();
+for(std::int64_t ms=-5000;ms<2000000;ms+=250){
+const std::int64_t seconds=ms/1000-(ms%1000<0);
+const std::int64_t expected=seconds<600?3600:seconds<1234?7200:10800;
+REQUIRE(cache.to_local(ms)==ms+expected*1000);
+// Again from the cache, and an instant of another minute in between.
+REQUIRE(cache.to_local(ms)==ms+expected*1000);
+}
+const std::int64_t seconds_taken=(zodiac::platform::monotonic_us()-start_us)/1000000;
+CHECK(cache.zone().refreshes>=1);
+CHECK(cache.zone().refreshes<=seconds_taken+1);
+CHECK(cache.to_local(100000000)==100000000);
+CHECK(cache.to_local(std::numeric_limits<std::int64_t>::min())==std::numeric_limits<std::int64_t>::min()+3600000);
+}
+
+TEST_CASE("utc_to_local_civil_ms is stable within a minute and from call to call")
+{
+const std::int64_t base=zodiac::platform::utc_now_ms()/60000*60000;
+const std::int64_t offset=zodiac::platform::utc_to_local_civil_ms(base)-base;
+for(std::int64_t ms=base;ms<base+60000;ms+=997)REQUIRE(zodiac::platform::utc_to_local_civil_ms(ms)-ms==offset);
+// Instants a year apart alternate, and each still converts like a fresh call.
+const std::int64_t year_ago=base-31536000000;
+const std::int64_t old_offset=zodiac::platform::utc_to_local_civil_ms(year_ago)-year_ago;
+for(int i=0;i<100;++i){
+REQUIRE(zodiac::platform::utc_to_local_civil_ms(base)-base==offset);
+REQUIRE(zodiac::platform::utc_to_local_civil_ms(year_ago)-year_ago==old_offset);
+}
 }
 
 TEST_CASE("script date_time arithmetic, parts and validation")
@@ -216,6 +271,7 @@ TEST_CASE("script date_time to_string")
 ScriptFixture fixture;
 CHECK(text_of(fixture,"date_time(2026,1,2,3,4,5,6).to_string(\"{yyyy}/{M}/{d} {H}:{mm}:{ss}.{fff} {x} {{\")")=="2026/1/2 3:04:05.006 {x} {");
 CHECK(text_of(fixture,"date_time(2026,11,19,8,9,10).to_string()")=="2026-11-19 08:09:10");
+CHECK(text_of(fixture,"date_time(2026,11,9).to_string(\"{dd} Kasım ğ {yyyy}\")")=="09 Kasım ğ 2026");
 }
 
 TEST_CASE("script date_time::now and utc_now differ by the local offset")
@@ -241,7 +297,7 @@ TEST_CASE("script timer")
 ScriptFixture fixture;
 CHECK(holds(fixture,"timer t; return t.running&&t.elapsed>=0&&t.elapsed<1000;"));
 CHECK(holds(fixture,"timer t; t.pause(); t.pause(); int64 e=t.elapsed; int64 s=ticks(); while(ticks()-s<30){} return !t.running&&t.elapsed==e;"));
-CHECK(holds(fixture,"timer t; t.pause(); int64 s=ticks(); while(ticks()-s<30){} t.resume(); t.resume(); s=ticks(); while(ticks()-s<30){} return t.running&&t.elapsed>=30&&t.elapsed<60+30;"));
+CHECK(holds(fixture,"timer t; t.pause(); int64 s=ticks(); while(ticks()-s<30){} t.resume(); t.resume(); s=ticks_us(); while(ticks_us()-s<30000){} return t.running&&t.elapsed>=30&&t.elapsed<60+30;"));
 CHECK(holds(fixture,"timer t; t.set(5000); return t.running&&t.elapsed>=5000&&t.elapsed<5000+1000;"));
 CHECK(holds(fixture,"timer t; t.pause(); t.set(5000); return !t.running&&t.elapsed==5000&&t.elapsed_seconds==5.0;"));
 CHECK(holds(fixture,"timer t; t.set(5000); t.restart(); return t.running&&t.elapsed<20;"));
@@ -249,4 +305,13 @@ CHECK(holds(fixture,"timer t; t.pause(); t.set(5000); t.restart(); return t.runn
 CHECK(holds(fixture,"timer t; t.pause(); t.set(9223372036854775807); return t.elapsed==4611686018427387;"));
 CHECK(holds(fixture,"timer t; t.set(-9223372036854775807-1); return t.elapsed<-4611686018427000;"));
 CHECK(holds(fixture,"timer a; a.pause(); a.set(1234); timer b=a; return b.elapsed==1234&&!b.running;"));
+// resume() on a running timer changes nothing: elapsed keeps counting from where it was.
+CHECK(holds(fixture,"timer t; t.set(5000); t.resume(); t.resume(); return t.running&&t.elapsed>=5000&&t.elapsed<5000+20;"));
+CHECK(holds(fixture,"timer t; int64 s=ticks_us(); while(ticks_us()-s<30000){} t.resume(); return t.running&&t.elapsed>=30;"));
+// A negative elapsed time set while paused stays exact, then counts up from it once resumed.
+CHECK(holds(fixture,"timer t; t.pause(); t.set(-40); return !t.running;"));
+CHECK(holds(fixture,"timer t; t.pause(); t.set(-40); return t.elapsed==-40;"));
+// -40.0/1000.0 rather than the literal -0.04: AngelScript's own literal parser reads 0.04 one ulp off.
+CHECK(holds(fixture,"timer t; t.pause(); t.set(-40); return t.elapsed_seconds==-40.0/1000.0;"));
+CHECK(holds(fixture,"timer t; t.pause(); t.set(-40); if(t.running||t.elapsed!=-40||t.elapsed_seconds!=-40.0/1000.0)return false; t.resume(); int64 s=ticks_us(); while(ticks_us()-s<60000){} return t.running&&t.elapsed>=20&&t.elapsed<20+40;"));
 }
