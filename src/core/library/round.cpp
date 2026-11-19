@@ -6,6 +6,7 @@
 // back gives. For digits<0 the same holds for y=fl(x/q), q=10^-digits, and fl(r*q). |y| < 2^52 keeps r and the integer part
 // exact. Past 2^32 the 2^-20 bound alone is not enough (round(87364748190.165, 2) would give ...0.16), hence the relative one.
 #include <core/library/round.hpp>
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -43,17 +44,24 @@ return strtod_l(first,nullptr,c_locale);
 #endif
 }
 
+// The integer nearest a, ties to even, for 0 <= a < 2^52: a+2^52 lies in [2^52, 2^53), where the doubles are the integers,
+// so the addition rounds a in the current (default, to-nearest-even) mode and the subtraction is exact. Two additions, a
+// shorter dependency chain than a round trip through int64. Needs IEEE arithmetic as compiled (no -ffast-math).
+inline double nearest_even(double a) noexcept
+{
+return (a+kTwo52)-kTwo52;
+}
 // Sets rounded to y (x*p or x/q) rounded half away from zero, with x's sign, and returns true when that provably agrees
-// with the decimal path; returns false otherwise (|y| >= 2^52, NaN or infinite, or too close to a half).
+// with the decimal path; returns false otherwise (|y| >= 2^52, NaN or infinite, or too close to a half). Away from a half,
+// ties to even and half away from zero give the same integer.
 inline bool fast_round(double y,double x,double& rounded) noexcept
 {
 const double a=std::fabs(y);
 if(!(a<kTwo52))return false;
-const double t=static_cast<double>(static_cast<std::int64_t>(a));
-const double f=a-t;
-const double d=std::fabs(f-0.5);
-if(!(d>0x1p-20&&d>a*0x1p-51))return false;
-rounded=std::copysign(t+(f>0.5?1.0:0.0),x);
+const double r=nearest_even(a);
+// 0.5-|a-r| is how far a's fraction lies from 0.5.
+if(!(0.5-std::fabs(a-r)>std::max(0x1p-20,a*0x1p-51)))return false;
+rounded=std::copysign(r,x);
 return true;
 }
 }
@@ -62,8 +70,9 @@ double round_half_away(double x) noexcept
 {
 const double a=std::fabs(x);
 if(!(a<kTwo52))return x;
-const double t=static_cast<double>(static_cast<std::int64_t>(a));
-return std::copysign(t+(a-t>=0.5?1.0:0.0),x);
+const double r=nearest_even(a);
+// a-r is 0.5 exactly when a tie went down to even; half away from zero takes the integer above.
+return std::copysign(r+(a-r==0.5?1.0:0.0),x);
 }
 
 double round_digits(double x,int digits) noexcept
@@ -83,7 +92,9 @@ else return x;
 return round_digits_exact(x,digits);
 }
 
-double round_digits_exact(double x,int digits) noexcept
+// Kept out of round_digits: inlined, its registers and stack frame were saved and restored on every fast-path call too
+// (8 % slower than multiply-round-divide in bench_types); out of line, round_digits needs no frame and jumps here.
+[[gnu::noinline]] double round_digits_exact(double x,int digits) noexcept
 {
 if(digits>=17||!std::isfinite(x))return x;
 // Every finite double's decimal exponent is at least -324, so rounding at more than 400 places to the left gives 0 as -400 does.
