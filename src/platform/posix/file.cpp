@@ -235,6 +235,8 @@ case EEXIST:
 return ErrorKind::exists;
 case ENOTEMPTY:
 return ErrorKind::not_empty;
+case EXDEV:
+return ErrorKind::cross_device;
 default:
 return ErrorKind::other;
 }

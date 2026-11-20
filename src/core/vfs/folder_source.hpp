@@ -67,6 +67,9 @@ std::expected<void,FileError> list(std::string_view relative,std::vector<EntryIn
 std::expected<void,FileError> remove(std::string_view relative) override;
 std::expected<void,FileError> make_directory(std::string_view relative) override;
 std::expected<void,FileError> remove_directory(std::string_view relative,bool recursive) override;
+// platform::replace_file, so readers of a replaced file keep reading it. to reuses an existing case-insensitive match as writes do;
+// from and to naming one entry is a success that changes nothing. false (copy instead) when the system cannot rename across them.
+std::expected<bool,FileError> rename(std::string_view from,std::string_view to) override;
 bool read_only() const noexcept override{return read_only_;}
 bool real_spelling(std::string_view relative,std::string& real) override;
 std::optional<std::pair<std::string,std::string>> ambiguous_names(std::string_view relative) override;

@@ -4,7 +4,8 @@
 // Resolution: a path is served by the mounts of its mount ("" or "data:") whose mount point is the path or one of its folders, compared
 // by fold_name segment by segment; the part below the mount point, spelled as given, goes to the source. Mounts are tried newest
 // first: stat, open_read and remove take the first mount that has the entry (a mount that lacks it, or meets a file where a folder
-// should be, passes the request on); open_write, create_directory and delete_directory go to the newest writable mount. When only
+// should be, passes the request on); open_write, create_directory and delete_directory go to the newest writable mount; rename
+// takes both, and renames only when they share a source. When only
 // read-only mounts cover a write, it fails with read_only_pack. list merges every covering mount's entries and the folders that
 // lead to deeper mount points. A path that only leads to a mount point is a directory. "host:" paths (only parsed when host paths
 // are on) go to the HostSource, which opens them exactly as given.
@@ -114,6 +115,9 @@ virtual std::expected<void,FileError> remove(std::string_view relative)=0;
 // Creates one folder; succeeds when it already exists. Its parent must exist.
 virtual std::expected<void,FileError> make_directory(std::string_view relative)=0;
 virtual std::expected<void,FileError> remove_directory(std::string_view relative,bool recursive)=0;
+// Moves the file from over to (replacing a file there) at once: true when done; false when this source cannot, so the Vfs copies
+// and removes instead (a source without renames, or two places the system cannot rename between). The default returns false.
+virtual std::expected<bool,FileError> rename(std::string_view from,std::string_view to);
 virtual bool read_only() const noexcept=0;
 // When an entry exists at relative and its real spelling differs from relative (only by case), sets real to that spelling and
 // returns true. Sources without case folding keep the default.
@@ -148,6 +152,10 @@ std::expected<EntryInfo,Failure> stat(std::string_view path);
 std::expected<std::shared_ptr<Reader>,Failure> open_read(std::string_view path);
 std::expected<std::unique_ptr<WriteTarget>,Failure> open_write(std::string_view path,WriteMode mode);
 std::expected<void,Failure> remove(std::string_view path);
+// Moves the file from over to when one source holds both: the mount that serves from (as remove finds it) and the newest writable
+// mount covering to (as open_write finds it). true when moved; false when they are different sources or the source cannot rename,
+// and the caller copies, then removes. from served by a read-only mount fails with read_only_pack, a folder with is_directory.
+std::expected<bool,Failure> rename(std::string_view from,std::string_view to);
 // The names in folder path of the kind asked for that match pattern ('*' any run, '?' one character), name and pattern compared by
 // fold_name; sorted by fold, then by bytes, without duplicates.
 std::expected<std::vector<std::string>,Failure> list(std::string_view path,ListKind kind,std::string_view pattern="*");

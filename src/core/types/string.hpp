@@ -186,6 +186,18 @@ String text;
 text.append(value);
 return text;
 }
+// A string written in place, for I/O that reads straight into a string's storage without a buffer and a copy: fill(data) writes
+// at most capacity bytes at data and returns how many it wrote. Text of up to inline_capacity bytes needs no allocation. A
+// capacity above max_byte_length throws std::bad_alloc; when fill throws, the string is freed.
+template<class Fill>
+static String filled(std::size_t capacity,Fill&& fill)
+{
+String text;
+char* data=text.raw_reserve(capacity);
+const std::size_t size=fill(data);
+text.raw_set_size(static_cast<std::uint32_t>(size),meta_unknown);
+return text;
+}
 
 const char* data() const noexcept
 {

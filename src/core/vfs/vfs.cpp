@@ -119,6 +119,11 @@ std::optional<std::pair<std::string,std::string>> Source::ambiguous_names(std::s
 return std::nullopt;
 }
 
+std::expected<bool,FileError> Source::rename(std::string_view,std::string_view)
+{
+return false;
+}
+
 Vfs::Vfs():table_(std::make_shared<const Table>()),host_(std::make_shared<HostSource>()),checked_(std::make_unique<std::atomic<std::uint64_t>[]>(checked_slots))
 {
 }
@@ -522,6 +527,67 @@ return true;
 });
 if(!stopped&&leads_to_mount(*table,*p))return failed(FileError::is_directory);
 return result;
+});
+}
+
+std::expected<bool,Failure> Vfs::rename(std::string_view from,std::string_view to)
+{
+return guarded(*this,"rename",from,[&]()->std::expected<bool,Failure>{
+const auto old_path=parse_failure(from);
+if(!old_path)return std::unexpected(old_path.error());
+const auto new_path=parse_failure(to);
+if(!new_path)return std::unexpected(new_path.error());
+if(old_path->folder||new_path->folder)return failed(FileError::is_directory);
+const bool old_host=old_path->mount=="host:";
+const bool new_host=new_path->mount=="host:";
+if(old_host||new_host){
+if(!old_host||!new_host)return false;
+auto renamed=host_->rename(old_path->relative,new_path->relative);
+if(!renamed)return failed(renamed.error());
+return *renamed;
+}
+const std::shared_ptr<const Table> table=snapshot();
+// The mount serving from, found as remove finds it.
+std::optional<Failure> failure;
+Target source;
+const bool served=visit_covering(*table,*old_path,[&](const Target& target){
+const auto info=target.mount->source->stat(target.sub);
+if(!info){
+if(fall_through(info.error()))return false;
+failure=info.error()==FileError::ambiguous?ambiguous_failure(from,target):Failure{info.error(),{}};
+return true;
+}
+if(info->kind==EntryKind::deleted)return false;
+if(info->kind==EntryKind::directory)failure=Failure{FileError::is_directory,{}};
+else if(!target.mount->writable)failure=Failure{FileError::read_only_pack,read_only_text(from)};
+else source=target;
+return true;
+});
+if(failure)return std::unexpected(std::move(*failure));
+if(!served)return failed(leads_to_mount(*table,*old_path)?FileError::is_directory:FileError::not_found);
+// The mount to holds, found as open_write finds it.
+bool covered=false;
+Target destination;
+const bool writable=visit_covering(*table,*new_path,[&](const Target& target){
+covered=true;
+if(!target.mount->writable)return false;
+destination=target;
+return true;
+});
+if(!writable){
+if(leads_to_mount(*table,*new_path))return failed(FileError::is_directory);
+if(covered)return std::unexpected(Failure{FileError::read_only_pack,read_only_text(to)});
+return failed(FileError::not_found);
+}
+if(source.mount->source!=destination.mount->source)return false;
+check_spelling(from,*old_path,source);
+auto renamed=destination.mount->source->rename(source.sub,destination.sub);
+if(!renamed)return std::unexpected(renamed.error()==FileError::ambiguous?ambiguous_failure(to,destination):Failure{renamed.error(),{}});
+if(*renamed){
+check_release_pack(to,*new_path);
+check_spelling(to,*new_path,destination);
+}
+return *renamed;
 });
 }
 

@@ -89,7 +89,8 @@ std::error_code make_directory(const std::filesystem::path& path);
 std::error_code remove_file(const std::filesystem::path& path);
 // Removes an empty folder; ENOTEMPTY otherwise.
 std::error_code remove_directory(const std::filesystem::path& path);
-enum class ErrorKind{not_found,not_a_directory,is_directory,access_denied,exists,not_empty,other};
+// cross_device: a rename between volumes (EXDEV, ERROR_NOT_SAME_DEVICE), which only a copy can do.
+enum class ErrorKind{not_found,not_a_directory,is_directory,access_denied,exists,not_empty,cross_device,other};
 ErrorKind error_kind(const std::error_code& code) noexcept;
 bool replace_file(const std::filesystem::path& from,const std::filesystem::path& to,std::error_code& error);
 std::filesystem::path user_data_folder();

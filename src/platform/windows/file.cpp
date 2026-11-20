@@ -63,6 +63,8 @@ case ERROR_FILENAME_EXCED_RANGE:
 return ENAMETOOLONG;
 case ERROR_INVALID_PARAMETER:
 return EINVAL;
+case ERROR_NOT_SAME_DEVICE:
+return EXDEV;
 default:
 return EIO;
 }
@@ -359,6 +361,8 @@ case EEXIST:
 return ErrorKind::exists;
 case ENOTEMPTY:
 return ErrorKind::not_empty;
+case EXDEV:
+return ErrorKind::cross_device;
 default:
 return ErrorKind::other;
 }

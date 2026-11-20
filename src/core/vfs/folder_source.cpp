@@ -210,6 +210,15 @@ return true;
 return cached==real;
 #endif
 }
+// Whether two real paths below the root name one entry: by fold where the file system ignores case, by bytes elsewhere.
+bool same_real_path(std::string_view a,std::string_view b)
+{
+#ifdef _WIN32
+return a==b||fold_name(a)==fold_name(b);
+#else
+return a==b;
+#endif
+}
 bool before_by_fold(const std::string& fold,const std::string& real,std::string_view other_fold,std::string_view other_real) noexcept
 {
 return fold!=other_fold?std::string_view(fold)<other_fold:std::string_view(real)<other_real;
@@ -586,6 +595,47 @@ return std::unexpected(detail::file_error(error));
 }
 note_change(parent,leaf_of(found->real),platform::NodeKind::directory,false,before);
 return {};
+}
+
+std::expected<bool,FileError> FolderSource::rename(std::string_view from,std::string_view to)
+{
+if(read_only_)return std::unexpected(FileError::access_denied);
+if(from.empty()||to.empty())return std::unexpected(FileError::is_directory);
+const auto old_entry=resolve(from,false);
+if(!old_entry)return std::unexpected(old_entry.error());
+if(old_entry->node.kind==platform::NodeKind::directory)return std::unexpected(FileError::is_directory);
+if(old_entry->node.kind!=platform::NodeKind::file)return std::unexpected(FileError::not_found);
+const auto new_entry=resolve(to,true);
+if(!new_entry)return std::unexpected(new_entry.error());
+if(new_entry->node.kind==platform::NodeKind::directory)return std::unexpected(FileError::is_directory);
+const std::string_view old_parent=parent_of(old_entry->real);
+const std::string_view new_parent=parent_of(new_entry->real);
+// One entry under two spellings (to reused from's name, or the file system ignores case): nothing to do.
+if(same_real_path(old_entry->real,new_entry->real))return true;
+std::string target=new_entry->real;
+#ifdef _WIN32
+// An exact hit spells an existing target as asked, and a rename would give the entry that spelling: keep the stored name, as a
+// write over it does.
+if(new_entry->node.kind!=platform::NodeKind::none){
+std::string stored;
+if(real_spelling(to,stored))target=std::move(stored);
+}
+#endif
+const bool same_folder=same_real_path(old_parent,new_parent);
+const std::optional<std::int64_t> old_before=folder_time(old_parent);
+std::optional<std::int64_t> new_before;
+if(!same_folder)new_before=new_entry->node.kind==platform::NodeKind::none&&new_entry->parent_modified_ns?new_entry->parent_modified_ns:folder_time(new_parent);
+std::error_code error;
+if(!platform::replace_file(host_path(old_entry->real),host_path(target),error)){
+invalidate(old_parent);
+if(!same_folder)invalidate(new_parent);
+if(platform::error_kind(error)==platform::ErrorKind::cross_device)return false;
+return std::unexpected(detail::file_error(error));
+}
+note_change(old_parent,leaf_of(old_entry->real),platform::NodeKind::file,false,old_before);
+// In one folder the first change already moved the cached names to the folder's time after the rename.
+note_change(new_parent,leaf_of(target),platform::NodeKind::file,true,same_folder?folder_time(new_parent):new_before);
+return true;
 }
 
 bool FolderSource::real_spelling(std::string_view relative,std::string& real)
