@@ -652,13 +652,26 @@ CHECK(holds(fixture,"return write_file(\"data:/big.bin\", \"changed\")&&read_fil
 // Over a longer file, and an empty one.
 CHECK(holds(fixture,"write_file(\"e.txt\", \"\"); return copy_file(\"e.txt\", \"copy.bin\")&&read_file(\"copy.bin\")==\"\";"));
 // platform::copy_file itself, and which side it blames.
-bool from_failed=false;
-CHECK_FALSE(zodiac::platform::copy_file(old,fixture.root()/"direct.bin",from_failed));
+auto direct=zodiac::platform::copy_file(old,fixture.root()/"direct.bin");
+CHECK_FALSE(direct.error);
+CHECK_FALSE(direct.same);
+CHECK_FALSE(direct.metadata);
 CHECK(contents(fixture.root()/"direct.bin")==bytes);
-CHECK(zodiac::platform::copy_file(fixture.root()/"none.bin",fixture.root()/"x.bin",from_failed));
-CHECK(from_failed);
-CHECK(zodiac::platform::copy_file(old,fixture.root()/"no"/"such"/"x.bin",from_failed));
-CHECK_FALSE(from_failed);
+// Over a longer file: emptied first, after the identities were compared.
+put(fixture.root()/"longer.bin",bytes+bytes);
+CHECK_FALSE(zodiac::platform::copy_file(old,fixture.root()/"longer.bin").error);
+CHECK(contents(fixture.root()/"longer.bin")==bytes);
+// Onto itself: nothing written.
+direct=zodiac::platform::copy_file(old,old);
+CHECK(direct.same);
+CHECK_FALSE(direct.error);
+CHECK(contents(old)==bytes);
+direct=zodiac::platform::copy_file(fixture.root()/"none.bin",fixture.root()/"x.bin");
+CHECK(direct.error);
+CHECK(direct.from_failed);
+direct=zodiac::platform::copy_file(old,fixture.root()/"no"/"such"/"x.bin");
+CHECK(direct.error);
+CHECK_FALSE(direct.from_failed);
 }
 
 TEST_CASE("one file under two paths is never copied onto itself or moved away")
@@ -697,3 +710,96 @@ CHECK(text_of(fixture,"file f; f.open(\"bom.txt\", \"r\"); string p=\"\"+f.posit
 CHECK(text_of(fixture,"write_file(\"am.txt\", \"one\"); file f; f.open(\"am.txt\", \"a\"); string a=f.read(); f.write(\"two\"); string p=\"\"+f.position; f.seek(0); return a+\"|\"+p+\"|\"+f.read()+\"|\"+f.position;")=="one|6|onetwo|6");
 CHECK(text_of(fixture,"write_file(\"ab.txt\", \"x\\r\\ny\"); file f; f.open(\"ab.txt\", \"ab\"); return f.read(2)+\"|\"+f.read_line()+\"|\"+f.read();")=="x\r||y");
 }
+
+TEST_CASE("a link moved or copied onto its own target leaves it whole, and a moved link is the link itself")
+{
+ScriptFixture fixture;
+const fs::path root=fixture.root();
+put(root/"a.txt","target bytes");
+// A relative file link, made without administrator rights where Windows allows it (Developer Mode).
+#ifdef _WIN32
+const bool linked=CreateSymbolicLinkW((root/"link").c_str(),L"a.txt",0x2)!=0;
+#else
+std::error_code link_error;
+fs::create_symlink("a.txt",root/"link",link_error);
+const bool linked=!link_error;
+#endif
+if(!linked){
+MESSAGE("skipped: this system cannot make a symbolic link without administrator rights");
+return;
+}
+REQUIRE(fs::is_symlink(root/"link"));
+CHECK(holds(fixture,"return read_file(\"link\")==\"target bytes\";"));
+// One source: renaming the link over its target would leave a link to itself, so nothing is done.
+CHECK(text_of(fixture,"bool moved=move_file(\"link\", \"a.txt\"); return moved+\",[\"+last_file_error()+\"]\";")=="true,[]");
+CHECK(contents(root/"a.txt")=="target bytes");
+CHECK(fs::is_symlink(root/"link"));
+CHECK_FALSE(fs::is_symlink(root/"a.txt"));
+CHECK(holds(fixture,"return copy_file(\"link\", \"a.txt\")&&copy_file(\"a.txt\", \"link\")&&move_file(\"a.txt\", \"link\");"));
+CHECK(contents(root/"a.txt")=="target bytes");
+CHECK(fs::is_symlink(root/"link"));
+// The same through host paths (host: to host:, and a host path to the mount).
+fixture.vfs.set_host_paths(true);
+const std::string link="host:"+utf8(root/"link");
+const std::string target="host:"+utf8(root/"a.txt");
+CHECK(holds(fixture,"return move_file(\""+link+"\", \""+target+"\")&&move_file(\""+link+"\", \"a.txt\")&&copy_file(\""+link+"\", \""+target+"\");"));
+CHECK(contents(root/"a.txt")=="target bytes");
+CHECK(fs::is_symlink(root/"link"));
+// platform::copy_file follows the link and sees one file.
+const auto copied=zodiac::platform::copy_file(root/"link",root/"a.txt");
+CHECK(copied.same);
+CHECK_FALSE(copied.error);
+CHECK(contents(root/"a.txt")=="target bytes");
+// Moved elsewhere, a link moves itself (on Windows too), never what it leads to.
+CHECK(holds(fixture,"return move_file(\"link\", \"moved_link\")&&read_file(\"moved_link\")==\"target bytes\"&&!file_exists(\"link\");"));
+CHECK(fs::is_symlink(root/"moved_link"));
+CHECK_FALSE(fs::exists(fs::symlink_status(root/"link")));
+CHECK_FALSE(fs::is_symlink(root/"a.txt"));
+CHECK(contents(root/"a.txt")=="target bytes");
+}
+
+#ifdef _WIN32
+namespace {
+// Writes bytes into the alternate data stream name of file.
+void put_stream(const fs::path& file,const wchar_t* name,std::string_view bytes)
+{
+fs::path stream=file;
+stream+=name;
+const HANDLE handle=CreateFileW(stream.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+REQUIRE(handle!=INVALID_HANDLE_VALUE);
+DWORD written=0;
+const bool wrote=WriteFile(handle,bytes.data(),static_cast<DWORD>(bytes.size()),&written,nullptr)&&written==bytes.size();
+CloseHandle(handle);
+REQUIRE(wrote);
+}
+bool has_stream(const fs::path& file,const wchar_t* name)
+{
+fs::path stream=file;
+stream+=name;
+return GetFileAttributesW(stream.c_str())!=INVALID_FILE_ATTRIBUTES;
+}
+}
+
+TEST_CASE("Windows copies drop the mark of the web, keep other streams, and get past a hidden target")
+{
+ScriptFixture fixture;
+const fs::path root=fixture.root();
+put(root/"web.bin","downloaded");
+put_stream(root/"web.bin",L":Zone.Identifier","[ZoneTransfer]\r\nZoneId=3\r\n");
+put_stream(root/"web.bin",L":extra","kept");
+CHECK(holds(fixture,"return copy_file(\"web.bin\", \"copy.bin\")&&read_file(\"copy.bin\")==\"downloaded\";"));
+CHECK_FALSE(has_stream(root/"copy.bin",L":Zone.Identifier"));
+CHECK(has_stream(root/"copy.bin",L":extra"));
+CHECK(has_stream(root/"web.bin",L":Zone.Identifier"));
+// CopyFileExW refuses a hidden target; the copy then goes through the sources, as on every other path.
+put(root/"hidden.bin","an older and longer text");
+REQUIRE(SetFileAttributesW((root/"hidden.bin").c_str(),FILE_ATTRIBUTE_HIDDEN));
+const auto refused=zodiac::platform::copy_file(root/"web.bin",root/"hidden.bin");
+CHECK(zodiac::platform::error_kind(refused.error)==zodiac::platform::ErrorKind::access_denied);
+CHECK_FALSE(refused.from_failed);
+CHECK(text_of(fixture,"bool copied=copy_file(\"web.bin\", \"hidden.bin\"); return copied+\",[\"+last_file_error()+\"],\"+read_file(\"hidden.bin\");")=="true,[],downloaded");
+REQUIRE(SetFileAttributesW((root/"hidden.bin").c_str(),FILE_ATTRIBUTE_SYSTEM));
+CHECK(holds(fixture,"return write_file(\"web2.bin\", \"second\")&&copy_file(\"web2.bin\", \"hidden.bin\")&&read_file(\"hidden.bin\")==\"second\";"));
+SetFileAttributesW((root/"hidden.bin").c_str(),FILE_ATTRIBUTE_NORMAL);
+}
+#endif

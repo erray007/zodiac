@@ -27,6 +27,8 @@
 // `warning: "<path>" was found as "<real path>"; use the real name, other systems may not find it`. With a release pack check set
 // (Task 10), the first write to each path of the root mount that the check names warns once:
 // `warning: "<path>" is written in a folder here, but the release puts it in a read-only pack, where writing fails; save files in data:/ instead`.
+// A system copy (Windows) whose bytes are right but whose time, attributes or Zone.Identifier could not be reset warns:
+// `warning: "<path>" was copied, but the time and attributes it took from its source could not be reset: <reason>`.
 // Release mode (the default) never checks spelling.
 //
 // No C++ exception leaves any Vfs entry point. Anything thrown inside a file operation (an allocation failure, a logic error)
@@ -183,14 +185,17 @@ std::expected<void,Failure> remove(std::string_view path);
 // Moves the file from over to at once: from as remove finds it (the first mount that has it; a read-only one fails with
 // read_only_pack), to as open_write finds it (the newest writable mount covering it). One source renames itself (Source::rename);
 // two sources that are both host folders, or a host path and a host folder, are renamed by the system (replace_file), after
-// which both sources forget the paths. true when moved, or when from and to are one file (the same identity, or one entry under
-// two spellings): nothing changes then. false when only a copy can do it (a source without host files, two volumes), and nothing
-// has changed. A folder on either side is is_directory, named by MoveFailure::to.
+// which both sources forget the paths. Whenever both sides are host files (in one source too) their identities are compared
+// first (links followed): true when moved, or when from and to are one file (the same identity, a link to the other, or one entry
+// under two spellings): nothing changes then. An identity that cannot be read fails with its side's error, never guessed. false
+// when only a copy can do it (a source without host files, two volumes) and the two are known to be different files; nothing has
+// changed then. A folder on either side is is_directory, named by MoveFailure::to.
 std::expected<bool,MoveFailure> rename(std::string_view from,std::string_view to);
 // Copies the bytes of file from over to (created or replaced). Host files on both sides (folders or host paths) are copied by the
 // system (platform::copy_file), and the source of to forgets the path; anything else goes through open_read and open_write
-// (append mode, written over from offset 0 in 256 KiB pieces, then cut to length, then committed). from and to being one file
-// (by identity, when both are host files) is a success that changes nothing.
+// (append mode, written over from offset 0 in 256 KiB pieces, then cut to length, then committed), and so does a system copy
+// refused with access denied (CopyFileExW over a hidden or system file). from and to being one file (by the open files' identity,
+// when both are host files) is a success that changes nothing.
 std::expected<void,MoveFailure> copy(std::string_view from,std::string_view to);
 // rename, else copy then remove(from). A copy that finds one file on both sides removes nothing. A failed remove after the copy
 // is MoveFailure::removing (both files are then there).
@@ -246,6 +251,8 @@ std::expected<End,Failure> writing_end(const Table& table,std::string_view path,
 Failure end_failure(std::string_view path,const End& end,FileError code) const;
 // After to was written by a rename or copy: the dev-mode checks a write gets.
 void written(std::string_view path,const VfsPath& p,const End& end) noexcept;
+// Dev mode: a system copy whose bytes are right but whose metadata reset failed (platform::CopyResult::metadata). Never throws.
+void warn_copy_metadata(std::string_view path,const std::error_code& error) const noexcept;
 // copy; true when from and to turned out to be one file (nothing was written).
 std::expected<bool,MoveFailure> copy_file(std::string_view from,std::string_view to);
 // Calls visit(Target) for the mounts covering p, newest first, until it returns true; returns whether one did. Allocates nothing

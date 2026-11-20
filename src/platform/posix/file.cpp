@@ -322,14 +322,16 @@ ssize_t moved;
 #ifdef __linux__
 if(range){
 moved=::copy_file_range(in,nullptr,out,nullptr,wanted,0);
-if(moved<0&&errno!=EINTR&&declined(errno)){
+// 0 before the end: some kernels and file systems (procfs-like files, older overlay and network file systems) stop there
+// without an error, so only the read and write loop below may decide that the file has ended.
+if((moved<0&&errno!=EINTR&&declined(errno))||moved==0){
 range=false;
 continue;
 }
 }
 else if(send){
 moved=::sendfile(out,in,nullptr,wanted);
-if(moved<0&&errno!=EINTR&&declined(errno)){
+if((moved<0&&errno!=EINTR&&declined(errno))||moved==0){
 send=false;
 continue;
 }
@@ -356,7 +358,7 @@ if(moved<0){
 if(errno==EINTR)continue;
 return errno;
 }
-// The file got shorter since it was measured.
+// Only read gets here with 0: the file got shorter since it was measured.
 if(moved==0)break;
 done+=static_cast<std::uint64_t>(moved);
 }
@@ -364,20 +366,39 @@ return 0;
 }
 }
 
-std::error_code copy_file(const fs::path& from,const fs::path& to,bool& from_failed)
+CopyResult copy_file(const fs::path& from,const fs::path& to)
 {
-from_failed=true;
+CopyResult result;
+const auto fail=[&result](int error){
+result.error=errno_code(error);
+return result;
+};
+result.from_failed=true;
 Descriptor in{open_retry(from,O_RDONLY|O_CLOEXEC|O_NONBLOCK)};
-if(in.fd<0)return errno_code(errno);
+if(in.fd<0)return fail(errno);
 struct stat info;
-if(::fstat(in.fd,&info)!=0)return errno_code(errno);
-if(!S_ISREG(info.st_mode))return errno_code(S_ISDIR(info.st_mode)?EISDIR:EINVAL);
-from_failed=false;
-Descriptor out{open_retry(to,O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC|O_NONBLOCK)};
-if(out.fd<0)return errno_code(errno);
-if(const int error=copy_bytes(in.fd,out.fd,static_cast<std::uint64_t>(info.st_size),from_failed))return errno_code(error);
-if(const int error=out.close_checked())return errno_code(error);
-return {};
+if(::fstat(in.fd,&info)!=0)return fail(errno);
+if(!S_ISREG(info.st_mode))return fail(S_ISDIR(info.st_mode)?EISDIR:EINVAL);
+result.from_failed=false;
+// Opened without O_TRUNC and compared by the descriptors' identities first, so no path change in between can make the copy empty
+// its own source.
+Descriptor out{open_retry(to,O_WRONLY|O_CREAT|O_CLOEXEC|O_NONBLOCK)};
+if(out.fd<0)return fail(errno);
+struct stat target;
+if(::fstat(out.fd,&target)!=0)return fail(errno);
+if(target.st_dev==info.st_dev&&target.st_ino==info.st_ino){
+result.same=true;
+return result;
+}
+if(!S_ISREG(target.st_mode))return fail(EINVAL);
+int cut;
+do{
+cut=::ftruncate(out.fd,0);
+}while(cut!=0&&errno==EINTR);
+if(cut!=0)return fail(errno);
+if(const int error=copy_bytes(in.fd,out.fd,static_cast<std::uint64_t>(info.st_size),result.from_failed))return fail(error);
+if(const int error=out.close_checked())return fail(error);
+return result;
 }
 
 fs::path user_data_folder()

@@ -69,13 +69,19 @@ vfs.report_internal_error(operation,path);
 return std::unexpected(MoveFailure{Failure{FileError::io,{}},false});
 }
 }
-// One file under two host paths (two mounts of one folder, a host path and a mount, a link); false when either cannot be told.
-bool same_file(const std::filesystem::path& a,const std::filesystem::path& b)
+// Whether host files from and to are one file (two mounts of one folder, a host path and a mount, a link to the other; links are
+// followed). A missing to is another file; an identity that cannot be read otherwise is a failure of its side, never a guess, so
+// nothing is renamed over, truncated or removed on an unknown identity.
+std::expected<bool,MoveFailure> same_file(const std::filesystem::path& from,const std::filesystem::path& to)
 {
-const auto first=platform::file_identity(a);
-if(!first)return false;
-const auto second=platform::file_identity(b);
-return second&&*first==*second;
+const auto first=platform::file_identity(from);
+if(!first)return move_failed(Failure{detail::file_error(first.error()),{}},false);
+const auto second=platform::file_identity(to);
+if(!second){
+if(platform::error_kind(second.error())==platform::ErrorKind::not_found)return false;
+return move_failed(Failure{detail::file_error(second.error()),{}},true);
+}
+return *first==*second;
 }
 // What a copy through the sources moves per read and write, through one buffer per thread made by its first such copy.
 constexpr std::size_t copy_chunk=262144;
@@ -628,6 +634,19 @@ if(code==FileError::ambiguous&&end.mount)return ambiguous_failure(path,Target{en
 return Failure{code,{}};
 }
 
+void Vfs::warn_copy_metadata(std::string_view path,const std::error_code& error) const noexcept
+{
+if(!dev_mode())return;
+try{
+std::string line="warning: ";
+line.append(quote_path(path)).append(" was copied, but the time and attributes it took from its source could not be reset: ").append(reason_text(detail::file_error(error)));
+warn(line);
+}
+catch(...){
+report_internal_error("the copy's metadata reset",path);
+}
+}
+
 void Vfs::written(std::string_view path,const VfsPath& p,const End& end) noexcept
 {
 check_release_pack(path,p);
@@ -649,6 +668,22 @@ if(!source)return move_failed(source.error(),false);
 const auto target=writing_end(*table,to,*new_path);
 if(!target)return move_failed(target.error(),true);
 if(source->mount)check_spelling(from,*old_path,Target{source->mount,source->sub});
+// Host files on both sides are compared first, in one source too: one identity is one file (two mounts of one folder, a host
+// path and a mount, a link to the other), and renaming it onto itself would at best do nothing and at worst (a link renamed over
+// its own target) lose it, so nothing is done.
+const auto old_file=source->source->host_file(source->sub,false);
+if(!old_file)return move_failed(end_failure(from,*source,old_file.error()),false);
+std::optional<std::filesystem::path> new_host;
+if(*old_file){
+const auto new_file=target->source->host_file(target->sub,true);
+if(!new_file)return move_failed(end_failure(to,*target,new_file.error()),true);
+if(*new_file){
+const auto same=same_file(**old_file,**new_file);
+if(!same)return std::unexpected(same.error());
+if(*same)return true;
+new_host=std::move(*new_file);
+}
+}
 if(source->source==target->source){
 const auto renamed=source->source->rename(source->sub,target->sub);
 if(!renamed){
@@ -658,17 +693,10 @@ return move_failed(end_failure(on_to?to:from,on_to?*target:*source,renamed.error
 if(*renamed)written(to,*new_path,*target);
 return *renamed;
 }
-// Two sources: the system renames when both hand out host files.
-const auto old_file=source->source->host_file(source->sub,false);
-if(!old_file)return move_failed(end_failure(from,*source,old_file.error()),false);
-if(!*old_file)return false;
-const auto new_file=target->source->host_file(target->sub,true);
-if(!new_file)return move_failed(end_failure(to,*target,new_file.error()),true);
-if(!*new_file)return false;
-// One file under two mounts (or a host path and a mount): renaming it onto itself would be all, so nothing is done.
-if(same_file(**old_file,**new_file))return true;
+// Two sources: the system renames when both hand out host files (known by now to be two files).
+if(!*old_file||!new_host)return false;
 std::error_code error;
-if(!platform::replace_file(**old_file,**new_file,error)){
+if(!platform::replace_file(**old_file,*new_host,error)){
 if(platform::error_kind(error)==platform::ErrorKind::cross_device)return false;
 return move_failed(Failure{detail::file_error(error),{}},platform::stat_path(**old_file).has_value());
 }
@@ -699,13 +727,18 @@ if(*old_file){
 const auto new_file=target->source->host_file(target->sub,true);
 if(!new_file)return move_failed(end_failure(to,*target,new_file.error()),true);
 if(*new_file){
-if(same_file(**old_file,**new_file))return true;
-bool from_failed=false;
-const std::error_code error=platform::copy_file(**old_file,**new_file,from_failed);
+// platform::copy_file compares the two open files' identities itself before it writes anything.
+const platform::CopyResult copied=platform::copy_file(**old_file,**new_file);
+if(copied.same)return true;
+const bool declined=copied.error&&!copied.from_failed&&platform::error_kind(copied.error)==platform::ErrorKind::access_denied;
+if(!declined){
 target->source->forget(target->sub);
-if(error)return move_failed(Failure{detail::file_error(error),{}},!from_failed);
+if(copied.error)return move_failed(Failure{detail::file_error(copied.error),{}},!copied.from_failed);
+if(copied.metadata)warn_copy_metadata(to,copied.metadata);
 written(to,*new_path,*target);
 return false;
+}
+// CopyFileExW refuses a hidden or system target that a write in place can change: copied through the sources below.
 }
 }
 }

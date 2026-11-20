@@ -11,7 +11,8 @@
 //   1970-01-01T00:00:00 UTC, clamped to the int64 range.
 // - replace_file: moves from over to, replacing it at once; readers of the old file keep reading it (POSIX rename semantics,
 //   SetFileInformationByHandle(FileRenameInfoEx, REPLACE_IF_EXISTS|POSIX_SEMANTICS) on Windows, MoveFileExW(REPLACE_EXISTING|
-//   WRITE_THROUGH) where the file system lacks it).
+//   WRITE_THROUGH) where the file system lacks it). A link at from is moved itself, never what it leads to (the handle is opened
+//   with FILE_FLAG_OPEN_REPARSE_POINT on Windows, as POSIX rename does).
 // - user_data_folder: where per-user game data lives: %APPDATA%, else the roaming application data folder, on Windows;
 //   $XDG_DATA_HOME when it is absolute, else $HOME/.local/share, elsewhere. Empty when there is none. Nothing is created.
 // Every function is thread-safe; a File object is used by one thread at a time except for read_at and size.
@@ -107,11 +108,23 @@ ErrorKind error_kind(const std::error_code& code) noexcept;
 bool replace_file(const std::filesystem::path& from,const std::filesystem::path& to,std::error_code& error);
 // The identity of the file at path (links followed); a folder has one too.
 std::expected<FileIdentity,std::error_code> file_identity(const std::filesystem::path& path);
-// Copies the bytes of the regular file from over to (created or emptied first) with the system's own copy: CopyFileExW on
-// Windows, copy_file_range elsewhere (sendfile, then read and write, where the kernel or file system lacks it). Only the bytes
-// are meant to carry over, as with a copy written byte by byte: to gets the current time as its modification time, and Windows'
-// copy of the time and of the read-only, hidden and system attributes is undone. Nothing is promised about to after a failure;
-// from_failed tells whether it was from that failed (it cannot be opened or read) rather than to.
-std::error_code copy_file(const std::filesystem::path& from,const std::filesystem::path& to,bool& from_failed);
+struct CopyResult{
+// The copy failed; from_failed tells whether it was from (it cannot be opened or read) rather than to.
+std::error_code error;
+bool from_failed=false;
+// from and to are one file (their open handles have one identity): nothing was written. An identity that cannot be read is an
+// error, never taken for "different", so the source is never truncated on a guess.
+bool same=false;
+// Windows: the bytes were copied, but resetting the time and attributes, or removing the copied Zone.Identifier stream, failed.
+std::error_code metadata;
+};
+// Copies the bytes of the regular file from over to (created or replaced) with the system's own copy: CopyFileExW on Windows,
+// copy_file_range elsewhere (then sendfile, then read and write, where the kernel or file system declines or stops early; only the
+// last decides that the file has ended). Both files are opened first and compared by identity, and to is emptied only after that.
+// Only the bytes are meant to carry over, as with a copy written byte by byte: to gets the current time as its modification time,
+// and Windows' copy of the time, of the read-only, hidden and system attributes and of the Zone.Identifier stream (the mark of the
+// web) is undone; other alternate data streams are copied as CopyFileExW copies them. Nothing is promised about to after a failure.
+// CopyFileExW refuses a hidden or system target with access denied; the caller then copies byte by byte.
+CopyResult copy_file(const std::filesystem::path& from,const std::filesystem::path& to);
 std::filesystem::path user_data_folder();
 }

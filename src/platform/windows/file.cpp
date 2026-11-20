@@ -404,7 +404,8 @@ bool replace_file(const fs::path& from,const fs::path& to,std::error_code& error
 error.clear();
 const NativePath source(from);
 const NativePath target(to);
-const HANDLE handle=CreateFileW(source.c_str(),DELETE|SYNCHRONIZE,share_all,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+// The link itself, as POSIX rename moves it, never its target.
+const HANDLE handle=CreateFileW(source.c_str(),DELETE|SYNCHRONIZE,share_all,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL|FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
 if(handle!=INVALID_HANDLE_VALUE){
 const std::size_t length=std::wcslen(target.c_str());
 const std::size_t bytes=offsetof(RenameInfo,name)+(length+1)*sizeof(WCHAR);
@@ -436,38 +437,100 @@ CloseHandle(handle);
 return identity;
 }
 
-std::error_code copy_file(const fs::path& from,const fs::path& to,bool& from_failed)
+namespace {
+// Closes a handle on every exit.
+struct OwnedHandle{
+HANDLE handle;
+~OwnedHandle(){if(handle!=INVALID_HANDLE_VALUE)CloseHandle(handle);}
+};
+// After CopyFileExW: a fresh modification time, no read-only, hidden or system attribute and no Zone.Identifier stream, as a copy
+// written byte by byte would have. The bytes are right whatever this reports.
+std::error_code reset_copy(const fs::path& to,const NativePath& target)
 {
-from_failed=false;
-const NativePath source(from);
-const NativePath target(to);
-if(!CopyFileExW(source.c_str(),target.c_str(),nullptr,nullptr,nullptr,0)){
-const std::error_code error=last_error();
-// CopyFileExW does not say which side failed: from is to blame when it is gone or is no file.
-const DWORD attributes=GetFileAttributesW(source.c_str());
-from_failed=attributes==INVALID_FILE_ATTRIBUTES||(attributes&FILE_ATTRIBUTE_DIRECTORY);
-return error;
-}
-// CopyFileExW keeps from's modification time and attributes; a copy written byte by byte has neither.
-const HANDLE handle=CreateFileW(target.c_str(),FILE_READ_ATTRIBUTES|FILE_WRITE_ATTRIBUTES,share_all,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
-if(handle==INVALID_HANDLE_VALUE)return last_error();
-FILE_BASIC_INFO info;
 std::error_code error;
-if(GetFileInformationByHandleEx(handle,FileBasicInfo,&info,sizeof info)){
+{
+const OwnedHandle handle{CreateFileW(target.c_str(),FILE_READ_ATTRIBUTES|FILE_WRITE_ATTRIBUTES,share_all,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr)};
+if(handle.handle==INVALID_HANDLE_VALUE)return last_error();
+FILE_BASIC_INFO info;
+if(!GetFileInformationByHandleEx(handle.handle,FileBasicInfo,&info,sizeof info))return last_error();
 FILETIME now;
 GetSystemTimePreciseAsFileTime(&now);
 info.LastWriteTime.LowPart=now.dwLowDateTime;
 info.LastWriteTime.HighPart=static_cast<LONG>(now.dwHighDateTime);
 info.ChangeTime=info.LastWriteTime;
+// 0 leaves a time as it is.
 info.CreationTime.QuadPart=0;
 info.LastAccessTime.QuadPart=0;
 info.FileAttributes&=~static_cast<DWORD>(FILE_ATTRIBUTE_READONLY|FILE_ATTRIBUTE_HIDDEN|FILE_ATTRIBUTE_SYSTEM);
 if(info.FileAttributes==0)info.FileAttributes=FILE_ATTRIBUTE_NORMAL;
-if(!SetFileInformationByHandle(handle,FileBasicInfo,&info,sizeof info))error=last_error();
+if(!SetFileInformationByHandle(handle.handle,FileBasicInfo,&info,sizeof info))error=last_error();
 }
-else error=last_error();
-CloseHandle(handle);
+// The mark of the web says where a download came from; a copy made by the game was not downloaded.
+fs::path mark=to;
+mark+=L":Zone.Identifier";
+const NativePath stream(mark);
+if(!DeleteFileW(stream.c_str())){
+const DWORD code=GetLastError();
+if(code!=ERROR_FILE_NOT_FOUND&&code!=ERROR_PATH_NOT_FOUND&&!error)error=errno_code(errno_of(code));
+}
 return error;
+}
+}
+
+CopyResult copy_file(const fs::path& from,const fs::path& to)
+{
+CopyResult result;
+const NativePath source(from);
+const NativePath target(to);
+// Both opened (links followed) and compared by identity before anything is written; the handles stay open over the copy. A
+// handle without access rights takes no part in sharing, so it blocks neither CopyFileExW nor anyone else.
+const OwnedHandle in{CreateFileW(source.c_str(),0,share_all,nullptr,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,nullptr)};
+if(in.handle==INVALID_HANDLE_VALUE){
+result.error=last_error();
+result.from_failed=true;
+return result;
+}
+BY_HANDLE_FILE_INFORMATION about;
+if(!GetFileInformationByHandle(in.handle,&about)){
+result.error=last_error();
+result.from_failed=true;
+return result;
+}
+if(about.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY){
+result.error=errno_code(EISDIR);
+result.from_failed=true;
+return result;
+}
+const auto from_identity=identity_of(in.handle);
+if(!from_identity){
+result.error=from_identity.error();
+result.from_failed=true;
+return result;
+}
+const OwnedHandle out{CreateFileW(target.c_str(),0,share_all,nullptr,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,nullptr)};
+if(out.handle!=INVALID_HANDLE_VALUE){
+const auto to_identity=identity_of(out.handle);
+if(!to_identity){
+result.error=to_identity.error();
+return result;
+}
+if(*to_identity==*from_identity){
+result.same=true;
+return result;
+}
+}
+else if(const std::error_code error=last_error();error.value()!=ENOENT){
+result.error=error;
+return result;
+}
+if(!CopyFileExW(source.c_str(),target.c_str(),nullptr,nullptr,nullptr,0)){
+result.error=last_error();
+// CopyFileExW does not say which side failed: from is to blame when it is gone.
+result.from_failed=GetFileAttributesW(source.c_str())==INVALID_FILE_ATTRIBUTES;
+return result;
+}
+result.metadata=reset_copy(to,target);
+return result;
 }
 
 fs::path user_data_folder()
