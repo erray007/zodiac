@@ -19,6 +19,7 @@
 #include <core/project_file.hpp>
 #include <core/script_runtime.hpp>
 #include <core/text.hpp>
+#include <core/vfs/startup.hpp>
 #include <platform/process.hpp>
 #include <zodiac/plugin.h>
 #include <algorithm>
@@ -696,6 +697,8 @@ if(!module_dlls.check(name,diagnostics))return exit_build_error;
 ScriptRuntime runtime(diagnostics,ModuleSearchPaths{options.module_dirs});
 // As in zodiac run: global initializers run during the compile, so they see the same working directory as in run and in the release.
 if(const int code=enter_root(project->root,diagnostics))return code;
+// Mounted as zodiac run mounts them, for the global initializers the compile runs, but without dev mode's spelling warnings.
+vfs::mount_project(runtime.vfs(),*project,false);
 std::vector<StaticLibrary> libraries;
 const ScriptRuntime::ModuleCheck check=[&project,&kit,&libraries,&diagnostics](std::span<const zodiac_module_info* const> loaded){return check_static_modules(*project,kit,loaded,libraries,diagnostics);};
 bool compile_failed=false;

@@ -257,6 +257,17 @@ const bool has_placeholder=std::ranges::any_of(project.build.sign_command,[](con
 if(!project.build.sign_command.empty()&&!has_placeholder)return fail_line("[build.sign] command must contain {file}");
 }
 }
+const auto files=section(root,"files");
+if(!files)return fail(std::move(files.error()));
+if(*files)
+{
+if(const toml::node* host_node=(*files)->get("host_paths"))
+{
+const toml::value<bool>* host_value=host_node->as_boolean();
+if(!host_value)return fail_line("[files] host_paths must be a boolean");
+project.files.host_paths=host_value->get();
+}
+}
 const auto workers=section(root,"workers");
 if(!workers)return fail(std::move(workers.error()));
 std::vector<std::string> worker_names;

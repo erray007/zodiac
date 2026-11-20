@@ -1,4 +1,4 @@
-// zodiac::load_project reads and validates <dir>/zodiac.toml (load_project_file any project file): the game name and main script, the modules a game uses, core parts to exclude, diagnostics output, build settings (assets, debug info, signing) and worker scripts.
+// zodiac::load_project reads and validates <dir>/zodiac.toml (load_project_file any project file): the game name and main script, the modules a game uses, core parts to exclude, diagnostics output, build settings (assets, debug info, signing), file access ([files] host_paths) and worker scripts.
 // toml++ is only included by project_file.cpp, so it never leaks into other translation units. Every error is one plain-text line; the ones about a project file's content start with that file's name ("zodiac.toml").
 #pragma once
 #include <expected>
@@ -26,6 +26,10 @@ bool strip_debug_info=false;
 // Program and arguments run on the built executable; empty when signing is not configured. When not empty, at least one element contains {file}.
 std::vector<std::string> sign_command;
 };
+struct FilesConfig{
+// [files] host_paths: scripts may open absolute host paths (core/vfs/path.hpp). Off unless the project enables it.
+bool host_paths=false;
+};
 struct Project{
 // Absolute, normalized project directory.
 std::filesystem::path root;
@@ -42,6 +46,7 @@ std::vector<std::string> dynamic_modules;
 std::vector<std::string> core_exclude;
 DiagnosticsConfig diagnostics;
 BuildConfig build;
+FilesConfig files;
 // [workers] scripts: absolute, normalized, inside root, existing .zs regular files, without duplicates, in file order.
 std::vector<std::filesystem::path> workers;
 };

@@ -29,8 +29,29 @@ def names(folder, pattern):
     return sorted(p.name for p in Path(folder).glob(pattern) if p.is_file())
 
 
+def restore_environment(key, value):
+    if value is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = value
+
+
+def isolate_user_data(test):
+    """Points APPDATA and XDG_DATA_HOME, where a game's data:/ folder lives, into a temporary folder of the test for every subprocess it
+    starts (each one inherits os.environ, and the env dicts built here copy it), so neither the kit nor a built game writes player data
+    outside the test's temporary folders. The old values come back, and the folder goes, when the test ends."""
+    folder = tempfile.TemporaryDirectory()
+    test.addCleanup(folder.cleanup)
+    for key in ("APPDATA", "XDG_DATA_HOME"):
+        test.addCleanup(restore_environment, key, os.environ.get(key))
+        os.environ[key] = folder.name
+
+
 @unittest.skipUnless(os.name == "nt", "the kit is Windows only for now")
 class KitTest(unittest.TestCase):
+    def setUp(self):
+        isolate_user_data(self)
+
     def test_layout(self):
         self.assertTrue(KIT.is_dir(), "ZODIAC_KIT_DIR is not set or not installed: %s" % KIT)
         self.assertEqual({p.name for p in KIT.iterdir()}, TOP_LEVEL)

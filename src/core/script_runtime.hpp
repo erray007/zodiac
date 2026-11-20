@@ -20,6 +20,7 @@
 #pragma once
 #include <core/host.hpp>
 #include <core/module_registry.hpp>
+#include <core/vfs/vfs.hpp>
 #include <expected>
 #include <filesystem>
 #include <functional>
@@ -46,6 +47,8 @@ ScriptRuntime(Diagnostics& diagnostics,ModuleSearchPaths search_paths);
 ScriptRuntime(const ScriptRuntime&)=delete;
 ScriptRuntime& operator=(const ScriptRuntime&)=delete;
 Host& host() noexcept{return host_;}
+// The game's virtual file system. Its log reports to the Diagnostics; the caller mounts it (vfs::mount_project, vfs::mount_game_folders) before build or load_bytecode.
+vfs::Vfs& vfs() noexcept{return vfs_;}
 using ModuleCheck=std::function<int(std::span<const zodiac_module_info* const> loaded)>;
 // check, when given, runs as in load_bytecode: after the modules are loaded and before any of them registers (zodiac build's static link checks).
 // compile_failed, when given, is set false at the start and true only when the exit is 1 because the scripts did not compile (a section could not be added
@@ -75,6 +78,8 @@ ModuleSearchPaths search_paths_;
 // Teardown contract: the destructor releases the context, discards the script module and runs a full garbage collection (so no script
 // object outlives its module), calls registry_.shutdown_all(), shuts the engine down, then host_ and registry_ (last, unloading module code) are destroyed in reverse declaration order.
 ModuleRegistry registry_;
+// Destroyed after the engine is shut down, so no script or module call can reach it afterwards.
+vfs::Vfs vfs_;
 asIScriptEngine* engine_;
 Host host_;
 asIScriptContext* context_=nullptr;

@@ -29,11 +29,30 @@ def write(path, text):
     Path(path).write_bytes(text.encode("utf-8"))
 
 
+def restore_environment(key, value):
+    if value is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = value
+
+
+def isolate_user_data(test):
+    """Points APPDATA and XDG_DATA_HOME, where a game's data:/ folder lives, into a temporary folder of the test for every subprocess it
+    starts (each one inherits os.environ), so no run writes player data outside the test's temporary folders. The folder is apart from
+    the test's projects, so it never shows up in them. The old values come back, and the folder goes, when the test ends."""
+    folder = tempfile.TemporaryDirectory()
+    test.addCleanup(folder.cleanup)
+    for key in ("APPDATA", "XDG_DATA_HOME"):
+        test.addCleanup(restore_environment, key, os.environ.get(key))
+        os.environ[key] = folder.name
+
+
 class CliTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        isolate_user_data(self)
 
     def make_project(self, directory, modules, script):
         code, _, err = zodiac("new", str(directory))

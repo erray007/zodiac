@@ -6,6 +6,7 @@
 #include <core/project_file.hpp>
 #include <core/script_runtime.hpp>
 #include <core/static_modules.hpp>
+#include <core/vfs/startup.hpp>
 #include <zodiac/plugin.h>
 #include <algorithm>
 #include <cstddef>
@@ -146,6 +147,8 @@ std::vector<const zodiac_module_info*> linked;
 if(const int code=collect_modules(*payload,root,linked,diagnostics))return code;
 if(const int code=enter_root(root,diagnostics))return code;
 ScriptRuntime runtime(diagnostics,ModuleSearchPaths{{root}});
+// The same mounts as zodiac run, for the executable's folder, before global initializers run; release mode, no host paths yet (Task 9 stores [files] host_paths in the payload).
+vfs::mount_game_folders(runtime.vfs(),root,payload->game_name,false,false);
 const ScriptRuntime::ModuleCheck check=[&payload,&diagnostics](std::span<const zodiac_module_info* const> loaded){return check_modules(*payload,loaded,diagnostics);};
 if(const int code=runtime.load_bytecode(project,main->bytecode,linked,check))return code;
 return exit_code_of(runtime.run(),diagnostics);

@@ -156,6 +156,7 @@ register_math(engine_);
 register_time(engine_);
 register_exception_helpers(engine_);
 host_.set_log_handler([this](zodiac_log_level level,std::string_view message){diagnostics_.report(level,message);});
+vfs_.set_log([this](zodiac_log_level level,std::string_view message){diagnostics_.report(level,message);});
 }
 
 ScriptRuntime::~ScriptRuntime()
