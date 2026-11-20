@@ -130,10 +130,29 @@ std::unexpected<std::string> invalid_name(std::string_view path)
 {
 return std::unexpected(quote_path(path," is not a valid file name"));
 }
+bool well_formed(std::string_view text) noexcept
+{
+const byte* p=reinterpret_cast<const byte*>(text.data());
+const byte* const end=p+text.size();
+while(p<end){
+if(*p<0x80){
+++p;
+continue;
+}
+const std::size_t size=sequence_size(p,end);
+if(size==1)return false;
+p+=size;
+}
+return true;
+}
 std::expected<VfsPath,std::string> parse_host(std::string_view path,std::string_view text)
 {
 VfsPath result;
 result.mount="host:";
+// Checked before any conversion: ill-formed UTF-8 would make the wide conversion throw on Windows.
+if(!well_formed(text))return invalid_name(path);
+// The Win32 device namespaces (\\.\, \\?\ and their '/' forms) reach devices and raw volumes, never files.
+if(text.size()>=3&&is_separator(text[0])&&is_separator(text[1])&&(text[2]=='.'||text[2]=='?')&&(text.size()==3||is_separator(text[3])))return invalid_name(path);
 result.folder=text.empty()||is_separator(text.back())||text.ends_with("/.")||text.ends_with("\\.")||text.ends_with("/..")||text.ends_with("\\..")||text=="."||text=="..";
 fs::path host=path_from_utf8(text);
 if(!host.is_absolute()){
@@ -161,10 +180,20 @@ bool valid_name(std::string_view name) noexcept
 if(name.empty()||name=="."||name=="..")return false;
 const char last=name.back();
 if(last=='.'||last==' ')return false;
-for(const char c:name){
-const byte b=static_cast<byte>(c);
+const byte* p=reinterpret_cast<const byte*>(name.data());
+const byte* const end=p+name.size();
+while(p<end){
+const byte b=*p;
+// Ill-formed UTF-8 names nothing on Windows (no UTF-16 for it) and a raw-byte name on Linux: refused on both.
+if(b>=0x80){
+const std::size_t size=sequence_size(p,end);
+if(size==1)return false;
+p+=size;
+continue;
+}
+++p;
 if(b<0x20||b==0x7F)return false;
-switch(c){
+switch(static_cast<char>(b)){
 case '<':
 case '>':
 case ':':

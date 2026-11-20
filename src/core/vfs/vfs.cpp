@@ -37,6 +37,38 @@ std::unexpected<Failure> failed(FileError code)
 {
 return std::unexpected(Failure{code,{}});
 }
+// Runs one file operation; anything it throws (an allocation failure, a path the library cannot convert) becomes io, so no C++
+// exception reaches a script binding or a plugin call. The Failure built here allocates nothing.
+template<class Body>
+auto guarded(Body&& body) noexcept->decltype(body())
+{
+try{
+return body();
+}
+catch(...){
+return failed(FileError::io);
+}
+}
+std::string read_only_text(std::string_view path)
+{
+return quote_path(path)+" is in a read-only pack; save files in data:/ instead";
+}
+// FNV-1a over the mount, a separator no UTF-8 text holds, and the relative path, then a final mix; never 0 (an empty slot).
+std::uint64_t path_hash(std::string_view mount,std::string_view relative) noexcept
+{
+std::uint64_t hash=0xCBF29CE484222325u;
+const auto add=[&hash](unsigned char byte){
+hash^=byte;
+hash*=0x100000001B3u;
+};
+for(const char c:mount)add(static_cast<unsigned char>(c));
+add(0xFF);
+for(const char c:relative)add(static_cast<unsigned char>(c));
+hash^=hash>>33;
+hash*=0xFF51AFD7ED558CCDu;
+hash^=hash>>33;
+return hash?hash:1;
+}
 }
 
 std::string_view reason_text(FileError error) noexcept
@@ -58,6 +90,8 @@ case FileError::bad_path:
 return "invalid path";
 case FileError::ambiguous:
 return "ambiguous name";
+case FileError::not_empty:
+return "directory not empty";
 default:
 return "input/output error";
 }
@@ -83,7 +117,7 @@ std::optional<std::pair<std::string,std::string>> Source::ambiguous_names(std::s
 return std::nullopt;
 }
 
-Vfs::Vfs():table_(std::make_shared<const Table>()),host_(std::make_shared<HostSource>())
+Vfs::Vfs():table_(std::make_shared<const Table>()),host_(std::make_shared<HostSource>()),checked_(std::make_unique<std::atomic<std::uint64_t>[]>(checked_slots))
 {
 }
 
@@ -129,6 +163,7 @@ return prefix==fold;
 bool Vfs::mount(std::string_view at,std::shared_ptr<Source> source,bool writable,const void* owner)
 {
 if(!source)return false;
+try{
 auto parsed=parse_path(at,false);
 if(!parsed)return false;
 Mount entry;
@@ -157,6 +192,10 @@ table_.swap(replaced);
 // The old table (now in replaced) is released here, outside the lock.
 return true;
 }
+catch(...){
+return false;
+}
+}
 
 std::size_t Vfs::unmount(const void* owner)
 {
@@ -178,7 +217,12 @@ return removed;
 
 bool Vfs::mount_folder(std::string_view at,const std::filesystem::path& host,bool writable,const void* owner)
 {
+try{
 return mount(at,std::make_shared<FolderSource>(host,!writable),writable,owner);
+}
+catch(...){
+return false;
+}
 }
 
 std::expected<VfsPath,Failure> Vfs::parse_failure(std::string_view path) const
@@ -190,12 +234,14 @@ return std::move(*parsed);
 
 Failure Vfs::ambiguous_failure(std::string_view path,const Target& target) const
 {
-Failure failure{FileError::ambiguous,{}};
+Failure failure{FileError::ambiguous,quote_path(path)};
 const auto names=target.mount->source->ambiguous_names(target.sub);
-if(!names)return failure;
+if(!names){
+failure.message.append(" matches more than one name; rename one of them");
+return failure;
+}
 std::string prefix=target.mount->mount=="data:"?"data:/":"";
 if(!target.mount->at.empty())prefix.append(target.mount->at).push_back('/');
-failure.message=quote_path(path);
 failure.message.append(" matches both ").append(quote_path(prefix+names->first)).append(" and ").append(quote_path(prefix+names->second)).append("; rename one of them");
 return failure;
 }
@@ -205,18 +251,45 @@ void Vfs::warn(std::string_view line) const
 if(log_)log_(ZODIAC_LOG_WARNING,line);
 }
 
+bool Vfs::checked(std::uint64_t hash) const noexcept
+{
+for(std::size_t i=0;i<checked_probes;++i){
+const std::uint64_t slot=checked_[(hash+i)&(checked_slots-1)].load(std::memory_order_relaxed);
+if(slot==hash)return true;
+if(slot==0)return false;
+}
+return false;
+}
+
+void Vfs::remember_checked(std::uint64_t hash) noexcept
+{
+for(std::size_t i=0;i<checked_probes;++i){
+std::atomic<std::uint64_t>& slot=checked_[(hash+i)&(checked_slots-1)];
+std::uint64_t seen=slot.load(std::memory_order_relaxed);
+if(seen==hash)return;
+if(seen==0&&(slot.compare_exchange_strong(seen,hash,std::memory_order_relaxed)||seen==hash))return;
+}
+// The run is full: the newest path takes its first slot.
+checked_[hash&(checked_slots-1)].store(hash,std::memory_order_relaxed);
+}
+
 void Vfs::check_spelling(std::string_view path,const VfsPath& p,const Target& target)
 {
 if(!dev_mode()||target.sub.empty())return;
+const std::uint64_t hash=path_hash(p.mount,p.relative);
+if(checked(hash))return;
+std::string real;
+const bool differs=target.mount->source->real_spelling(target.sub,real);
+remember_checked(hash);
+if(!differs)return;
+{
 std::string key;
 key.reserve(p.mount.size()+p.relative.size());
 key.append(p.mount).append(p.relative);
-{
 const std::lock_guard lock(warned_mutex_);
-if(!spelled_.insert(std::move(key)).second)return;
+if(spelling_warned_.contains(key))return;
+if(spelling_warned_.size()<max_warned)spelling_warned_.insert(std::move(key));
 }
-std::string real;
-if(!target.mount->source->real_spelling(target.sub,real))return;
 std::string shown=target.mount->mount=="data:"?"data:/":"";
 if(!target.mount->at.empty())shown.append(target.mount->at).push_back('/');
 shown.append(real);
@@ -230,7 +303,8 @@ void Vfs::check_release_pack(std::string_view path,const VfsPath& p)
 if(!dev_mode()||!release_pack_check_||!p.mount.empty()||!release_pack_check_(p.relative))return;
 {
 const std::lock_guard lock(warned_mutex_);
-if(!pack_warned_.insert(p.relative).second)return;
+if(pack_warned_.contains(p.relative))return;
+if(pack_warned_.size()<max_warned)pack_warned_.insert(p.relative);
 }
 std::string line="warning: ";
 line.append(quote_path(path)).append(" is written in a folder here, but the release puts it in a read-only pack, where writing fails; save files in data:/ instead");
@@ -239,6 +313,7 @@ warn(line);
 
 std::expected<EntryInfo,Failure> Vfs::stat(std::string_view path)
 {
+return guarded([&]()->std::expected<EntryInfo,Failure>{
 const auto p=parse_failure(path);
 if(!p)return std::unexpected(p.error());
 if(p->mount=="host:"){
@@ -276,10 +351,12 @@ info.name=slash==std::string::npos?p->relative:p->relative.substr(slash+1);
 return info;
 }
 return result;
+});
 }
 
 std::expected<std::shared_ptr<Reader>,Failure> Vfs::open_read(std::string_view path)
 {
+return guarded([&]()->std::expected<std::shared_ptr<Reader>,Failure>{
 const auto p=parse_failure(path);
 if(!p)return std::unexpected(p.error());
 if(p->folder)return failed(FileError::is_directory);
@@ -308,10 +385,12 @@ return result;
 }
 if(leads_to_mount(*table,*p))return failed(FileError::is_directory);
 return result;
+});
 }
 
 std::expected<std::unique_ptr<WriteTarget>,Failure> Vfs::open_write(std::string_view path,WriteMode mode)
 {
+return guarded([&]()->std::expected<std::unique_ptr<WriteTarget>,Failure>{
 const auto p=parse_failure(path);
 if(!p)return std::unexpected(p.error());
 if(p->folder)return failed(FileError::is_directory);
@@ -337,7 +416,7 @@ return true;
 });
 if(!stopped){
 if(leads_to_mount(*table,*p))return failed(FileError::is_directory);
-if(covered)return std::unexpected(Failure{FileError::read_only_pack,quote_path(path)+" is in a read-only pack; save files in data:/ instead"});
+if(covered)return std::unexpected(Failure{FileError::read_only_pack,read_only_text(path)});
 return result;
 }
 if(result){
@@ -345,10 +424,12 @@ check_release_pack(path,*p);
 check_spelling(path,*p,found);
 }
 return result;
+});
 }
 
 std::expected<void,Failure> Vfs::remove(std::string_view path)
 {
+return guarded([&]()->std::expected<void,Failure>{
 const auto p=parse_failure(path);
 if(!p)return std::unexpected(p.error());
 if(p->folder)return failed(FileError::is_directory);
@@ -363,7 +444,7 @@ Source& source=*target.mount->source;
 if(!target.mount->writable){
 const auto info=source.stat(target.sub);
 if(info&&info->kind!=EntryKind::deleted){
-result=std::unexpected(Failure{FileError::read_only_pack,quote_path(path)+" is in a read-only pack; save files in data:/ instead"});
+result=std::unexpected(Failure{FileError::read_only_pack,read_only_text(path)});
 return true;
 }
 if(info||fall_through(info.error()))return false;
@@ -383,14 +464,18 @@ return true;
 });
 if(!stopped&&leads_to_mount(*table,*p))return failed(FileError::is_directory);
 return result;
+});
 }
 
 std::expected<std::vector<std::string>,Failure> Vfs::list(std::string_view path,ListKind kind,std::string_view pattern)
 {
+return guarded([&]()->std::expected<std::vector<std::string>,Failure>{
 const auto p=parse_failure(path);
 if(!p)return std::unexpected(p.error());
 std::vector<EntryInfo> entries;
 bool found_any=false;
+// A mount that has a file where the folder should be: when no mount has the folder, the answer is not_a_directory.
+bool met_file=false;
 if(p->mount=="host:"){
 if(auto listed=host_->list(p->relative,entries);!listed)return failed(listed.error());
 found_any=true;
@@ -403,6 +488,10 @@ auto listed=target.mount->source->list(target.sub,entries);
 if(listed){
 if(!found_any)check_spelling(path,*p,target);
 found_any=true;
+return false;
+}
+if(listed.error()==FileError::not_a_directory){
+met_file=true;
 return false;
 }
 if(fall_through(listed.error()))return false;
@@ -424,7 +513,7 @@ info.name=mount.at.substr(start,end-start);
 found_any=true;
 }
 }
-if(!found_any)return failed(FileError::not_found);
+if(!found_any)return failed(met_file?FileError::not_a_directory:FileError::not_found);
 const EntryKind wanted=kind==ListKind::files?EntryKind::file:EntryKind::directory;
 const bool every=pattern=="*";
 const std::string pattern_fold=every?std::string():fold_name(pattern);
@@ -432,7 +521,8 @@ std::vector<std::pair<std::string,std::string>> names;
 names.reserve(entries.size());
 for(EntryInfo& entry:entries){
 if(entry.kind!=wanted)continue;
-std::string fold=fold_name(entry.name);
+// A FolderSource listing carries the folds its cache already holds.
+std::string fold=entry.fold.empty()?fold_name(entry.name):std::move(entry.fold);
 if(!every&&!glob_match(pattern_fold,fold))continue;
 names.emplace_back(std::move(fold),std::move(entry.name));
 }
@@ -443,10 +533,12 @@ std::vector<std::string> result;
 result.reserve(names.size());
 for(auto& name:names)result.push_back(std::move(name.second));
 return result;
+});
 }
 
 std::expected<void,Failure> Vfs::create_directory(std::string_view path,bool recursive)
 {
+return guarded([&]()->std::expected<void,Failure>{
 const auto p=parse_failure(path);
 if(!p)return std::unexpected(p.error());
 if(p->mount=="host:"){
@@ -476,12 +568,14 @@ return true;
 });
 if(stopped)return result;
 if(leads_to_mount(*table,*p))return {};
-if(covered)return std::unexpected(Failure{FileError::read_only_pack,quote_path(path)+" is in a read-only pack; save files in data:/ instead"});
+if(covered)return std::unexpected(Failure{FileError::read_only_pack,read_only_text(path)});
 return result;
+});
 }
 
 std::expected<void,Failure> Vfs::delete_directory(std::string_view path,bool recursive)
 {
+return guarded([&]()->std::expected<void,Failure>{
 const auto p=parse_failure(path);
 if(!p)return std::unexpected(p.error());
 if(p->mount=="host:"){
@@ -505,7 +599,7 @@ const auto info=source.stat(target.sub);
 if(!info)return fall_through(info.error())?false:fail(info.error());
 if(info->kind!=EntryKind::directory)return info->kind==EntryKind::deleted?false:fail(FileError::not_a_directory);
 if(!target.mount->writable){
-result=std::unexpected(Failure{FileError::read_only_pack,quote_path(path)+" is in a read-only pack; save files in data:/ instead"});
+result=std::unexpected(Failure{FileError::read_only_pack,read_only_text(path)});
 return true;
 }
 check_spelling(path,*p,target);
@@ -514,5 +608,6 @@ result={};
 return true;
 });
 return result;
+});
 }
 }

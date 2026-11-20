@@ -11,7 +11,9 @@
 //   `"<path>" is a host path; set [files] host_paths = true to use it`. With it the result is mount "host:", host the absolute
 //   path (a relative or rooted one resolved against the working directory, the game folder), lexically normal and without a trailing
 //   separator, and relative host's generic UTF-8 text.
-// - Every named segment (host paths: every one below the root) must pass valid_name, else `"<path>" is not a valid file name`.
+// - Every named segment (host paths: every one below the root) must pass valid_name, else `"<path>" is not a valid file name`. A host
+//   path that is not well-formed UTF-8 or whose root is a Win32 device namespace ("\\.\", "\\?\", "//./", "//?/", also after "host:")
+//   gets the same text.
 // - folder is true when the text names a folder by its form: nothing after the mount ("", "/", "data:/"), a trailing separator
 //   ("sounds/"), or a last segment "." or "..". relative is then the folder's own path ("" for a mount's root). File operations
 //   on such a path fail with is_directory; folder operations and mount points accept it.
@@ -33,7 +35,7 @@ std::filesystem::path host;
 bool folder=false;
 };
 std::expected<VfsPath,std::string> parse_path(std::string_view path,bool host_paths);
-// True for a name one segment may have: not empty, not "." or "..", no control character (below 0x20, or 0x7F), none of <>:"|?*/\,
+// True for a name one segment may have: not empty, not "." or "..", well-formed UTF-8, no control character (below 0x20, or 0x7F), none of <>:"|?*/\,
 // not ending in '.' or ' ', and a stem (the text before the first '.', trailing spaces ignored) that is no Windows device name,
 // compared ASCII case-insensitively: CON PRN AUX NUL CONIN$ CONOUT$ CLOCK$, COM0-COM9, LPT0-LPT9 and COM¹ COM² COM³ LPT¹ LPT² LPT³.
 // The same on every platform, so a name from player input never opens a device on Windows and never behaves differently on Linux.

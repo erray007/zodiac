@@ -71,6 +71,8 @@ case platform::ErrorKind::is_directory:
 return FileError::is_directory;
 case platform::ErrorKind::access_denied:
 return FileError::access_denied;
+case platform::ErrorKind::not_empty:
+return FileError::not_empty;
 default:
 return FileError::io;
 }
@@ -180,6 +182,40 @@ bool fall_through(FileError error) noexcept
 {
 return error==FileError::not_found||error==FileError::not_a_directory;
 }
+// Whether the exact-name try may be trusted for relative. On Windows a '~' may be an 8.3 short name and a non-ASCII letter may fold
+// differently in NTFS's own upcase table, so such paths are walked through the cache, which holds the long names only and folds as
+// Linux does. Elsewhere an exact hit is the name itself.
+bool exact_try_allowed([[maybe_unused]] std::string_view relative) noexcept
+{
+#ifdef _WIN32
+return std::ranges::none_of(relative,[](char c){return c=='~'||static_cast<unsigned char>(c)>=0x80;});
+#else
+return true;
+#endif
+}
+// Whether the entry (a cached folder, or a name in one) spelled cached is the one spelled real, their folds already being equal.
+// Where the file system ignores case, an exact hit spells an entry as asked, so the fold decides; elsewhere two entries may differ
+// only in case, so the spelling must match too.
+bool same_entry([[maybe_unused]] std::string_view cached,[[maybe_unused]] std::string_view real) noexcept
+{
+#ifdef _WIN32
+return true;
+#else
+return cached==real;
+#endif
+}
+bool before_by_fold(const std::string& fold,const std::string& real,std::string_view other_fold,std::string_view other_real) noexcept
+{
+return fold!=other_fold?std::string_view(fold)<other_fold:std::string_view(real)<other_real;
+}
+// The last ambiguity this thread met in a FolderSource lookup, so the message names exactly what that lookup saw.
+struct LastAmbiguity{
+const void* source=nullptr;
+std::string relative;
+std::string first;
+std::string second;
+};
+thread_local LastAmbiguity last_ambiguity;
 }
 
 FolderSource::FolderSource(fs::path root,bool read_only,bool create_root)
@@ -209,13 +245,23 @@ else result.ambiguous=true;
 return result;
 }
 
+std::optional<std::int64_t> FolderSource::folder_time(std::string_view real_folder) const
+{
+const auto node=platform::stat_path(host_path(real_folder));
+if(!node||node->kind!=platform::NodeKind::directory)return std::nullopt;
+return node->modified_utc_ns;
+}
+
 std::expected<std::shared_ptr<const FolderSource::Names>,FileError> FolderSource::folder_names(const std::string& real_folder)
 {
 const std::string key=fold_name(real_folder);
 std::shared_ptr<const Names> cached;
+std::uint64_t generation;
 {
 const std::lock_guard lock(cache_mutex_);
-if(const auto it=cache_.find(key);it!=cache_.end())cached=it->second;
+const CacheEntry& entry=cache_[key];
+cached=entry.names;
+generation=entry.generation;
 }
 const fs::path folder=host_path(real_folder);
 // The folder's time is read before its names, so a change during the scan leaves a time that differs from the next one read.
@@ -229,14 +275,22 @@ return empty;
 return std::unexpected(error);
 }
 if(node->kind!=platform::NodeKind::directory)return std::unexpected(FileError::not_a_directory);
-if(cached&&!cached->racy&&cached->modified_ns==node->modified_utc_ns&&cached->real==real_folder)return cached;
+if(cached&&cached->modified_ns==node->modified_utc_ns&&same_entry(cached->real,real_folder)){
+if(!cached->racy)return cached;
+// A racy entry is trusted for one window after its scan, so a folder that keeps changing is rescanned at most once per window.
+if(platform::utc_now_ms()*1000000-cached->scanned_ns<racy_window_ns)return cached;
+}
 const std::int64_t scanned_ns=platform::utc_now_ms()*1000000;
 std::vector<platform::DirectoryEntry> entries;
 if(const std::error_code error=platform::list_directory(folder,entries))return std::unexpected(detail::file_error(error));
+scans_.fetch_add(1,std::memory_order_relaxed);
 auto names=std::make_shared<Names>();
 names->real=real_folder;
 names->modified_ns=node->modified_utc_ns;
-names->racy=node->modified_utc_ns>scanned_ns-racy_window_ns;
+names->scanned_ns=scanned_ns;
+// Either way: a folder time in the future (clock skew, another machine's share) must not keep the entry racy forever.
+const std::int64_t distance=node->modified_utc_ns>scanned_ns?node->modified_utc_ns-scanned_ns:scanned_ns-node->modified_utc_ns;
+names->racy=distance<racy_window_ns;
 names->names.reserve(entries.size());
 for(platform::DirectoryEntry& entry:entries){
 if(entry.kind!=platform::NodeKind::file&&entry.kind!=platform::NodeKind::directory)continue;
@@ -246,30 +300,72 @@ name.fold=fold_name(entry.name);
 name.real=std::move(entry.name);
 name.kind=entry.kind;
 }
-std::ranges::sort(names->names,[](const Name& a,const Name& b){return a.fold!=b.fold?a.fold<b.fold:a.real<b.real;});
+std::ranges::sort(names->names,[](const Name& a,const Name& b){return before_by_fold(a.fold,a.real,b.fold,b.real);});
 std::shared_ptr<const Names> result=std::move(names);
 {
 const std::lock_guard lock(cache_mutex_);
-cache_.insert_or_assign(key,result);
+CacheEntry& entry=cache_[key];
+// A write in the folder since the scan began: its names may predate the write, so they are used once and not kept.
+if(entry.generation==generation)entry.names=result;
 }
 return result;
+}
+
+void FolderSource::note_change(std::string_view real_folder,std::string_view leaf,platform::NodeKind kind,bool added,std::optional<std::int64_t> before_ns)
+{
+const std::string key=fold_name(real_folder);
+const std::optional<std::int64_t> after_ns=folder_time(real_folder);
+std::shared_ptr<const Names> current;
+std::uint64_t generation;
+{
+const std::lock_guard lock(cache_mutex_);
+CacheEntry& entry=cache_[key];
+generation=++entry.generation;
+current=std::move(entry.names);
+}
+// The names stay only when they matched the folder just before the change, so nothing another process did is taken in unseen.
+if(!current||!before_ns||!after_ns||!same_entry(current->real,real_folder)||current->modified_ns!=*before_ns)return;
+// Taken out of the cache, the names are this call's alone unless a lookup still holds them; then they are copied, never changed under it.
+// (Every cached Names was made non-const by make_shared, so changing an unshared one is sound.)
+std::shared_ptr<Names> next=current.use_count()==1?std::const_pointer_cast<Names>(std::move(current)):std::make_shared<Names>(*current);
+next->modified_ns=*after_ns;
+const std::int64_t now_ns=platform::utc_now_ms()*1000000;
+const std::int64_t distance=*after_ns>now_ns?*after_ns-now_ns:now_ns-*after_ns;
+next->racy=next->racy||distance<racy_window_ns;
+std::string fold=fold_name(leaf);
+// The entry the change was about: on a file system that ignores case the leaf may be spelled as asked, so any name of its fold is it.
+const auto range=std::ranges::equal_range(next->names,std::string_view(fold),{},[](const Name& name){return std::string_view(name.fold);});
+const auto same=std::ranges::find_if(range,[leaf](const Name& name){return same_entry(name.real,leaf);});
+if(added&&same==range.end()){
+const auto at=std::lower_bound(next->names.begin(),next->names.end(),0,[&fold,leaf](const Name& name,int){return before_by_fold(name.fold,name.real,fold,leaf);});
+next->names.insert(at,Name{std::move(fold),std::string(leaf),kind});
+}
+else if(!added&&same!=range.end())next->names.erase(same);
+std::shared_ptr<const Names> result=std::move(next);
+const std::lock_guard lock(cache_mutex_);
+CacheEntry& entry=cache_[key];
+// Only when no other change or scan came in between; otherwise the folder is simply scanned again.
+if(entry.generation==generation&&!entry.names)entry.names=std::move(result);
 }
 
 void FolderSource::invalidate(std::string_view real_folder)
 {
 const std::string key=fold_name(real_folder);
 const std::lock_guard lock(cache_mutex_);
-cache_.erase(key);
+CacheEntry& entry=cache_[key];
+++entry.generation;
+entry.names.reset();
 }
 
 void FolderSource::invalidate_tree(std::string_view real_folder)
 {
 const std::string key=fold_name(real_folder);
 const std::lock_guard lock(cache_mutex_);
-std::erase_if(cache_,[&key](const auto& entry){
-const std::string& folder=entry.first;
-return folder.starts_with(key)&&(folder.size()==key.size()||folder[key.size()]=='/');
-});
+for(auto& [folder,entry]:cache_){
+if(!folder.starts_with(key)||(folder.size()!=key.size()&&folder[key.size()]!='/'))continue;
+++entry.generation;
+entry.names.reset();
+}
 }
 
 std::expected<FolderSource::Resolved,FileError> FolderSource::resolve(std::string_view relative,bool leaf_may_miss)
@@ -288,6 +384,7 @@ result.node.kind=platform::NodeKind::directory;
 return result;
 }
 // The exact name first: one system call when the spelling is right (always, on a file system that ignores case).
+if(exact_try_allowed(relative)){
 const auto exact=platform::stat_path(host_path(relative));
 if(exact){
 result.real.assign(relative);
@@ -295,6 +392,7 @@ result.node=*exact;
 return result;
 }
 if(const FileError error=detail::file_error(exact.error());!fall_through(error))return std::unexpected(error);
+}
 result.real.reserve(relative.size());
 for(std::size_t at=0;;){
 const std::size_t cut=relative.find('/',at);
@@ -303,14 +401,23 @@ const std::string_view segment=relative.substr(at,last?std::string_view::npos:cu
 const auto names=folder_names(result.real);
 if(!names)return std::unexpected(names.error());
 const Match found=match(**names,segment);
-if(found.ambiguous)return std::unexpected(FileError::ambiguous);
-if(!result.real.empty())result.real.push_back('/');
+const std::string prefix=result.real.empty()?std::string():result.real+"/";
+if(found.ambiguous){
+// The fold's names are sorted by bytes inside their range, so the first two are the smallest.
+const std::string fold=fold_name(segment);
+const auto range=std::ranges::equal_range((*names)->names,std::string_view(fold),{},[](const Name& name){return std::string_view(name.fold);});
+last_ambiguity=LastAmbiguity{this,std::string(relative),prefix+range[0].real,prefix+range[1].real};
+return std::unexpected(FileError::ambiguous);
+}
 if(!found.name){
 if(!last||!leaf_may_miss)return std::unexpected(FileError::not_found);
+result.real=prefix;
 result.real.append(segment);
 result.node=platform::NodeInfo{};
+result.parent_modified_ns=(*names)->modified_ns;
 return result;
 }
+result.real=prefix;
 result.real.append(found.name->real);
 if(last)break;
 if(found.name->kind!=platform::NodeKind::directory)return std::unexpected(FileError::not_a_directory);
@@ -353,14 +460,16 @@ std::expected<std::shared_ptr<Reader>,FileError> FolderSource::open_read(std::st
 {
 if(relative.empty())return std::unexpected(FileError::is_directory);
 // The exact name first, straight to an open: a right spelling costs one system call and the size query.
+if(exact_try_allowed(relative)){
 auto file=platform::File::open(host_path(relative),platform::FileAccess::read);
 if(file)return detail::make_file_reader(std::move(*file));
 if(const FileError error=detail::file_error(file.error());!fall_through(error))return std::unexpected(error);
+}
 const auto found=resolve(relative,false);
 if(!found)return std::unexpected(found.error());
 if(found->node.kind==platform::NodeKind::directory)return std::unexpected(FileError::is_directory);
 if(found->node.kind!=platform::NodeKind::file)return std::unexpected(FileError::not_found);
-file=platform::File::open(host_path(found->real),platform::FileAccess::read);
+auto file=platform::File::open(host_path(found->real),platform::FileAccess::read);
 if(!file)return std::unexpected(detail::file_error(file.error()));
 return detail::make_file_reader(std::move(*file));
 }
@@ -376,7 +485,7 @@ if(found->node.kind==platform::NodeKind::directory)return std::unexpected(FileEr
 const bool created=found->node.kind==platform::NodeKind::none;
 auto file=platform::File::open(host_path(found->real),detail::access_of(mode));
 if(!file)return std::unexpected(detail::file_error(file.error()));
-if(created)invalidate(parent_of(found->real));
+if(created)note_change(parent_of(found->real),leaf_of(found->real),platform::NodeKind::file,true,found->parent_modified_ns);
 return detail::make_file_writer(std::move(*file));
 }
 
@@ -392,6 +501,7 @@ for(const Name& name:(*names)->names){
 EntryInfo& info=out.emplace_back();
 info.kind=detail::entry_kind(name.kind);
 info.name=name.real;
+info.fold=name.fold;
 }
 return {};
 }
@@ -403,9 +513,14 @@ if(relative.empty())return std::unexpected(FileError::is_directory);
 const auto found=resolve(relative,false);
 if(!found)return std::unexpected(found.error());
 if(found->node.kind==platform::NodeKind::directory)return std::unexpected(FileError::is_directory);
+const std::string_view parent=parent_of(found->real);
+const std::optional<std::int64_t> before=folder_time(parent);
 const std::error_code error=platform::remove_file(host_path(found->real));
-invalidate(parent_of(found->real));
-if(error)return std::unexpected(detail::file_error(error));
+if(error){
+invalidate(parent);
+return std::unexpected(detail::file_error(error));
+}
+note_change(parent,leaf_of(found->real),platform::NodeKind::file,false,before);
 return {};
 }
 
@@ -417,14 +532,19 @@ const auto found=resolve(relative,true);
 if(!found)return std::unexpected(found.error());
 if(found->node.kind==platform::NodeKind::directory)return {};
 if(found->node.kind!=platform::NodeKind::none)return std::unexpected(FileError::not_a_directory);
-std::error_code error=platform::make_directory(host_path(found->real));
-invalidate(parent_of(found->real));
+const std::error_code error=platform::make_directory(host_path(found->real));
+const std::string_view parent=parent_of(found->real);
 if(error&&platform::error_kind(error)==platform::ErrorKind::exists){
+invalidate(parent);
 const auto made=platform::stat_path(host_path(found->real));
 if(made&&made->kind==platform::NodeKind::directory)return {};
 return std::unexpected(FileError::not_a_directory);
 }
-if(error)return std::unexpected(detail::file_error(error));
+if(error){
+invalidate(parent);
+return std::unexpected(detail::file_error(error));
+}
+note_change(parent,leaf_of(found->real),platform::NodeKind::directory,true,found->parent_modified_ns);
 return {};
 }
 
@@ -435,10 +555,15 @@ const auto found=resolve(relative,false);
 if(!found)return std::unexpected(found.error());
 if(found->node.kind!=platform::NodeKind::directory)return std::unexpected(FileError::not_a_directory);
 const fs::path folder=host_path(found->real);
+const std::string_view parent=parent_of(found->real);
+const std::optional<std::int64_t> before=folder_time(parent);
 const std::error_code error=recursive?detail::remove_tree(folder):platform::remove_directory(folder);
-invalidate(parent_of(found->real));
 invalidate_tree(found->real);
-if(error)return std::unexpected(detail::file_error(error));
+if(error){
+invalidate(parent);
+return std::unexpected(detail::file_error(error));
+}
+note_change(parent,leaf_of(found->real),platform::NodeKind::directory,false,before);
 return {};
 }
 
@@ -467,24 +592,9 @@ return true;
 
 std::optional<std::pair<std::string,std::string>> FolderSource::ambiguous_names(std::string_view relative)
 {
-std::string spelled;
-for(std::size_t at=0;;){
-const std::size_t cut=relative.find('/',at);
-const bool last=cut==std::string_view::npos;
-const std::string_view segment=relative.substr(at,last?std::string_view::npos:cut-at);
-const auto names=folder_names(spelled);
-if(!names)return std::nullopt;
-const Match found=match(**names,segment);
-const std::string prefix=spelled.empty()?std::string():spelled+"/";
-if(found.ambiguous){
-// The fold's names are sorted by bytes inside their range, so the first two are the smallest.
-const std::string fold=fold_name(segment);
-const auto range=std::ranges::equal_range((*names)->names,std::string_view(fold),{},[](const Name& name){return std::string_view(name.fold);});
-return std::pair(prefix+range[0].real,prefix+range[1].real);
-}
-if(!found.name||last)return std::nullopt;
-spelled=prefix+found.name->real;
-at=cut+1;
-}
+// What this thread's failed lookup itself saw, so the names cannot have changed in between.
+if(last_ambiguity.source==this&&last_ambiguity.relative==relative)return std::pair(last_ambiguity.first,last_ambiguity.second);
+if(!resolve(relative,false)&&last_ambiguity.source==this&&last_ambiguity.relative==relative)return std::pair(last_ambiguity.first,last_ambiguity.second);
+return std::nullopt;
 }
 }

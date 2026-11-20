@@ -113,11 +113,13 @@ class ScopedEnv{
 public:
 ScopedEnv(const char* name,const fs::path& value):name_(name)
 {
-if(const char* old=std::getenv(name))old_=std::string(old);
 #ifdef _WIN32
+// The wide value: the narrow one is in the ANSI code page, which cannot hold every folder name.
 const std::wstring wide(name_.begin(),name_.end());
+if(const wchar_t* old=_wgetenv(wide.c_str()))old_=fs::path(old);
 _wputenv_s(wide.c_str(),value.c_str());
 #else
+if(const char* old=std::getenv(name))old_=fs::path(old);
 setenv(name,value.c_str(),1);
 #endif
 }
@@ -125,8 +127,7 @@ setenv(name,value.c_str(),1);
 {
 #ifdef _WIN32
 const std::wstring wide(name_.begin(),name_.end());
-if(old_)_wputenv_s(wide.c_str(),path_from_utf8(*old_).c_str());
-else _wputenv_s(wide.c_str(),L"");
+_wputenv_s(wide.c_str(),old_?old_->c_str():L"");
 #else
 if(old_)setenv(name_.c_str(),old_->c_str(),1);
 else unsetenv(name_.c_str());
@@ -136,7 +137,7 @@ ScopedEnv(const ScopedEnv&)=delete;
 ScopedEnv& operator=(const ScopedEnv&)=delete;
 private:
 std::string name_;
-std::optional<std::string> old_;
+std::optional<fs::path> old_;
 };
 #ifdef _WIN32
 constexpr const char* data_variable="APPDATA";
@@ -377,6 +378,17 @@ REQUIRE_FALSE(flat);
 CHECK(flat.error().code==FileError::not_found);
 const auto not_empty=vfs.delete_directory("deep",false);
 REQUIRE_FALSE(not_empty);
+CHECK(not_empty.error().code==FileError::not_empty);
+CHECK(read_failure_text("deep",not_empty.error())=="cannot read \"deep\": directory not empty");
+const auto on_file=vfs.list("a.txt",ListKind::files);
+REQUIRE_FALSE(on_file);
+CHECK(on_file.error().code==FileError::not_a_directory);
+const auto below_file=vfs.list("a.txt/x",ListKind::files);
+REQUIRE_FALSE(below_file);
+CHECK(below_file.error().code==FileError::not_a_directory);
+const auto nowhere=vfs.list("nowhere",ListKind::files);
+REQUIRE_FALSE(nowhere);
+CHECK(nowhere.error().code==FileError::not_found);
 REQUIRE(vfs.delete_directory("DEEP",true));
 CHECK_FALSE(fs::exists(temp.at("deep")));
 const auto root=vfs.delete_directory("/",true);
@@ -566,4 +578,170 @@ REQUIRE(write_vfs(vfs,"data/a.txt","1"));
 REQUIRE(write_vfs(vfs,"data/a.txt","2"));
 REQUIRE(write_vfs(vfs,"other.txt","3"));
 CHECK(log.lines==std::vector<std::string>{"warning: \"data/a.txt\" is written in a folder here, but the release puts it in a read-only pack, where writing fails; save files in data:/ instead"});
+}
+
+TEST_CASE("ill-formed UTF-8 is not a valid file name and never throws")
+{
+for(const std::string name:{"save\xFF.txt","a\xC3","\xED\xA0\x80.txt","\xC0\xAF","x\xF4\x90\x80\x80","\x80"}){
+CAPTURE(zodiac::one_line(name));
+CHECK_FALSE(zodiac::vfs::valid_name(name));
+CHECK(parse_error(name)=="\""+zodiac::one_line(name)+"\" is not a valid file name");
+}
+const TempDir temp;
+Vfs vfs;
+REQUIRE(vfs.mount_folder("/",temp.dir(),true));
+vfs.set_host_paths(true);
+const std::string generic=generic_utf8(temp.dir());
+for(const std::string& path:{std::string("save\xFF.txt"),std::string("dir/\xC3/x"),"host:"+generic+"/save\xFF.txt",generic+"/\xFF"}){
+CAPTURE(zodiac::one_line(path));
+const auto stat=vfs.stat(path);
+REQUIRE_FALSE(stat);
+CHECK(stat.error().code==FileError::bad_path);
+CHECK(stat.error().message=="\""+zodiac::one_line(path)+"\" is not a valid file name");
+CHECK_FALSE(vfs.open_read(path));
+CHECK_FALSE(vfs.open_write(path,WriteMode::truncate));
+CHECK_FALSE(vfs.list(path,ListKind::files));
+CHECK_FALSE(vfs.create_directory(path,true));
+CHECK_FALSE(vfs.remove(path));
+}
+CHECK(fs::is_empty(temp.dir()));
+}
+
+TEST_CASE("host paths into the Win32 device namespaces are refused")
+{
+for(const std::string path:{"//./C:/x","//?/C:/x","\\\\.\\PhysicalDrive0","\\\\?\\C:\\x","host://./pipe/x","host:\\\\?\\C:\\x","//.","\\\\?"}){
+CAPTURE(path);
+CHECK(parse_error(path)=="\""+path+"\" is a host path; set [files] host_paths = true to use it");
+CHECK(parse_error(path,true)=="\""+path+"\" is not a valid file name");
+}
+// A server name that only starts with a dot is an ordinary share.
+CHECK(zodiac::vfs::parse_path("//.server/share/x",true).has_value());
+}
+
+TEST_CASE("creating many files in a folder does not rescan it once per file")
+{
+const TempDir temp;
+fs::create_directories(temp.at("many"));
+// An old folder time, so the scan below is not racy and only a real change of the folder could call for another.
+fs::last_write_time(temp.at("many"),fs::last_write_time(temp.at("many"))-std::chrono::hours(1));
+const auto source=std::make_shared<FolderSource>(temp.dir(),false);
+Vfs vfs;
+REQUIRE(vfs.mount("/",source,true,nullptr));
+const auto empty=vfs.list("many",ListKind::files);
+REQUIRE(empty);
+CHECK(empty->empty());
+const std::uint64_t before=source->scans();
+constexpr int count=300;
+for(int i=0;i<count;++i)REQUIRE(write_vfs(vfs,"many/file"+std::to_string(i)+".txt","x"));
+// Each create misses the exact name, so it walks the cache: without in-place updates that would be one scan per file. Every
+// write leaves the folder racy, which allows one rescan per racy window at most.
+CHECK(source->scans()-before<=3);
+const auto listed=vfs.list("many",ListKind::files);
+REQUIRE(listed);
+CHECK(listed->size()==static_cast<std::size_t>(count));
+CHECK(listed->front()=="file0.txt");
+for(int i=0;i<count;i+=2)REQUIRE(vfs.remove("MANY/FILE"+std::to_string(i)+".TXT"));
+REQUIRE(vfs.create_directory("many/sub",false));
+const auto after=vfs.list("many",ListKind::files);
+REQUIRE(after);
+CHECK(after->size()==static_cast<std::size_t>(count/2));
+const auto dirs=vfs.list("many",ListKind::directories);
+REQUIRE(dirs);
+CHECK(*dirs==std::vector<std::string>{"sub"});
+CHECK(source->scans()-before<=6);
+}
+
+TEST_CASE("a folder time in the future does not keep the cache racy")
+{
+const TempDir temp;
+temp.write("future/a.txt","a");
+fs::last_write_time(temp.at("future"),fs::file_time_type::clock::now()+std::chrono::hours(1));
+const auto source=std::make_shared<FolderSource>(temp.dir(),false);
+Vfs vfs;
+REQUIRE(vfs.mount("/",source,true,nullptr));
+REQUIRE(vfs.list("future",ListKind::files));
+// The root's own scan, which the misses below walk through, happens first.
+CHECK_FALSE(vfs.stat("future/missing.txt"));
+const std::uint64_t before=source->scans();
+for(int i=0;i<5;++i)CHECK_FALSE(vfs.stat("future/missing.txt"));
+CHECK(read_vfs(vfs,"FUTURE/A.TXT")==std::optional<std::string>("a"));
+CHECK(source->scans()==before);
+}
+
+TEST_CASE("8.3 short names are not found, as on Linux")
+{
+const TempDir temp;
+temp.write("longfilename.ogg","long");
+temp.write("a~b.txt","tilde");
+Vfs vfs;
+REQUIRE(vfs.mount_folder("/",temp.dir(),true));
+CHECK(read_vfs(vfs,"longfilename.ogg")==std::optional<std::string>("long"));
+// A real name with a tilde is found through the cache, in any case.
+CHECK(read_vfs(vfs,"a~b.txt")==std::optional<std::string>("tilde"));
+CHECK(read_vfs(vfs,"A~B.TXT")==std::optional<std::string>("tilde"));
+std::error_code ec;
+if(!fs::exists(temp.at("LONGFI~1.OGG"),ec)){
+MESSAGE("the volume makes no 8.3 names; only the long-name checks ran");
+return;
+}
+for(const char* path:{"LONGFI~1.OGG","longfi~1.ogg"}){
+CAPTURE(path);
+FileError error{};
+CHECK_FALSE(read_vfs(vfs,path,&error));
+CHECK(error==FileError::not_found);
+CHECK_FALSE(vfs.stat(path));
+}
+}
+
+namespace {
+// A source that reports every lookup as ambiguous without naming the matches.
+class AmbiguousSource final:public zodiac::vfs::Source{
+public:
+std::expected<zodiac::vfs::EntryInfo,FileError> stat(std::string_view) override{return std::unexpected(FileError::ambiguous);}
+std::expected<std::shared_ptr<zodiac::vfs::Reader>,FileError> open_read(std::string_view) override{return std::unexpected(FileError::ambiguous);}
+std::expected<std::unique_ptr<zodiac::vfs::WriteTarget>,FileError> open_write(std::string_view,WriteMode) override{return std::unexpected(FileError::ambiguous);}
+std::expected<void,FileError> list(std::string_view,std::vector<zodiac::vfs::EntryInfo>&) override{return std::unexpected(FileError::ambiguous);}
+std::expected<void,FileError> remove(std::string_view) override{return std::unexpected(FileError::ambiguous);}
+std::expected<void,FileError> make_directory(std::string_view) override{return std::unexpected(FileError::ambiguous);}
+std::expected<void,FileError> remove_directory(std::string_view,bool) override{return std::unexpected(FileError::ambiguous);}
+bool read_only() const noexcept override{return false;}
+};
+}
+
+TEST_CASE("an ambiguity is never worded as a read failure")
+{
+Vfs vfs;
+REQUIRE(vfs.mount("/",std::make_shared<AmbiguousSource>(),true,nullptr));
+const auto opened=vfs.open_read("Thing.txt");
+REQUIRE_FALSE(opened);
+CHECK(opened.error().code==FileError::ambiguous);
+CHECK(read_failure_text("Thing.txt",opened.error())=="\"Thing.txt\" matches more than one name; rename one of them");
+const auto listed=vfs.list("x",ListKind::files);
+REQUIRE_FALSE(listed);
+CHECK(listed.error().message=="\"x\" matches more than one name; rename one of them");
+}
+
+TEST_CASE("dev mode warns once per misspelled path and checks a right spelling once")
+{
+const TempDir temp;
+temp.write("sounds/shot.ogg","bang");
+const auto source=std::make_shared<FolderSource>(temp.dir(),false);
+Vfs vfs;
+LogLines log;
+log.attach(vfs);
+vfs.set_dev_mode(true);
+REQUIRE(vfs.mount("/",source,true,nullptr));
+for(int i=0;i<100;++i){
+REQUIRE(vfs.stat("sounds/shot.ogg"));
+REQUIRE(vfs.stat("Sounds/shot.ogg"));
+}
+CHECK(log.lines==std::vector<std::string>{"warning: \"Sounds/shot.ogg\" was found as \"sounds/shot.ogg\"; use the real name, other systems may not find it"});
+// More distinct paths than the checked table holds: lookups stay correct and each misspelling still warns once.
+for(int i=0;i<5000;++i)temp.write("many/f"+std::to_string(i),"");
+log.lines.clear();
+for(int round=0;round<2;++round)for(int i=0;i<5000;++i)REQUIRE(vfs.stat("many/f"+std::to_string(i)));
+CHECK(log.lines.empty());
+REQUIRE(vfs.stat("MANY/f1"));
+REQUIRE(vfs.stat("MANY/f1"));
+CHECK(log.lines.size()==1);
 }

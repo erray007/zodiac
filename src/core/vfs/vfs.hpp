@@ -13,7 +13,9 @@
 // - the path rules (bad_path): `"<path>" leaves its mount`, `"<path>" is a host path; set [files] host_paths = true to use it`,
 //   `"<path>" is not a valid file name`;
 // - ambiguous: `"<path>" matches both "<a>" and "<b>"; rename one of them`, a and b the two real paths in the script's form
-//   ("sounds/a.txt", "data:/A.txt"), sorted by bytes;
+//   ("sounds/a.txt", "data:/A.txt"), sorted by bytes, as the failed lookup itself saw them; a source that cannot name them gives
+//   `"<path>" matches more than one name; rename one of them`, so an ambiguity is never worded as a read failure;
+// - not_empty has no text of its own: "directory not empty" (a folder removed without recursive that still holds entries);
 // - read_only_pack: `"<path>" is in a read-only pack; save files in data:/ instead`.
 // Every other failure leaves message empty; read_failure_text gives `cannot read "<path>": <reason_text>` for those.
 // A file operation on a path in folder form ("", "sounds/") fails with is_directory before any mount is asked.
@@ -24,6 +26,9 @@
 // (Task 10), the first write to each path of the root mount that the check names warns once:
 // `warning: "<path>" is written in a folder here, but the release puts it in a read-only pack, where writing fails; save files in data:/ instead`.
 // Release mode (the default) never checks spelling.
+//
+// No C++ exception leaves a file operation: anything thrown inside one (an allocation failure) becomes FileError::io, and mount
+// returns false.
 //
 // Threads: the file operations, mount and unmount may be called from any thread at any time. The mount table is copy-on-write
 // behind a shared_mutex: a lookup copies a shared_ptr<const Table> under the shared lock and resolves without holding it, so a
@@ -50,9 +55,10 @@
 #include <vector>
 
 namespace zodiac::vfs {
-enum class FileError:int{not_found=1,access_denied,damaged,is_directory,not_a_directory,read_only_pack,bad_path,ambiguous,io};
+// Append-only: a new code goes at the end, so no value ever moves.
+enum class FileError:int{not_found=1,access_denied,damaged,is_directory,not_a_directory,read_only_pack,bad_path,ambiguous,io,not_empty};
 // "file not found", "access denied", "damaged data", "is a directory", "not a directory", "in a read-only pack", "invalid path",
-// "ambiguous name", "input/output error".
+// "ambiguous name", "input/output error", "directory not empty".
 std::string_view reason_text(FileError error) noexcept;
 // deleted is a deletion marker (a patch pack hiding an older entry, Task 8): stat reports it, list leaves it out.
 enum class EntryKind{none,file,directory,deleted};
@@ -64,6 +70,8 @@ std::int64_t modified_utc_ms=0;
 // From a listing, the entry's name as the source stores it; from stat, the last segment of the path as asked (on every platform,
 // so a file system that ignores case answers like one that does not).
 std::string name;
+// From a listing: fold_name(name) when the source already has it (Vfs::list folds the name itself otherwise); empty from stat.
+std::string fold;
 };
 enum class WriteMode{truncate,append,update};
 enum class ListKind{files,directories};
@@ -193,9 +201,19 @@ std::atomic<bool> host_paths_{false};
 std::atomic<bool> dev_mode_{false};
 LogHandler log_;
 PackCheck release_pack_check_;
+// Dev mode: 64-bit hashes of the paths whose spelling was checked, in a fixed open-addressed table of atomics, so the usual lookup
+// (a path already checked) takes no lock and allocates nothing. Bounded: when a probe run is full its first slot is overwritten, and
+// a forgotten path is only checked again (its warning, if any, is still given once: see spelling_warned_).
+static constexpr std::size_t checked_slots=4096;
+static constexpr std::size_t checked_probes=8;
+std::unique_ptr<std::atomic<std::uint64_t>[]> checked_;
+bool checked(std::uint64_t hash) const noexcept;
+void remember_checked(std::uint64_t hash) noexcept;
+// The paths warned about: misspelled ones (dev mode) and release pack writes. Only touched when there is something to warn about,
+// and each holds at most max_warned paths (past that, a warning may repeat rather than the set grow).
+static constexpr std::size_t max_warned=4096;
 std::mutex warned_mutex_;
-// Paths whose spelling was checked (dev mode), and paths warned about by the release pack check.
-std::unordered_set<std::string> spelled_;
+std::unordered_set<std::string> spelling_warned_;
 std::unordered_set<std::string> pack_warned_;
 };
 }
