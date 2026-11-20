@@ -190,10 +190,10 @@
     - A component is refused with `"<path>" is not a valid file name` when:
       - it ends in `.` or space, or holds a control character or one of `<>:"|?*`;
       - or its stem before the first dot is a device name (ASCII case-insensitive): `CON PRN AUX NUL CONIN$ CONOUT$ CLOCK$`, `COM0-9` and `LPT0-9`, and the superscript forms `COM¹ COM² COM³ LPT¹ LPT² LPT³`.
-    - Path-rule failures (leaves its mount, host path, not a valid file name, ambiguous) are thrown or reported with their own Global texts. They are never wrapped as `cannot read "<path>": <reason>`, whose reasons are only the four listed in the Global Constraints.
+    - Path-rule failures (leaves its mount, host path, not a valid file name, ambiguous) are thrown or reported with their own Global texts. They are never wrapped as `cannot read "<path>": <reason>`, whose reasons are only those listed in the Global Constraints: `file not found`, `access denied`, `damaged data`, `is a directory` and `directory not empty`.
   - `std::string fold_name(std::string_view utf8)`: per code point `unicode::to_upper`. Invalid bytes are kept, and nothing is normalized.
 - Produces `vfs/vfs.hpp`:
-  - `enum class FileError:int{not_found=1,access_denied,damaged,is_directory,not_a_directory,read_only_pack,bad_path,ambiguous,io}` and `std::string_view reason_text(FileError)`. The texts are `file not found`, `access denied`, `damaged data`, `is a directory`, `not a directory`, `in a read-only pack`, `invalid path`, `ambiguous name`, `input/output error`.
+  - `enum class FileError:int{not_found=1,access_denied,damaged,is_directory,not_a_directory,read_only_pack,bad_path,ambiguous,io,not_empty}` and `std::string_view reason_text(FileError)`. The texts are `file not found`, `access denied`, `damaged data`, `is a directory`, `not a directory`, `in a read-only pack`, `invalid path`, `ambiguous name`, `input/output error`, `directory not empty`.
   - `struct EntryInfo{EntryKind kind; std::uint64_t size; std::int64_t modified_utc_ms; std::string name;}` with `enum class EntryKind{none,file,directory,deleted}`. `deleted` is a deletion marker, used from Task 8 on.
   - `class Reader`: `virtual std::int64_t read_at(std::uint64_t offset,std::span<std::byte>)` (bytes, 0 at end, `-int(FileError)` on failure) and `virtual std::uint64_t size() const`. A reader is used by one thread at a time; different readers may run concurrently.
   - `class WriteTarget`: `write_at`, `size`, `truncate`, and `virtual std::expected<void,FileError> commit()`.
