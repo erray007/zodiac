@@ -97,6 +97,7 @@ zodiac_add_module(vendor_direct SOURCES fixtures/modules/vendor_dep.cpp NO_STATI
 target_link_libraries(zodiac_mod_vendor_direct PRIVATE vendor_lib)
 endif()
 zodiac_add_test(test_project_file SOURCES test_project_file.cpp LIBRARIES zodiac_core)
+zodiac_add_test(test_vfs SOURCES test_vfs.cpp LIBRARIES zodiac_core)
 zodiac_add_test(test_text SOURCES test_text.cpp LIBRARIES zodiac_core)
 # NFC vectors are generated from the pinned NormalizationTest.txt by tools/gen_unicode.py and committed.
 zodiac_add_test(test_unicode SOURCES test_unicode.cpp LIBRARIES zodiac_core)

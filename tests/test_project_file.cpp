@@ -275,6 +275,36 @@ CHECK(result->build.sign_command.empty());
 CHECK(result->workers.empty());
 }
 
+TEST_CASE("files section reads host_paths")
+{
+TempProject project;
+project.main_script();
+project.toml(minimal);
+const auto defaults=zodiac::load_project(project.dir());
+REQUIRE(defaults.has_value());
+CHECK_FALSE(defaults->files.host_paths);
+project.toml("[game]\nmain = \"main.zs\"\n[files]\nhost_paths = true\n");
+const auto enabled=zodiac::load_project(project.dir());
+REQUIRE(enabled.has_value());
+CHECK(enabled->files.host_paths);
+project.toml("[game]\nmain = \"main.zs\"\n[files]\nhost_paths = false\n");
+const auto disabled=zodiac::load_project(project.dir());
+REQUIRE(disabled.has_value());
+CHECK_FALSE(disabled->files.host_paths);
+}
+
+TEST_CASE("files section type errors")
+{
+TempProject project;
+project.main_script();
+project.toml("[game]\nmain = \"main.zs\"\n[files]\nhost_paths = \"true\"\n");
+CHECK(error_of(project)=="zodiac.toml: error: [files] host_paths must be a boolean");
+project.toml("[game]\nmain = \"main.zs\"\n[files]\nhost_paths = 1\n");
+CHECK(error_of(project)=="zodiac.toml: error: [files] host_paths must be a boolean");
+project.toml("files = 1\n[game]\nmain = \"main.zs\"\n");
+CHECK(error_of(project)=="zodiac.toml: error: [files] must be a table");
+}
+
 TEST_CASE("sign command must contain {file}")
 {
 TempProject project;
