@@ -74,6 +74,19 @@ find_package(Threads REQUIRED)
 target_link_libraries(angelscript PUBLIC Threads::Threads)
 set_target_properties(angelscript PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_options(angelscript PRIVATE -w)
+# AngelScript's number literal scanner for test_script_literals: its private header as_string_util.h (AS_ZODIAC_FROM_CHARS, the test hook).
+# ZODIAC_AS_STRTOD_FALLBACK builds the scanner's fallback, strtod_l and strtof_l in the "C" locale, which a toolchain whose C++ library has a
+# correctly rounded floating-point from_chars never compiles (Zodiac's Windows toolchain), with the hook that makes the "C" locale handle null.
+# Only for testing the fallback (CI builds test_script_literals with it); the default build, the kit and games never set it.
+option(ZODIAC_AS_STRTOD_FALLBACK "Build AngelScript's number literal scanner with its strtod_l fallback and test hook (tests only)" OFF)
+add_library(angelscript_literal_scanner INTERFACE)
+target_include_directories(angelscript_literal_scanner SYSTEM INTERFACE "${AS_SRC}")
+target_link_libraries(angelscript_literal_scanner INTERFACE angelscript)
+if(ZODIAC_AS_STRTOD_FALLBACK)
+set(ZODIAC_AS_FALLBACK_DEFINITIONS AS_ZODIAC_FROM_CHARS=0 AS_ZODIAC_TEST_HOOKS)
+target_compile_definitions(angelscript PRIVATE ${ZODIAC_AS_FALLBACK_DEFINITIONS})
+target_compile_definitions(angelscript_literal_scanner INTERFACE ${ZODIAC_AS_FALLBACK_DEFINITIONS} ZODIAC_AS_STRTOD_FALLBACK)
+endif()
 # The sample add-ons Zodiac's string, array<T>, dictionary and maths replace (spec 8.4). Only tests/bench links them, to measure Zodiac's
 # types and library against them; games, the core and the kit never get them (test_angelscript_has_no_sample_addons checks every archive
 # of lib/release).

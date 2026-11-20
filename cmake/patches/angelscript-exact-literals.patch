@@ -126,7 +126,7 @@ diff --git a/angelscript/source/as_string_util.cpp b/angelscript/source/as_strin
 
  BEGIN_AS_NAMESPACE
 
-@@ -74,100 +83,226 @@ int asCompareStrings(const char *str1, size_t len1, const char *str2, size_t len
+@@ -74,100 +83,239 @@ int asCompareStrings(const char *str1, size_t len1, const char *str2, size_t len
  	return result;
  }
 
@@ -138,14 +138,15 @@ diff --git a/angelscript/source/as_string_util.cpp b/angelscript/source/as_strin
 +// float, ties to even, as IEEE 754 and std::from_chars do. The text without its digit separators goes to std::from_chars
 +// where the C++ library has a correctly rounded one for floating point (libc++ 20 and later, which Zodiac's toolchains
 +// have; libstdc++ 12 and later; MSVC's STL), to strtod_l or strtof_l in the "C" locale otherwise (correctly rounded in
-+// glibc), so the decimal point is always '.' whatever the locale. The walk over the literal and numScanned are the
-+// original's.
-+#if (defined(_LIBCPP_VERSION) && _LIBCPP_VERSION >= 200000) || (defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE >= 12) || (defined(_MSVC_STL_VERSION) && defined(__cpp_lib_to_chars))
-+#define AS_ZODIAC_FROM_CHARS 1
-+#else
-+#define AS_ZODIAC_FROM_CHARS 0
++// glibc), so the decimal point is always '.' whatever the locale. AS_ZODIAC_FROM_CHARS (as_string_util.h) makes the
++// choice. The walk over the literal and numScanned are the original's.
++#if !AS_ZODIAC_FROM_CHARS
++#if defined(AS_ZODIAC_TEST_HOOKS)
++bool asZodiacTestNoCLocale = false;
++#endif
 +// The "C" locale, made once; null when the C library could not make it, in which case strtod and strtof read the text
-+// in the current locale, with '.' replaced by its decimal point (see asScanReal).
++// in the current locale, with '.' replaced by its decimal point (see asScanReal). With AS_ZODIAC_TEST_HOOKS, a test can
++// make it null with asZodiacTestNoCLocale.
 +#if defined(_WIN32)
 +typedef _locale_t asCLocaleHandle;
 +static asCLocaleHandle asCLocale()
@@ -207,6 +208,10 @@ diff --git a/angelscript/source/as_string_util.cpp b/angelscript/source/as_strin
 -	if( string[c] == 'e' || string[c] == 'E' )
 -	{
 -		c++;
++#if defined(AS_ZODIAC_TEST_HOOKS)
++if( asZodiacTestNoCLocale )
++return 0;
++#endif
 +static const _locale_t locale = _create_locale(LC_ALL, "C");
 +return locale;
 +}
@@ -222,6 +227,10 @@ diff --git a/angelscript/source/as_string_util.cpp b/angelscript/source/as_strin
 +typedef locale_t asCLocaleHandle;
 +static asCLocaleHandle asCLocale()
 +{
++#if defined(AS_ZODIAC_TEST_HOOKS)
++if( asZodiacTestNoCLocale )
++return 0;
++#endif
 +static const locale_t locale = newlocale(LC_ALL_MASK, "C", (locale_t)0);
 +return locale;
 +}
@@ -355,7 +364,11 @@ diff --git a/angelscript/source/as_string_util.cpp b/angelscript/source/as_strin
 +const char *point = ".";
 +#else
 +const asCLocaleHandle locale = asCLocale();
++#if defined(AS_ZODIAC_TEST_HOOKS)
++asASSERT(locale != 0 || asZodiacTestNoCLocale);
++#else
 +asASSERT(locale != 0);
++#endif
 +const char *point = locale ? "." : localeconv()->decimal_point;
 +#endif
 +const size_t pointLength = strlen(point);
@@ -443,7 +456,24 @@ diff --git a/angelscript/source/as_string_util.cpp b/angelscript/source/as_strin
 diff --git a/angelscript/source/as_string_util.h b/angelscript/source/as_string_util.h
 --- a/angelscript/source/as_string_util.h
 +++ b/angelscript/source/as_string_util.h
-@@ -39,6 +39,10 @@ BEGIN_AS_NAMESPACE
+@@ -34,11 +34,31 @@
+
+ #include "as_config.h"
+
++// Zodiac (altered source): 1 when asStringScanDouble and asStringScanFloat read literals with std::from_chars, where the
++// C++ library has a correctly rounded one for floating point; 0 when they read them with strtod_l and strtof_l in the
++// "C" locale (see as_string_util.cpp). A build can force 0 with -DAS_ZODIAC_FROM_CHARS=0, so that the fallback is tested.
++#include <charconv>
++#ifndef AS_ZODIAC_FROM_CHARS
++#if (defined(_LIBCPP_VERSION) && _LIBCPP_VERSION >= 200000) || (defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE >= 12) || (defined(_MSVC_STL_VERSION) && defined(__cpp_lib_to_chars))
++#define AS_ZODIAC_FROM_CHARS 1
++#else
++#define AS_ZODIAC_FROM_CHARS 0
++#endif
++#endif
++
+ BEGIN_AS_NAMESPACE
+
  int     asCompareStrings(const char *str1, size_t len1, const char *str2, size_t len2);
 
  double  asStringScanDouble(const char *string, size_t *numScanned);
@@ -451,6 +481,10 @@ diff --git a/angelscript/source/as_string_util.h b/angelscript/source/as_string_
 +// a float (see as_string_util.cpp).
 +float   asStringScanFloat(const char *string, size_t *numScanned);
 +bool    asIsFloatMidpoint(double value);
++#if defined(AS_ZODIAC_TEST_HOOKS) && !AS_ZODIAC_FROM_CHARS
++// Zodiac (altered source), tests only: true makes the fallback scanner behave as if the "C" locale could not be made.
++extern bool asZodiacTestNoCLocale;
++#endif
  asQWORD asStringScanUInt64(const char *string, int base, size_t *numScanned, bool *overflow);
 
  int     asStringEncodeUTF8(unsigned int value, char *outEncodedBuffer);

@@ -4,11 +4,16 @@
 // exactly halfway between two floats, the other kinds of number literal, and 100 000 random doubles and floats each
 // written in its shortest round-trip form and read back bit for bit.
 #include "script_fixture.hpp"
+// AngelScript's own header, for AS_ZODIAC_FROM_CHARS and the fallback's test hook (the angelscript_literal_scanner target).
+#include <as_string_util.h>
 #include <bit>
 #include <charconv>
+#include <clocale>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <random>
 #include <string>
@@ -95,9 +100,10 @@ collected_floats.push_back(x);
 }
 }
 
-TEST_CASE("decimal literals compile to the nearest double")
+// The checks, as functions: the test cases at the end run them, and with the fallback build (ZODIAC_AS_STRTOD_FALLBACK) run
+// them again without the "C" locale handle.
+static void check_nearest_doubles(ScriptFixture& fixture)
 {
-ScriptFixture fixture;
 CHECK(holds(fixture,"0.04==4.0/100.0"));
 CHECK(holds(fixture,"0.1+0.2==0.30000000000000004"));
 CHECK(holds(fixture,"0.1+0.2!=0.3"));
@@ -125,9 +131,8 @@ CHECK(same(double_of(fixture,"return -0.0;"),-0.0));
 CHECK(same(double_of(fixture,"return -2.5;"),-2.5));
 }
 
-TEST_CASE("float literals compile to the nearest float")
+static void check_nearest_floats(ScriptFixture& fixture)
 {
-ScriptFixture fixture;
 CHECK(same(float_of(fixture,"return 0.1f;"),0.1f));
 CHECK(same(float_of(fixture,"float x=0.1; return x;"),0.1f));
 CHECK(same(float_of(fixture,"return 3.4028235e38f;"),std::numeric_limits<float>::max()));
@@ -171,9 +176,8 @@ CHECK(same(float_of(fixture,"float x=1.000000059604644775390625001*1.0; return x
 CHECK(same(float_of(fixture,"float x=-1.000000059604644775390625001*1.0; return x;"),-1.0f));
 }
 
-TEST_CASE("integer, based, separated and exponent literals keep working")
+static void check_other_literals(ScriptFixture& fixture)
 {
-ScriptFixture fixture;
 CHECK(holds(fixture,"1'000'000==1000000"));
 CHECK(holds(fixture,"0x1F==31&&0X1f==31&&0b101==5&&0o17==15&&0d99==99&&0xFF'FF==65535"));
 CHECK(holds(fixture,"9223372036854775807==int64(0x7FFFFFFFFFFFFFFF)"));
@@ -192,14 +196,15 @@ CHECK(same(double_of(fixture,"return 0.1000'0000'0000'0000'0555'1115'1231'2578'2
 CHECK(same(double_of(fixture,"return 1e2'000;"),std::numeric_limits<double>::infinity()));
 }
 
-TEST_CASE("100 000 random doubles and floats round-trip through their shortest literal")
+// That many random doubles and floats (a multiple of 1000), each written in its shortest round-trip form and compiled as a
+// literal, must come back bit for bit.
+static void check_round_trips(ScriptFixture& fixture,int values)
 {
-ScriptFixture fixture;
 REQUIRE(fixture.engine->RegisterGlobalFunction("void collect_double(double)",asFUNCTION(collect_double),asCALL_CDECL)>=0);
 REQUIRE(fixture.engine->RegisterGlobalFunction("void collect_float(float)",asFUNCTION(collect_float),asCALL_CDECL)>=0);
-constexpr int kValues=100000;
 // Scripts of 3000 calls: one script of 30 000 compiles more slowly per call.
 constexpr int kBatch=1000;
+REQUIRE(values%kBatch==0);
 std::mt19937_64 random(0x5A0D1AC5u);
 // Half any finite bit pattern (every exponent, subnormals included), half the short decimals scripts usually hold.
 const auto next_double=[&random](int i){
@@ -220,19 +225,19 @@ if(std::isfinite(x))return x;
 };
 std::vector<double> doubles;
 std::vector<float> floats;
-doubles.reserve(kValues);
-floats.reserve(kValues);
-for(int i=0;i<kValues;++i){
+doubles.reserve(values);
+floats.reserve(values);
+for(int i=0;i<values;++i){
 doubles.push_back(next_double(i));
 floats.push_back(next_float(i));
 }
 collected_doubles.clear();
 collected_floats.clear();
-collected_doubles.reserve(kValues);
-collected_floats.reserve(2*kValues);
+collected_doubles.reserve(values);
+collected_floats.reserve(2*values);
 // Each float goes in twice: as an f literal and as a double literal converted to the float argument.
 std::string source;
-for(int first=0;first<kValues;first+=kBatch){
+for(int first=0;first<values;first+=kBatch){
 source.assign("void main(){");
 for(int i=first;i<first+kBatch;++i){
 const std::string d=literal_of(doubles[static_cast<std::size_t>(i)]);
@@ -254,3 +259,76 @@ if(!same(collected_floats[2*i+1],floats[i])&&++float_failures<=10)FAIL_CHECK("do
 CHECK(double_failures==0);
 CHECK(float_failures==0);
 }
+
+TEST_CASE("the literal scanner reports how it reads literals")
+{
+MESSAGE("AngelScript reads number literals with "<<std::string(AS_ZODIAC_FROM_CHARS?"std::from_chars":"strtod_l and strtof_l in the \"C\" locale"));
+#if defined(ZODIAC_AS_STRTOD_FALLBACK)
+CHECK(AS_ZODIAC_FROM_CHARS==0);
+#endif
+}
+
+TEST_CASE("decimal literals compile to the nearest double")
+{
+ScriptFixture fixture;
+check_nearest_doubles(fixture);
+}
+
+TEST_CASE("float literals compile to the nearest float")
+{
+ScriptFixture fixture;
+check_nearest_floats(fixture);
+}
+
+TEST_CASE("integer, based, separated and exponent literals keep working")
+{
+ScriptFixture fixture;
+check_other_literals(fixture);
+}
+
+TEST_CASE("100 000 random doubles and floats round-trip through their shortest literal")
+{
+ScriptFixture fixture;
+check_round_trips(fixture,100000);
+}
+
+#if defined(AS_ZODIAC_TEST_HOOKS) && !AS_ZODIAC_FROM_CHARS
+namespace {
+// Switches the process to a locale whose decimal point is a comma and makes the scanner's "C" locale handle null, then
+// back to the "C" locale and the handle. The test needs such a locale (CI installs de_DE.UTF-8 on Linux).
+struct CommaLocaleWithoutHandle{
+bool switched=false;
+CommaLocaleWithoutHandle()
+{
+for(const char* name:{"de-DE","de_DE.UTF-8","de_DE.utf8","de_DE","fr-FR","fr_FR.UTF-8","fr_FR.utf8"}){
+if(std::setlocale(LC_ALL,name)&&std::strcmp(std::localeconv()->decimal_point,",")==0){
+switched=true;
+break;
+}
+}
+asZodiacTestNoCLocale=true;
+}
+~CommaLocaleWithoutHandle()
+{
+asZodiacTestNoCLocale=false;
+std::setlocale(LC_ALL,"C");
+}
+CommaLocaleWithoutHandle(const CommaLocaleWithoutHandle&)=delete;
+CommaLocaleWithoutHandle& operator=(const CommaLocaleWithoutHandle&)=delete;
+};
+}
+
+TEST_CASE("without the \"C\" locale handle, the fallback reads literals in a comma locale")
+{
+const CommaLocaleWithoutHandle locale;
+REQUIRE_MESSAGE(locale.switched,"no locale with a decimal comma is installed");
+// strtod itself now reads "1,5" and stops at '.'.
+CHECK(std::strtod("1,5",nullptr)==1.5);
+CHECK(std::strtod("1.5",nullptr)==1.0);
+ScriptFixture fixture;
+check_nearest_doubles(fixture);
+check_nearest_floats(fixture);
+check_other_literals(fixture);
+check_round_trips(fixture,10000);
+}
+#endif

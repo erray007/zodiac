@@ -37,6 +37,21 @@ jobs:
         run: python bootstrap.py
       - name: Build and test
         run: .tools/cmake/bin/cmake --workflow --preset windows
+      # AngelScript's number literal scanner (cmake/patches/angelscript-exact-literals.patch): which way this build reads literals, then its strtod_l
+      # fallback and the branch for a null "C" locale handle, which a toolchain with a correctly rounded floating-point from_chars never compiles:
+      # test_script_literals alone, built with ZODIAC_AS_STRTOD_FALLBACK in a tree of its own that reuses the sources the step above fetched and patched.
+      - name: Test the literal scanner fallback
+        shell: pwsh
+        run: |
+          & build/windows-debug/tests/test_script_literals.exe "--test-case=the literal scanner reports how it reads literals"
+          if ($LASTEXITCODE -ne 0) { throw "test_script_literals failed with exit code $LASTEXITCODE" }
+          $deps = "$PWD/.deps/windows-debug"
+          .tools/cmake/bin/cmake --preset windows-debug -B build/literal-fallback -DZODIAC_AS_STRTOD_FALLBACK=ON "-DFETCHCONTENT_BASE_DIR=$PWD/build/literal-fallback/_deps" "-DFETCHCONTENT_SOURCE_DIR_ANGELSCRIPT_SDK=$deps/angelscript_sdk-src" "-DFETCHCONTENT_SOURCE_DIR_DOCTEST=$deps/doctest-src" "-DFETCHCONTENT_SOURCE_DIR_TOMLPLUSPLUS=$deps/tomlplusplus-src"
+          if ($LASTEXITCODE -ne 0) { throw "configure failed with exit code $LASTEXITCODE" }
+          .tools/cmake/bin/cmake --build build/literal-fallback --target test_script_literals
+          if ($LASTEXITCODE -ne 0) { throw "build failed with exit code $LASTEXITCODE" }
+          & build/literal-fallback/tests/test_script_literals.exe
+          if ($LASTEXITCODE -ne 0) { throw "test_script_literals failed with exit code $LASTEXITCODE" }
       # The speed gate of spec 8.4 on an optimized build: Zodiac's types against the sample add-ons, every operation of
       # bench_types --list. A failing run is measured once more (shared runners are noisy) before the job fails. Each run's
       # table and its --detail lines (each operation's ratio per engine and context) are in the log and, on failure, in the
@@ -125,6 +140,15 @@ jobs:
         env:
           ZODIAC_LONG_TESTS: "1"
         run: .tools/cmake/bin/cmake --workflow --preset linux
+      # As in the windows job. The null-handle test needs a locale whose decimal point is a comma.
+      - name: Test the literal scanner fallback
+        run: |
+          build/linux-debug/tests/test_script_literals "--test-case=the literal scanner reports how it reads literals"
+          sudo locale-gen de_DE.UTF-8
+          deps="$PWD/.deps/linux-debug"
+          .tools/cmake/bin/cmake --preset linux-debug -B build/literal-fallback -DZODIAC_AS_STRTOD_FALLBACK=ON "-DFETCHCONTENT_BASE_DIR=$PWD/build/literal-fallback/_deps" "-DFETCHCONTENT_SOURCE_DIR_ANGELSCRIPT_SDK=$deps/angelscript_sdk-src" "-DFETCHCONTENT_SOURCE_DIR_DOCTEST=$deps/doctest-src" "-DFETCHCONTENT_SOURCE_DIR_TOMLPLUSPLUS=$deps/tomlplusplus-src"
+          .tools/cmake/bin/cmake --build build/literal-fallback --target test_script_literals
+          build/literal-fallback/tests/test_script_literals
       # The benchmark of spec 8.4 on an optimized build, as in the windows job, with only its speed gate report-only: GitHub's
       # Linux runners vary from job to job, and one noisy runner failed operations no commit had touched, so the windows job
       # is the speed gate. Everything else still fails the job: bench_types exiting nonzero (a snippet that does not build or
@@ -201,6 +225,10 @@ jobs:
         run: python bootstrap.py
       - name: Build and test the release preset
         run: .tools/cmake/bin/cmake --workflow --preset windows-release
+      - name: Show how the release build reads number literals
+        run: |
+          & build/windows-release/tests/test_script_literals.exe "--test-case=the literal scanner reports how it reads literals"
+          if ($LASTEXITCODE -ne 0) { throw "test_script_literals failed with exit code $LASTEXITCODE" }
       # Secrets cannot be used in "if:", so this step turns "the certificate secret is set" into an environment flag.
       - name: Check for a signing certificate
         env:

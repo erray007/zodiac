@@ -16,7 +16,8 @@ message(FATAL_ERROR "ZodiacApplyPatch.cmake needs -D${variable}=...")
 endif()
 endforeach()
 
-# zodiac_write_lf(<file>): rewrites <file> with LF line endings and no trailing blanks.
+# zodiac_write_lf(<file>): rewrites <file> with LF line endings and no trailing blanks. file(CONFIGURE) writes only when the content changes,
+# so a file already in that form keeps its timestamp (the restore from <file>.zodiac-orig before it has already touched every changed file).
 set(ZODIAC_AT "@")
 function(zodiac_write_lf file)
 file(READ "${file}" content)
