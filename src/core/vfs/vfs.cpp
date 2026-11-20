@@ -3,6 +3,7 @@
 #include <core/vfs/folder_source.hpp>
 #include <core/vfs/host_source.hpp>
 #include <algorithm>
+#include <exception>
 
 namespace zodiac::vfs {
 namespace {
@@ -37,15 +38,16 @@ std::unexpected<Failure> failed(FileError code)
 {
 return std::unexpected(Failure{code,{}});
 }
-// Runs one file operation; anything it throws (an allocation failure, a path the library cannot convert) becomes io, so no C++
-// exception reaches a script binding or a plugin call. The Failure built here allocates nothing.
+// Runs one file operation; anything it throws (an allocation failure, a logic error) becomes io, so no C++ exception reaches a script
+// binding or a plugin call, and dev mode logs what it was. The Failure built here allocates nothing.
 template<class Body>
-auto guarded(Body&& body) noexcept->decltype(body())
+auto guarded(const Vfs& vfs,std::string_view operation,std::string_view path,Body&& body) noexcept->decltype(body())
 {
 try{
 return body();
 }
 catch(...){
+vfs.report_internal_error(operation,path);
 return failed(FileError::io);
 }
 }
@@ -200,6 +202,8 @@ return false;
 std::size_t Vfs::unmount(const void* owner)
 {
 if(!owner)return 0;
+// Everything that can throw (the lock, the copy) comes before the swap, so a failure leaves the table as it was.
+try{
 const std::lock_guard writer(writer_mutex_);
 const std::shared_ptr<const Table> current=snapshot();
 const std::size_t removed=static_cast<std::size_t>(std::ranges::count_if(current->mounts,[owner](const Mount& mount){return mount.owner==owner;}));
@@ -213,6 +217,47 @@ const std::unique_lock lock(table_mutex_);
 table_.swap(replaced);
 }
 return removed;
+}
+catch(...){
+return 0;
+}
+}
+
+std::expected<VfsPath,std::string> Vfs::parse(std::string_view path) const noexcept
+{
+try{
+return parse_path(path,host_paths());
+}
+catch(...){
+try{
+return std::unexpected(quote_path(path)+" is not a valid file name");
+}
+catch(...){
+return std::unexpected(std::string());
+}
+}
+}
+
+void Vfs::report_internal_error(std::string_view operation,std::string_view path) const noexcept
+{
+if(!dev_mode()||!log_)return;
+// A log handler that throws in turn is swallowed: nothing may leave here.
+try{
+std::string what="unknown exception";
+try{
+throw;
+}
+catch(const std::exception& exception){
+what=exception.what();
+}
+catch(...){
+}
+std::string line="error: internal error in ";
+line.append(operation).append(" of ").append(quote_path(path)).append(": ").append(what);
+log_(ZODIAC_LOG_ERROR,line);
+}
+catch(...){
+}
 }
 
 bool Vfs::mount_folder(std::string_view at,const std::filesystem::path& host,bool writable,const void* owner)
@@ -273,9 +318,10 @@ if(seen==0&&(slot.compare_exchange_strong(seen,hash,std::memory_order_relaxed)||
 checked_[hash&(checked_slots-1)].store(hash,std::memory_order_relaxed);
 }
 
-void Vfs::check_spelling(std::string_view path,const VfsPath& p,const Target& target)
+void Vfs::check_spelling(std::string_view path,const VfsPath& p,const Target& target) noexcept
 {
 if(!dev_mode()||target.sub.empty())return;
+try{
 const std::uint64_t hash=path_hash(p.mount,p.relative);
 if(checked(hash))return;
 std::string real;
@@ -297,10 +343,17 @@ std::string line="warning: ";
 line.append(quote_path(path)).append(" was found as ").append(quote_path(shown)).append("; use the real name, other systems may not find it");
 warn(line);
 }
+catch(...){
+// Advisory only: the lookup it follows has already succeeded and stays a success.
+report_internal_error("the spelling check",path);
+}
+}
 
-void Vfs::check_release_pack(std::string_view path,const VfsPath& p)
+void Vfs::check_release_pack(std::string_view path,const VfsPath& p) noexcept
 {
-if(!dev_mode()||!release_pack_check_||!p.mount.empty()||!release_pack_check_(p.relative))return;
+if(!dev_mode()||!release_pack_check_||!p.mount.empty())return;
+try{
+if(!release_pack_check_(p.relative))return;
 {
 const std::lock_guard lock(warned_mutex_);
 if(pack_warned_.contains(p.relative))return;
@@ -310,10 +363,15 @@ std::string line="warning: ";
 line.append(quote_path(path)).append(" is written in a folder here, but the release puts it in a read-only pack, where writing fails; save files in data:/ instead");
 warn(line);
 }
+catch(...){
+// Advisory only: the file is already open for writing, and that result stands.
+report_internal_error("the release pack check",path);
+}
+}
 
 std::expected<EntryInfo,Failure> Vfs::stat(std::string_view path)
 {
-return guarded([&]()->std::expected<EntryInfo,Failure>{
+return guarded(*this,"stat",path,[&]()->std::expected<EntryInfo,Failure>{
 const auto p=parse_failure(path);
 if(!p)return std::unexpected(p.error());
 if(p->mount=="host:"){
@@ -356,7 +414,7 @@ return result;
 
 std::expected<std::shared_ptr<Reader>,Failure> Vfs::open_read(std::string_view path)
 {
-return guarded([&]()->std::expected<std::shared_ptr<Reader>,Failure>{
+return guarded(*this,"open_read",path,[&]()->std::expected<std::shared_ptr<Reader>,Failure>{
 const auto p=parse_failure(path);
 if(!p)return std::unexpected(p.error());
 if(p->folder)return failed(FileError::is_directory);
@@ -390,7 +448,7 @@ return result;
 
 std::expected<std::unique_ptr<WriteTarget>,Failure> Vfs::open_write(std::string_view path,WriteMode mode)
 {
-return guarded([&]()->std::expected<std::unique_ptr<WriteTarget>,Failure>{
+return guarded(*this,"open_write",path,[&]()->std::expected<std::unique_ptr<WriteTarget>,Failure>{
 const auto p=parse_failure(path);
 if(!p)return std::unexpected(p.error());
 if(p->folder)return failed(FileError::is_directory);
@@ -429,7 +487,7 @@ return result;
 
 std::expected<void,Failure> Vfs::remove(std::string_view path)
 {
-return guarded([&]()->std::expected<void,Failure>{
+return guarded(*this,"remove",path,[&]()->std::expected<void,Failure>{
 const auto p=parse_failure(path);
 if(!p)return std::unexpected(p.error());
 if(p->folder)return failed(FileError::is_directory);
@@ -469,7 +527,7 @@ return result;
 
 std::expected<std::vector<std::string>,Failure> Vfs::list(std::string_view path,ListKind kind,std::string_view pattern)
 {
-return guarded([&]()->std::expected<std::vector<std::string>,Failure>{
+return guarded(*this,"list",path,[&]()->std::expected<std::vector<std::string>,Failure>{
 const auto p=parse_failure(path);
 if(!p)return std::unexpected(p.error());
 std::vector<EntryInfo> entries;
@@ -538,7 +596,7 @@ return result;
 
 std::expected<void,Failure> Vfs::create_directory(std::string_view path,bool recursive)
 {
-return guarded([&]()->std::expected<void,Failure>{
+return guarded(*this,"create_directory",path,[&]()->std::expected<void,Failure>{
 const auto p=parse_failure(path);
 if(!p)return std::unexpected(p.error());
 if(p->mount=="host:"){
@@ -575,7 +633,7 @@ return result;
 
 std::expected<void,Failure> Vfs::delete_directory(std::string_view path,bool recursive)
 {
-return guarded([&]()->std::expected<void,Failure>{
+return guarded(*this,"delete_directory",path,[&]()->std::expected<void,Failure>{
 const auto p=parse_failure(path);
 if(!p)return std::unexpected(p.error());
 if(p->mount=="host:"){

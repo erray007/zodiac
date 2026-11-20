@@ -35,8 +35,8 @@
   - The e2e suites run through ctest (`cli_e2e`, `build_e2e`, `kit_e2e`).
 - Owner rule: after each task's review is clean, stop and ask the owner before starting the next one.
 - Exact texts (each `<path>` is the script's path as given, through `one_line`):
-  - `"<path>" leaves its mount`; `"<path>" is a host path; set [files] host_paths = true to use it`; `"<path>" is not a valid file name`; `"<path>" matches both "<a>" and "<b>"; rename one of them`.
-  - `cannot read "<path>": <reason>`, reasons `file not found`, `access denied`, `damaged data`, `is a directory`.
+  - `"<path>" leaves its mount`; `"<path>" is a host path; set [files] host_paths = true to use it`; `"<path>" is not a valid file name`; `"<path>" matches both "<a>" and "<b>"; rename one of them`; `"<path>" matches more than one name; rename one of them` (an ambiguity whose source cannot name the matches).
+  - `cannot read "<path>": <reason>`, reasons `file not found`, `access denied`, `damaged data`, `is a directory`, `directory not empty`.
   - `"<path>" is in a read-only pack; save files in data:/ instead`.
   - `wrong key or damaged pack`; `integer overflow`; `file is not open`; `file is not open for writing`; `random_choice on an empty array`; `clamp: low is greater than high`; `invalid date`.
 

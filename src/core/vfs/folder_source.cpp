@@ -182,16 +182,22 @@ bool fall_through(FileError error) noexcept
 {
 return error==FileError::not_found||error==FileError::not_a_directory;
 }
-// Whether the exact-name try may be trusted for relative. On Windows a '~' may be an 8.3 short name and a non-ASCII letter may fold
-// differently in NTFS's own upcase table, so such paths are walked through the cache, which holds the long names only and folds as
-// Linux does. Elsewhere an exact hit is the name itself.
-bool exact_try_allowed([[maybe_unused]] std::string_view relative) noexcept
+// How much of relative an exact-name try may be trusted for: relative.size() for all of it, else the offset where the first segment
+// that may not be tried exactly begins (0 for the first). On Windows a '~' may be an 8.3 short name and a non-ASCII letter may fold
+// differently in NTFS's own upcase table, so from the first such segment on the path is walked through the cache, which holds the
+// long names only and folds as Linux does; the plain ASCII folders before it fold alike on both and are tried exactly. Elsewhere an
+// exact hit is the name itself, so all of it is trusted.
+std::size_t trusted_prefix(std::string_view relative) noexcept
 {
 #ifdef _WIN32
-return std::ranges::none_of(relative,[](char c){return c=='~'||static_cast<unsigned char>(c)>=0x80;});
-#else
-return true;
+std::size_t segment=0;
+for(std::size_t i=0;i<relative.size();++i){
+const char c=relative[i];
+if(c=='/')segment=i+1;
+else if(c=='~'||static_cast<unsigned char>(c)>=0x80)return segment;
+}
 #endif
+return relative.size();
 }
 // Whether the entry (a cached folder, or a name in one) spelled cached is the one spelled real, their folds already being equal.
 // Where the file system ignores case, an exact hit spells an entry as asked, so the fold decides; elsewhere two entries may differ
@@ -209,17 +215,19 @@ bool before_by_fold(const std::string& fold,const std::string& real,std::string_
 return fold!=other_fold?std::string_view(fold)<other_fold:std::string_view(real)<other_real;
 }
 // The last ambiguity this thread met in a FolderSource lookup, so the message names exactly what that lookup saw.
+// Keyed by the source's id (0 is never one), not its address, which a later source could reuse.
 struct LastAmbiguity{
-const void* source=nullptr;
+std::uint64_t source=0;
 std::string relative;
 std::string first;
 std::string second;
 };
 thread_local LastAmbiguity last_ambiguity;
+std::atomic<std::uint64_t> next_source_id{1};
 }
 
 FolderSource::FolderSource(fs::path root,bool read_only,bool create_root)
-:root_(std::move(root)),read_only_(read_only),create_root_(create_root)
+:root_(std::move(root)),read_only_(read_only),create_root_(create_root),id_(next_source_id.fetch_add(1,std::memory_order_relaxed))
 {
 }
 
@@ -384,7 +392,9 @@ result.node.kind=platform::NodeKind::directory;
 return result;
 }
 // The exact name first: one system call when the spelling is right (always, on a file system that ignores case).
-if(exact_try_allowed(relative)){
+const std::size_t trusted=trusted_prefix(relative);
+std::size_t start=0;
+if(trusted==relative.size()){
 const auto exact=platform::stat_path(host_path(relative));
 if(exact){
 result.real.assign(relative);
@@ -393,8 +403,19 @@ return result;
 }
 if(const FileError error=detail::file_error(exact.error());!fall_through(error))return std::unexpected(error);
 }
+else if(trusted>0){
+// Only the leading plain folders are tried exactly; the walk through the cache starts below them.
+const std::string_view folders=relative.substr(0,trusted-1);
+const auto exact=platform::stat_path(host_path(folders));
+if(exact){
+if(exact->kind!=platform::NodeKind::directory)return std::unexpected(FileError::not_a_directory);
+result.real.assign(folders);
+start=trusted;
+}
+else if(const FileError error=detail::file_error(exact.error());!fall_through(error))return std::unexpected(error);
+}
 result.real.reserve(relative.size());
-for(std::size_t at=0;;){
+for(std::size_t at=start;;){
 const std::size_t cut=relative.find('/',at);
 const bool last=cut==std::string_view::npos;
 const std::string_view segment=relative.substr(at,last?std::string_view::npos:cut-at);
@@ -406,7 +427,7 @@ if(found.ambiguous){
 // The fold's names are sorted by bytes inside their range, so the first two are the smallest.
 const std::string fold=fold_name(segment);
 const auto range=std::ranges::equal_range((*names)->names,std::string_view(fold),{},[](const Name& name){return std::string_view(name.fold);});
-last_ambiguity=LastAmbiguity{this,std::string(relative),prefix+range[0].real,prefix+range[1].real};
+last_ambiguity=LastAmbiguity{id_,std::string(relative),prefix+range[0].real,prefix+range[1].real};
 return std::unexpected(FileError::ambiguous);
 }
 if(!found.name){
@@ -460,7 +481,7 @@ std::expected<std::shared_ptr<Reader>,FileError> FolderSource::open_read(std::st
 {
 if(relative.empty())return std::unexpected(FileError::is_directory);
 // The exact name first, straight to an open: a right spelling costs one system call and the size query.
-if(exact_try_allowed(relative)){
+if(trusted_prefix(relative)==relative.size()){
 auto file=platform::File::open(host_path(relative),platform::FileAccess::read);
 if(file)return detail::make_file_reader(std::move(*file));
 if(const FileError error=detail::file_error(file.error());!fall_through(error))return std::unexpected(error);
@@ -593,8 +614,8 @@ return true;
 std::optional<std::pair<std::string,std::string>> FolderSource::ambiguous_names(std::string_view relative)
 {
 // What this thread's failed lookup itself saw, so the names cannot have changed in between.
-if(last_ambiguity.source==this&&last_ambiguity.relative==relative)return std::pair(last_ambiguity.first,last_ambiguity.second);
-if(!resolve(relative,false)&&last_ambiguity.source==this&&last_ambiguity.relative==relative)return std::pair(last_ambiguity.first,last_ambiguity.second);
+if(last_ambiguity.source==id_&&last_ambiguity.relative==relative)return std::pair(last_ambiguity.first,last_ambiguity.second);
+if(!resolve(relative,false)&&last_ambiguity.source==id_&&last_ambiguity.relative==relative)return std::pair(last_ambiguity.first,last_ambiguity.second);
 return std::nullopt;
 }
 }

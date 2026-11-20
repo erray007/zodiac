@@ -27,8 +27,11 @@
 // `warning: "<path>" is written in a folder here, but the release puts it in a read-only pack, where writing fails; save files in data:/ instead`.
 // Release mode (the default) never checks spelling.
 //
-// No C++ exception leaves a file operation: anything thrown inside one (an allocation failure) becomes FileError::io, and mount
-// returns false.
+// No C++ exception leaves any Vfs entry point. Anything thrown inside a file operation (an allocation failure, a logic error)
+// becomes FileError::io, and in dev mode the log gets one line: `error: internal error in <operation> of "<path>": <what>`
+// ("unknown exception" when it is no std::exception). mount and mount_folder return false, unmount returns 0 and changes nothing,
+// and parse returns an error. The advisory callbacks (the log, the release pack check) are run so that a throw from them is
+// reported the same way and never turns a finished operation into a failure.
 //
 // Threads: the file operations, mount and unmount may be called from any thread at any time. The mount table is copy-on-write
 // behind a shared_mutex: a lookup copies a shared_ptr<const Table> under the shared lock and resolves without holding it, so a
@@ -159,8 +162,10 @@ bool dev_mode() const noexcept{return dev_mode_.load(std::memory_order_relaxed);
 void set_log(LogHandler log){log_=std::move(log);}
 const LogHandler& log() const noexcept{return log_;}
 void set_release_pack_check(PackCheck check){release_pack_check_=std::move(check);}
-// Parses path under this Vfs's host path setting.
-std::expected<VfsPath,std::string> parse(std::string_view path) const{return parse_path(path,host_paths());}
+// Parses path under this Vfs's host path setting. Never throws: an internal failure is reported as `"<path>" is not a valid file name`.
+std::expected<VfsPath,std::string> parse(std::string_view path) const noexcept;
+// Called from inside a catch block: in dev mode, logs the exception being handled for operation on path. Never throws.
+void report_internal_error(std::string_view operation,std::string_view path) const noexcept;
 private:
 struct Mount{
 std::string mount;
@@ -189,8 +194,9 @@ static bool visit_covering(const Table& table,const VfsPath& p,Visit&& visit);
 static bool leads_to_mount(const Table& table,const VfsPath& p);
 std::expected<VfsPath,Failure> parse_failure(std::string_view path) const;
 Failure ambiguous_failure(std::string_view path,const Target& target) const;
-void check_spelling(std::string_view path,const VfsPath& p,const Target& target);
-void check_release_pack(std::string_view path,const VfsPath& p);
+// Both are advisory and never throw: whatever their work or the callbacks throw is reported by report_internal_error.
+void check_spelling(std::string_view path,const VfsPath& p,const Target& target) noexcept;
+void check_release_pack(std::string_view path,const VfsPath& p) noexcept;
 void warn(std::string_view line) const;
 mutable std::shared_mutex table_mutex_;
 std::shared_ptr<const Table> table_;

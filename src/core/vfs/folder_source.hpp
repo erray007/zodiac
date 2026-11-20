@@ -2,9 +2,9 @@
 //
 // Lookup: the exact name first (one stat or open of the whole path). On a miss the path is walked segment by segment through a
 // per-folder cache of fold_name -> real names: the exact name wins, one case-insensitive match is taken, several are ambiguous
-// (FileError::ambiguous; ambiguous_names tells which). On Windows a path with a '~' or a non-ASCII byte skips the exact try and is
-// always walked through the cache, so an 8.3 short name (LONGFI~1.OGG) or a letter NTFS's own upcase table folds differently from
-// Unicode's is not found there either, exactly as on Linux.
+// (FileError::ambiguous; ambiguous_names tells which). On Windows, from the first segment with a '~' or a non-ASCII byte on, a path
+// is walked through the cache instead of tried exactly (the plain ASCII folders before it still are), so an 8.3 short name
+// (LONGFI~1.OGG) or a letter NTFS's own upcase table folds differently from Unicode's is not found there either, exactly as on Linux.
 //
 // The cache: one entry per folder, keyed by the folder's fold and guarded by a mutex, with the names sorted by fold, then real.
 // - It is checked against the folder's modification time on every use and rescanned when the time differs.
@@ -121,6 +121,8 @@ std::expected<void,FileError> ensure_root();
 std::filesystem::path root_;
 bool read_only_;
 bool create_root_;
+// Unique for the process's lifetime (never reused like an address), so a thread's recorded ambiguity can only match its own source.
+std::uint64_t id_;
 std::mutex cache_mutex_;
 std::unordered_map<std::string,CacheEntry> cache_;
 std::atomic<std::uint64_t> scans_{0};

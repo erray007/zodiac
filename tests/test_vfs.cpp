@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -691,6 +692,110 @@ CHECK_FALSE(read_vfs(vfs,path,&error));
 CHECK(error==FileError::not_found);
 CHECK_FALSE(vfs.stat(path));
 }
+}
+
+TEST_CASE("plain folders before a non-ASCII or tilde segment may be spelled in another case")
+{
+const TempDir temp;
+temp.write("Sesler/a\xC4\x9F" "a\xC3\xA7.ogg","tree");
+temp.write("Sesler/Alt/longfilename.ogg","long");
+Vfs vfs;
+REQUIRE(vfs.mount_folder("/",temp.dir(),true));
+for(const char* path:{"Sesler/a\xC4\x9F" "a\xC3\xA7.ogg","sesler/a\xC4\x9F" "a\xC3\xA7.ogg","SESLER/A\xC4\x9E" "A\xC3\x87.OGG"}){
+CAPTURE(zodiac::one_line(path));
+CHECK(read_vfs(vfs,path)==std::optional<std::string>("tree"));
+const auto info=vfs.stat(path);
+REQUIRE(info);
+CHECK(info->size==4);
+}
+CHECK(read_vfs(vfs,"SESLER/alt/LongFileName.OGG")==std::optional<std::string>("long"));
+FileError error{};
+CHECK_FALSE(read_vfs(vfs,"nope/a\xC4\x9F" "a\xC3\xA7.ogg",&error));
+CHECK(error==FileError::not_found);
+// A file where the plain folder should be.
+temp.write("plain.txt","p");
+CHECK_FALSE(vfs.stat("PLAIN.TXT/a\xC4\x9F.ogg"));
+std::error_code ec;
+if(fs::exists(temp.at("Sesler/Alt/LONGFI~1.OGG"),ec)){
+for(const char* path:{"Sesler/Alt/LONGFI~1.OGG","sesler/ALT/longfi~1.ogg"}){
+CAPTURE(path);
+error={};
+CHECK_FALSE(read_vfs(vfs,path,&error));
+CHECK(error==FileError::not_found);
+}
+}
+else MESSAGE("the volume makes no 8.3 names; the short-name checks were skipped");
+// Writes take the same route: a new non-ASCII name below an other-case plain folder lands in the real folder.
+REQUIRE(write_vfs(vfs,"SESLER/yeni\xC5\x9F.ogg","new"));
+CHECK(read_disk(temp.at("Sesler/yeni\xC5\x9F.ogg"))=="new");
+}
+
+namespace {
+// Throws std::logic_error from every lookup, as a broken source would.
+class ThrowingSource final:public zodiac::vfs::Source{
+public:
+std::expected<zodiac::vfs::EntryInfo,FileError> stat(std::string_view) override{throw std::logic_error("source broke");}
+std::expected<std::shared_ptr<zodiac::vfs::Reader>,FileError> open_read(std::string_view) override{throw 42;}
+std::expected<std::unique_ptr<zodiac::vfs::WriteTarget>,FileError> open_write(std::string_view,WriteMode) override{throw std::logic_error("source broke");}
+std::expected<void,FileError> list(std::string_view,std::vector<zodiac::vfs::EntryInfo>&) override{throw std::logic_error("source broke");}
+std::expected<void,FileError> remove(std::string_view) override{throw std::logic_error("source broke");}
+std::expected<void,FileError> make_directory(std::string_view) override{throw std::logic_error("source broke");}
+std::expected<void,FileError> remove_directory(std::string_view,bool) override{throw std::logic_error("source broke");}
+bool read_only() const noexcept override{return false;}
+};
+}
+
+TEST_CASE("an exception inside a file operation becomes io and is logged in dev mode")
+{
+Vfs vfs;
+LogLines log;
+log.attach(vfs);
+REQUIRE(vfs.mount("/",std::make_shared<ThrowingSource>(),true,nullptr));
+const auto quiet=vfs.stat("x.txt");
+REQUIRE_FALSE(quiet);
+CHECK(quiet.error().code==FileError::io);
+CHECK(log.lines.empty());
+vfs.set_dev_mode(true);
+const auto stat=vfs.stat("x.txt");
+REQUIRE_FALSE(stat);
+CHECK(stat.error().code==FileError::io);
+CHECK_FALSE(vfs.open_read("y.txt"));
+CHECK_FALSE(vfs.list("",ListKind::files));
+CHECK(log.lines==std::vector<std::string>{
+"error: internal error in stat of \"x.txt\": source broke",
+"error: internal error in open_read of \"y.txt\": unknown exception",
+"error: internal error in list of \"\": source broke"});
+// A log handler that throws as well: still nothing escapes.
+vfs.set_log([](zodiac_log_level,std::string_view){throw std::runtime_error("log broke");});
+const auto again=vfs.open_write("z.txt",WriteMode::truncate);
+REQUIRE_FALSE(again);
+CHECK(again.error().code==FileError::io);
+CHECK_FALSE(vfs.remove("z.txt"));
+CHECK_FALSE(vfs.create_directory("d",true));
+CHECK_FALSE(vfs.delete_directory("d",true));
+}
+
+TEST_CASE("a throwing callback after a successful write keeps the write")
+{
+const TempDir temp;
+Vfs vfs;
+LogLines log;
+log.attach(vfs);
+vfs.set_dev_mode(true);
+REQUIRE(vfs.mount_folder("/",temp.dir(),true));
+vfs.set_release_pack_check([](std::string_view)->bool{throw std::logic_error("check broke");});
+REQUIRE(write_vfs(vfs,"saved.txt","kept"));
+CHECK(read_disk(temp.at("saved.txt"))=="kept");
+CHECK(log.lines==std::vector<std::string>{"error: internal error in the release pack check of \"saved.txt\": check broke"});
+// The warning's own log handler throwing: the write still stands and nothing escapes.
+vfs.set_release_pack_check([](std::string_view){return true;});
+vfs.set_log([](zodiac_log_level,std::string_view){throw std::runtime_error("log broke");});
+REQUIRE(write_vfs(vfs,"again.txt","also kept"));
+CHECK(read_disk(temp.at("again.txt"))=="also kept");
+const auto parsed=vfs.parse("fine/name.txt");
+REQUIRE(parsed);
+CHECK(parsed->relative=="fine/name.txt");
+CHECK(vfs.unmount(&temp)==0);
 }
 
 namespace {
