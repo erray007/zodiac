@@ -112,6 +112,7 @@ zodiac_add_test(test_dictionary SOURCES test_dictionary.cpp script_fixture.hpp L
 zodiac_add_test(test_math SOURCES test_math.cpp script_fixture.hpp LIBRARIES zodiac_core)
 zodiac_add_test(test_random SOURCES test_random.cpp script_fixture.hpp LIBRARIES zodiac_core)
 zodiac_add_test(test_time SOURCES test_time.cpp script_fixture.hpp LIBRARIES zodiac_core)
+zodiac_add_test(test_files SOURCES test_files.cpp script_fixture.hpp LIBRARIES zodiac_core)
 zodiac_add_test(test_script_literals SOURCES test_script_literals.cpp script_fixture.hpp LIBRARIES zodiac_core angelscript_literal_scanner)
 zodiac_add_test(test_module_registry SOURCES test_module_registry.cpp script_fixture.hpp LIBRARIES zodiac_core)
 target_compile_definitions(test_module_registry PRIVATE

@@ -13,10 +13,12 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -188,6 +190,42 @@ std::string text;
 for(const std::string& line:lines)text.append(line).push_back('\n');
 return text;
 }
+// Sets an environment variable for the test's duration, restoring the old value.
+class ScopedEnv{
+public:
+ScopedEnv(const char* name,const fs::path& value):name_(name)
+{
+#ifdef _WIN32
+// The wide value: the narrow one is in the ANSI code page, which cannot hold every folder name.
+const std::wstring wide(name_.begin(),name_.end());
+if(const wchar_t* old=_wgetenv(wide.c_str()))old_=fs::path(old);
+_wputenv_s(wide.c_str(),value.c_str());
+#else
+if(const char* old=std::getenv(name))old_=fs::path(old);
+setenv(name,value.c_str(),1);
+#endif
+}
+~ScopedEnv()
+{
+#ifdef _WIN32
+const std::wstring wide(name_.begin(),name_.end());
+_wputenv_s(wide.c_str(),old_?old_->c_str():L"");
+#else
+if(old_)setenv(name_.c_str(),old_->c_str(),1);
+else unsetenv(name_.c_str());
+#endif
+}
+ScopedEnv(const ScopedEnv&)=delete;
+ScopedEnv& operator=(const ScopedEnv&)=delete;
+private:
+std::string name_;
+std::optional<fs::path> old_;
+};
+#ifdef _WIN32
+constexpr const char* data_variable="APPDATA";
+#else
+constexpr const char* data_variable="XDG_DATA_HOME";
+#endif
 }
 
 TEST_CASE("start runs the payload's main")
@@ -385,4 +423,27 @@ const TempDir folder;
 const Started started=start_in(folder.dir(),source_payload("","int main(){return 256;}\n"));
 CHECK(started.code==1);
 CHECK(started.lines==std::vector<std::string>{"warning: main() returned 256; exit codes must be 0-255, using 1"});
+}
+
+TEST_CASE("start mounts the executable folder and data:/")
+{
+const TempDir folder;
+const TempDir user_data;
+const ScopedEnv data_home(data_variable,user_data.dir());
+write_file(folder.dir()/"a.txt","from the game folder");
+zodiac::GamePayload payload;
+{
+const TempDir source;
+write_file(source.dir()/"zodiac.toml","[game]\nname = \"stub_game\"\nmain = \"main.zs\"\n");
+write_file(source.dir()/"main.zs","int main(){string text=read_file(\"a.txt\"); if(!write_file(\"data:/s.txt\", text+\"!\"))return 3; return file_exists(\"data:/S.TXT\")?0:4;}\n");
+payload=payload_of(source.dir());
+}
+REQUIRE(payload.game_name=="stub_game");
+// Nothing is made in the data folder before the first write.
+CHECK_FALSE(fs::exists(user_data.dir()/"stub_game"));
+const Started started=start_in(folder.dir(),payload);
+INFO(join(started.lines));
+CHECK(started.code==0);
+CHECK(started.lines.empty());
+CHECK(read_file(user_data.dir()/"stub_game"/"s.txt")=="from the game folder!");
 }

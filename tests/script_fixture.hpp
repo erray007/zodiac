@@ -8,7 +8,15 @@
 #include <core/types/dictionary.hpp>
 #include <core/types/string.hpp>
 #include <core/types/string_binding.hpp>
+#include <core/vfs/files.hpp>
+#include <core/vfs/folder_source.hpp>
+#include <core/vfs/vfs.hpp>
+#include <platform/entropy.hpp>
+#include <cstdint>
+#include <filesystem>
+#include <memory>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -39,23 +47,41 @@ zodiac::register_time(engine);
 zodiac::register_exception_helpers(engine);
 return engine;
 }
-// The engine is shut down before the Host is destroyed, because registered functions point into the Host.
+// A folder name under the system temp folder no other fixture (in this process or another) uses.
+inline std::filesystem::path unique_temp_folder()
+{
+std::uint64_t id=0;
+REQUIRE(zodiac::platform::fill_entropy(&id,sizeof(id)));
+return std::filesystem::temp_directory_path()/("zodiac_fixture_"+std::to_string(id));
+}
+// The engine is shut down before the Host and the Vfs are destroyed, because registered functions point into them.
+// The Vfs mounts <folder>/root read-write at "/" and <folder>/data at "data:/"; each folder is made by the first write into it,
+// so a test that writes nothing leaves nothing behind, and the destructor removes the folder.
 struct ScriptFixture{
 std::string messages;
 asIScriptEngine* engine;
 zodiac::Host host;
+zodiac::vfs::Vfs vfs;
+std::filesystem::path folder;
 std::vector<LogEntry> logs;
 asIScriptContext* context=nullptr;
-ScriptFixture():engine(create_engine(messages)),host(engine)
+ScriptFixture():engine(create_engine(messages)),host(engine),folder(unique_temp_folder())
 {
 host.set_current_module("test");
 host.set_log_handler([this](zodiac_log_level level,std::string_view message){logs.push_back({level,std::string(message)});});
+REQUIRE(vfs.mount("/",std::make_shared<zodiac::vfs::FolderSource>(root(),false,true),true,nullptr));
+REQUIRE(vfs.mount("data:/",std::make_shared<zodiac::vfs::FolderSource>(data(),false,true),true,nullptr));
+zodiac::register_files(engine,vfs);
 }
 ~ScriptFixture()
 {
 if(context)context->Release();
 engine->ShutDownAndRelease();
+std::error_code error;
+std::filesystem::remove_all(folder,error);
 }
+std::filesystem::path root() const{return folder/"root";}
+std::filesystem::path data() const{return folder/"data";}
 ScriptFixture(const ScriptFixture&)=delete;
 ScriptFixture& operator=(const ScriptFixture&)=delete;
 zodiac_host* abi(){return host.abi();}

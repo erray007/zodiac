@@ -1,0 +1,52 @@
+// The script's files (core-types spec 8.7): the file object and the file helpers, over a vfs::Vfs.
+//
+// register_files(engine, vfs) needs array<string> and date_time, so it comes after register_string and register_time. The engine
+// keeps a small library object (freed with the engine) that the global functions bind to with asCALL_THISCALL_ASGLOBAL; vfs must
+// outlive the engine. Every path is a VFS path (core/vfs/path.hpp), and each <path> in a text is the path as given, through one_line.
+//
+// file, a reference type: file f; (or file@ f = file();)
+// - bool open(const string &in path, const string &in mode): modes "r" (read), "w" (create or empty), "a" (create or keep; every
+//   write goes to the end), "r+" (an existing file, read and written), each with "b" for binary ("rb", "wb", "ab", "r+b" or "rb+").
+//   The write modes read as well (as C's "w+" and "a+"). An open file is closed first. A failed open returns false and sets error to
+//   the Vfs text (vfs::read_failure_text); a mode not in that list throws `"<mode>" is not a file mode`.
+// - string read() (the rest), string read(int64 count) (count bytes, fewer at the end; "" for a count of 0 or less), string read_line()
+//   (up to the next "\n" or "\r\n", without it; "" at the end). Text mode skips a UTF-8 BOM at position 0 (a read there starts after
+//   it) and reads "\r\n" as "\n"; a read(count) whose last byte is the "\r" of a "\r\n" takes the "\n" too, so no line end is ever
+//   split. A lone "\r" stays. Binary mode returns the bytes as they are. Writing never converts, so the bytes are the same everywhere.
+// - bool write(const string &in data): at position (at the end in "a"), growing the file; false and error set when it fails.
+// - int64 size, int64 position (bytes from the start of the file), bool eof (position >= size), all 0, 0 and true when closed;
+//   bool seek(int64 position): false (nothing changed) outside 0 to size.
+// - void close() (a write target's commit failure sets error), bool is_open, string error: the last failure's text, cleared by
+//   every successful open, write and seek.
+// - Reading, writing or seeking a closed file throws `file is not open`; writing a file opened "r" throws
+//   `file is not open for writing`; a failed read (data that fails authentication included) throws `cannot read "<path>": <reason>`.
+// - Reads go through one 64 KiB buffer per object, filled at 64 KiB-aligned offsets (allocated by the first small read, kept across
+//   opens): a read of 64 KiB or more past what the buffer holds goes straight into the result string, and read, read(count) and
+//   read_line build their result in place (String::filled), so no read copies its bytes twice. Writes keep the buffer in step.
+//   Not internally synchronized: one thread at a time per object.
+//
+// Helpers (the failure rule of 8.7: normal failures return false or -1, reads of what must exist throw):
+// - bool file_exists(path), bool directory_exists(path): queries; they never touch last_file_error.
+// - string read_file(path): the bytes as they are; throws `cannot read "<path>": <reason>` (or the path rule's own text).
+// - bool write_file(path, data), bool append_file(path, data), bool delete_file(path), bool copy_file(from, to),
+//   bool move_file(from, to): every one overwrites. copy_file writes over the target in place and then cuts it to length, so copying a
+//   file onto itself (under any spelling) keeps it. move_file renames when one source holds both paths (Vfs::rename) and copies, then
+//   deletes, otherwise (between sources, or between volumes).
+// - int64 file_size(path): -1 when it is not a file; date_time file_modified(path): the local civil time (date_time::now()'s clock:
+//   platform::utc_to_local_civil_ms of the entry's UTC milliseconds) of a file or folder; throws like read_file.
+// - bool create_directory(path, bool recursive = true), bool delete_directory(path, bool recursive = false).
+// - array<string>@ list_files(path, const string &in pattern = "*"), array<string>@ list_directories(path): the names (Vfs::list:
+//   '*' and '?' matched case-insensitively by fold_name, sorted by fold, then bytes); empty, with last_file_error set, on failure.
+// - string last_file_error(): the calling thread's last helper failure (thread_local). The helpers that return bool, and the lists,
+//   set it on failure and clear it on success.
+// Each throws std::runtime_error naming the declaration when the engine refuses one.
+#pragma once
+
+class asIScriptEngine;
+
+namespace zodiac {
+namespace vfs {
+class Vfs;
+}
+void register_files(asIScriptEngine* engine,vfs::Vfs& vfs);
+}
