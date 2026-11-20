@@ -4,16 +4,23 @@
 // keeps a small library object (freed with the engine) that the global functions bind to with asCALL_THISCALL_ASGLOBAL; vfs must
 // outlive the engine. Every path is a VFS path (core/vfs/path.hpp), and each <path> in a text is the path as given, through one_line.
 //
+// Failure texts (vfs::failure_text): a path rule's, an ambiguity's or a read-only pack's own text, else `cannot <verb> "<path>":
+// <reason>`, the verb by what failed: read (reading, "r", "r+" on a missing file, the from side of copy_file and move_file), write
+// ("w" and "a", "r+" otherwise, write, the commit in close, write_file, append_file, the to side of copy_file and move_file), delete
+// (delete_file, delete_directory) or create (create_directory).
+//
 // file, a reference type: file f; (or file@ f = file();)
 // - bool open(const string &in path, const string &in mode): modes "r" (read), "w" (create or empty), "a" (create or keep; every
 //   write goes to the end), "r+" (an existing file, read and written), each with "b" for binary ("rb", "wb", "ab", "r+b" or "rb+").
-//   The write modes read as well (as C's "w+" and "a+"). An open file is closed first. A failed open returns false and sets error to
-//   the Vfs text (vfs::read_failure_text); a mode not in that list throws `"<mode>" is not a file mode`.
+//   The write modes read as well (as C's "w+" and "a+"). A mode not in that list throws `"<mode>" is not a file mode` and leaves an
+//   open file as it was; otherwise an open file is closed first. A failed open returns false and sets error.
 // - string read() (the rest), string read(int64 count) (count bytes, fewer at the end; "" for a count of 0 or less), string read_line()
-//   (up to the next "\n" or "\r\n", without it; "" at the end). Text mode skips a UTF-8 BOM at position 0 (a read there starts after
-//   it) and reads "\r\n" as "\n"; a read(count) whose last byte is the "\r" of a "\r\n" takes the "\n" too, so no line end is ever
-//   split. A lone "\r" stays. Binary mode returns the bytes as they are. Writing never converts, so the bytes are the same everywhere.
-// - bool write(const string &in data): at position (at the end in "a"), growing the file; false and error set when it fails.
+//   (up to the next "\n" or "\r\n", without it; "" at the end). Text mode reads "\r\n" as "\n" and skips a UTF-8 BOM at position 0:
+//   a read there that takes bytes steps over it first (read(0) moves nothing), so position counts the BOM once anything is read. A
+//   read(count) whose last byte is the "\r" of a "\r\n" takes the "\n" too, so no line end is ever split. A lone "\r" stays. Binary
+//   mode returns the bytes as they are. Writing never converts, so the bytes are the same everywhere.
+// - bool write(const string &in data): at position (at the end in "a"), growing the file; false and error set when it fails (the
+//   reason from the write target: "disk full", "access denied", ...).
 // - int64 size, int64 position (bytes from the start of the file), bool eof (position >= size), all 0, 0 and true when closed;
 //   bool seek(int64 position): false (nothing changed) outside 0 to size.
 // - void close() (a write target's commit failure sets error), bool is_open, string error: the last failure's text, cleared by
@@ -21,17 +28,18 @@
 // - Reading, writing or seeking a closed file throws `file is not open`; writing a file opened "r" throws
 //   `file is not open for writing`; a failed read (data that fails authentication included) throws `cannot read "<path>": <reason>`.
 // - Reads go through one 64 KiB buffer per object, filled at 64 KiB-aligned offsets (allocated by the first small read, kept across
-//   opens): a read of 64 KiB or more past what the buffer holds goes straight into the result string, and read, read(count) and
-//   read_line build their result in place (String::filled), so no read copies its bytes twice. Writes keep the buffer in step.
-//   Not internally synchronized: one thread at a time per object.
+//   opens): a read of 64 KiB or more past what the buffer holds goes straight into the result string. read and read(count) build
+//   their result in place (String::filled), so they copy no byte twice; read_line copies each line once out of the buffer (pieces
+//   of a line longer than the buffer are appended). Writes keep the buffer in step. Not internally synchronized: one thread at a
+//   time per object.
 //
 // Helpers (the failure rule of 8.7: normal failures return false or -1, reads of what must exist throw):
 // - bool file_exists(path), bool directory_exists(path): queries; they never touch last_file_error.
 // - string read_file(path): the bytes as they are; throws `cannot read "<path>": <reason>` (or the path rule's own text).
 // - bool write_file(path, data), bool append_file(path, data), bool delete_file(path), bool copy_file(from, to),
-//   bool move_file(from, to): every one overwrites. copy_file writes over the target in place and then cuts it to length, so copying a
-//   file onto itself (under any spelling) keeps it. move_file renames when one source holds both paths (Vfs::rename) and copies, then
-//   deletes, otherwise (between sources, or between volumes).
+//   bool move_file(from, to): every one overwrites. copy_file is Vfs::copy (the system's copy between host files, else through the
+//   sources) and move_file Vfs::move (a rename where one source or the system can, else a copy, then a delete). One file on both
+//   sides (one entry under two spellings, or one host file under two mounts or a host path) is a success that changes nothing.
 // - int64 file_size(path): -1 when it is not a file; date_time file_modified(path): the local civil time (date_time::now()'s clock:
 //   platform::utc_to_local_civil_ms of the entry's UTC milliseconds) of a file or folder; throws like read_file.
 // - bool create_directory(path, bool recursive = true), bool delete_directory(path, bool recursive = false).

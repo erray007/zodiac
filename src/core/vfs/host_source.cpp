@@ -75,19 +75,31 @@ if(const std::error_code error=detail::make_directories(path_from_utf8(relative)
 return {};
 }
 
-std::expected<bool,FileError> HostSource::rename(std::string_view from,std::string_view to)
+std::expected<bool,MoveError> HostSource::rename(std::string_view from,std::string_view to)
 {
 const fs::path source=path_from_utf8(from);
 const auto node=platform::stat_path(source);
-if(!node)return std::unexpected(detail::file_error(node.error()));
-if(node->kind==platform::NodeKind::directory)return std::unexpected(FileError::is_directory);
-if(node->kind!=platform::NodeKind::file)return std::unexpected(FileError::not_found);
+if(!node)return std::unexpected(MoveError{detail::file_error(node.error()),false});
+if(node->kind==platform::NodeKind::directory)return std::unexpected(MoveError{FileError::is_directory,false});
+if(node->kind!=platform::NodeKind::file)return std::unexpected(MoveError{FileError::not_found,false});
 const fs::path target=path_from_utf8(to);
-if(const auto existing=platform::stat_path(target);existing&&existing->kind==platform::NodeKind::directory)return std::unexpected(FileError::is_directory);
+if(const auto existing=platform::stat_path(target);existing&&existing->kind==platform::NodeKind::directory)return std::unexpected(MoveError{FileError::is_directory,true});
 std::error_code error;
 if(platform::replace_file(source,target,error))return true;
 if(platform::error_kind(error)==platform::ErrorKind::cross_device)return false;
-return std::unexpected(detail::file_error(error));
+return std::unexpected(MoveError{detail::file_error(error),platform::stat_path(source).has_value()});
+}
+
+std::expected<std::optional<fs::path>,FileError> HostSource::host_file(std::string_view relative,bool for_write)
+{
+fs::path path=path_from_utf8(relative);
+const auto node=platform::stat_path(path);
+if(node){
+if(node->kind==platform::NodeKind::directory)return std::unexpected(FileError::is_directory);
+if(node->kind!=platform::NodeKind::file)return std::unexpected(for_write?FileError::access_denied:FileError::not_found);
+}
+else if(!for_write||platform::error_kind(node.error())!=platform::ErrorKind::not_found)return std::unexpected(detail::file_error(node.error()));
+return path;
 }
 
 std::expected<void,FileError> HostSource::remove_directory(std::string_view relative,bool recursive)

@@ -4,8 +4,8 @@
 // Resolution: a path is served by the mounts of its mount ("" or "data:") whose mount point is the path or one of its folders, compared
 // by fold_name segment by segment; the part below the mount point, spelled as given, goes to the source. Mounts are tried newest
 // first: stat, open_read and remove take the first mount that has the entry (a mount that lacks it, or meets a file where a folder
-// should be, passes the request on); open_write, create_directory and delete_directory go to the newest writable mount; rename
-// takes both, and renames only when they share a source. When only
+// should be, passes the request on); open_write, create_directory and delete_directory go to the newest writable mount; rename,
+// copy and move take both (see rename). When only
 // read-only mounts cover a write, it fails with read_only_pack. list merges every covering mount's entries and the folders that
 // lead to deeper mount points. A path that only leads to a mount point is a directory. "host:" paths (only parsed when host paths
 // are on) go to the HostSource, which opens them exactly as given.
@@ -18,7 +18,8 @@
 //   `"<path>" matches more than one name; rename one of them`, so an ambiguity is never worded as a read failure;
 // - not_empty has no text of its own: "directory not empty" (a folder removed without recursive that still holds entries);
 // - read_only_pack: `"<path>" is in a read-only pack; save files in data:/ instead`.
-// Every other failure leaves message empty; read_failure_text gives `cannot read "<path>": <reason_text>` for those.
+// Every other failure leaves message empty; failure_text gives `cannot read|write|delete|create "<path>": <reason_text>` for
+// those, the verb chosen by the caller (read_failure_text, write_failure_text).
 // A file operation on a path in folder form ("", "sounds/") fails with is_directory before any mount is asked.
 //
 // Dev mode: a lookup whose spelling differs from the names on disk only by case (a FolderSource found it case-insensitively, or
@@ -60,9 +61,9 @@
 
 namespace zodiac::vfs {
 // Append-only: a new code goes at the end, so no value ever moves.
-enum class FileError:int{not_found=1,access_denied,damaged,is_directory,not_a_directory,read_only_pack,bad_path,ambiguous,io,not_empty};
+enum class FileError:int{not_found=1,access_denied,damaged,is_directory,not_a_directory,read_only_pack,bad_path,ambiguous,io,not_empty,disk_full};
 // "file not found", "access denied", "damaged data", "is a directory", "not a directory", "in a read-only pack", "invalid path",
-// "ambiguous name", "input/output error", "directory not empty".
+// "ambiguous name", "input/output error", "directory not empty", "disk full".
 std::string_view reason_text(FileError error) noexcept;
 // deleted is a deletion marker (a patch pack hiding an older entry, Task 8): stat reports it, list leaves it out.
 enum class EntryKind{none,file,directory,deleted};
@@ -90,15 +91,21 @@ virtual std::uint64_t size() const=0;
 };
 // Writes one opened file (open_write). Used by one thread at a time. read_at reads what the file holds now, written bytes included
 // (the "r+" mode of the script file object). commit() ends the writing: a folder's file has every byte already; a pack's write
-// target stores its entry there (Task 8). Nothing is promised about bytes written after a failed write_at.
+// target stores its entry there (Task 8). Nothing is promised about bytes written after a failed write_at. A failed write_at,
+// truncate or commit says why (disk_full, access_denied, io, ...).
 class WriteTarget{
 public:
 virtual ~WriteTarget()=default;
 virtual std::int64_t read_at(std::uint64_t offset,std::span<std::byte> buffer)=0;
-virtual bool write_at(std::uint64_t offset,std::span<const std::byte> bytes)=0;
+virtual std::expected<void,FileError> write_at(std::uint64_t offset,std::span<const std::byte> bytes)=0;
 virtual std::uint64_t size() const=0;
-virtual bool truncate(std::uint64_t size)=0;
+virtual std::expected<void,FileError> truncate(std::uint64_t size)=0;
 virtual std::expected<void,FileError> commit()=0;
+};
+// A failure about one of two paths (rename, copy, move): to is false for the first (from), true for the second (to).
+struct MoveError{
+FileError code=FileError::io;
+bool to=false;
 };
 // Something mounted: relative paths are '/'-joined valid names (parse_path's relative), "" for the source's own root folder.
 // Every function may be called from several threads at once.
@@ -117,7 +124,15 @@ virtual std::expected<void,FileError> make_directory(std::string_view relative)=
 virtual std::expected<void,FileError> remove_directory(std::string_view relative,bool recursive)=0;
 // Moves the file from over to (replacing a file there) at once: true when done; false when this source cannot, so the Vfs copies
 // and removes instead (a source without renames, or two places the system cannot rename between). The default returns false.
-virtual std::expected<bool,FileError> rename(std::string_view from,std::string_view to);
+virtual std::expected<bool,MoveError> rename(std::string_view from,std::string_view to);
+// The host file behind relative, for the Vfs's own renames and copies between sources: with for_write the place a write of
+// relative would create or replace (its folder must exist; a source that makes its root on the first write makes it here),
+// otherwise the existing file. nullopt from a source that is no host folder (the default), or when this one has no such file
+// to hand out; a failure as open_write or open_read would report it.
+virtual std::expected<std::optional<std::filesystem::path>,FileError> host_file(std::string_view relative,bool for_write);
+// Tells the source that the file relative was made, replaced or removed behind its back (through host_file), so whatever it
+// caches about its folder is dropped. The default does nothing.
+virtual void forget(std::string_view relative);
 virtual bool read_only() const noexcept=0;
 // When an entry exists at relative and its real spelling differs from relative (only by case), sets real to that spelling and
 // returns true. Sources without case folding keep the default.
@@ -130,8 +145,19 @@ FileError code=FileError::io;
 // The whole one-line text for the failures that have their own (see above); empty otherwise.
 std::string message;
 };
-// message when set, else `cannot read "<path>": <reason_text(code)>`, path through one_line.
-std::string read_failure_text(std::string_view path,const Failure& failure);
+// What failed, for the text: `cannot read`, `cannot write`, `cannot delete`, `cannot create`.
+enum class FileAction{read,write,remove,create};
+// message when set, else `cannot <action> "<path>": <reason_text(code)>`, path through one_line.
+std::string failure_text(FileAction action,std::string_view path,const Failure& failure);
+inline std::string read_failure_text(std::string_view path,const Failure& failure){return failure_text(FileAction::read,path,failure);}
+inline std::string write_failure_text(std::string_view path,const Failure& failure){return failure_text(FileAction::write,path,failure);}
+// The FileError of a failed Reader::read_at or WriteTarget::read_at result (-int(FileError)); io for a value that names none.
+FileError read_error(std::int64_t result) noexcept;
+// A two-path failure (rename, copy, move): to tells which path it is about.
+struct MoveFailure{
+Failure failure;
+bool to=false;
+};
 class HostSource;
 class Vfs{
 public:
@@ -152,10 +178,20 @@ std::expected<EntryInfo,Failure> stat(std::string_view path);
 std::expected<std::shared_ptr<Reader>,Failure> open_read(std::string_view path);
 std::expected<std::unique_ptr<WriteTarget>,Failure> open_write(std::string_view path,WriteMode mode);
 std::expected<void,Failure> remove(std::string_view path);
-// Moves the file from over to when one source holds both: the mount that serves from (as remove finds it) and the newest writable
-// mount covering to (as open_write finds it). true when moved; false when they are different sources or the source cannot rename,
-// and the caller copies, then removes. from served by a read-only mount fails with read_only_pack, a folder with is_directory.
-std::expected<bool,Failure> rename(std::string_view from,std::string_view to);
+// Moves the file from over to at once: from as remove finds it (the first mount that has it; a read-only one fails with
+// read_only_pack), to as open_write finds it (the newest writable mount covering it). One source renames itself (Source::rename);
+// two sources that are both host folders, or a host path and a host folder, are renamed by the system (replace_file), after
+// which both sources forget the paths. true when moved, or when from and to are one file (the same identity, or one entry under
+// two spellings): nothing changes then. false when only a copy can do it (a source without host files, two volumes), and nothing
+// has changed. A folder on either side is is_directory, named by MoveFailure::to.
+std::expected<bool,MoveFailure> rename(std::string_view from,std::string_view to);
+// Copies the bytes of file from over to (created or replaced). Host files on both sides (folders or host paths) are copied by the
+// system (platform::copy_file), and the source of to forgets the path; anything else goes through open_read and open_write
+// (append mode, written over from offset 0 in 256 KiB pieces, then cut to length, then committed). from and to being one file
+// (by identity, when both are host files) is a success that changes nothing.
+std::expected<void,MoveFailure> copy(std::string_view from,std::string_view to);
+// rename, else copy then remove(from). A copy that finds one file on both sides removes nothing.
+std::expected<void,MoveFailure> move(std::string_view from,std::string_view to);
 // The names in folder path of the kind asked for that match pattern ('*' any run, '?' one character), name and pattern compared by
 // fold_name; sorted by fold, then by bytes, without duplicates.
 std::expected<std::vector<std::string>,Failure> list(std::string_view path,ListKind kind,std::string_view pattern="*");
@@ -193,7 +229,22 @@ struct Target{
 const Mount* mount=nullptr;
 std::string_view sub;
 };
+// One side of a rename or copy: its source and the path below it, and its mount (none for a host path, which host_ serves).
+struct End{
+Source* source=nullptr;
+const Mount* mount=nullptr;
+std::string_view sub;
+};
 std::shared_ptr<const Table> snapshot() const;
+// from's side, found as open_read finds it (as remove does when removing: a read-only mount then fails with read_only_pack), and
+// to's side, found as open_write finds it. Both view p.
+std::expected<End,Failure> reading_end(const Table& table,std::string_view path,const VfsPath& p,bool removing) const;
+std::expected<End,Failure> writing_end(const Table& table,std::string_view path,const VfsPath& p) const;
+Failure end_failure(std::string_view path,const End& end,FileError code) const;
+// After to was written by a rename or copy: the dev-mode checks a write gets.
+void written(std::string_view path,const VfsPath& p,const End& end) noexcept;
+// copy; true when from and to turned out to be one file (nothing was written).
+std::expected<bool,MoveFailure> copy_file(std::string_view from,std::string_view to);
 // Calls visit(Target) for the mounts covering p, newest first, until it returns true; returns whether one did. Allocates nothing
 // unless a mount point below the root has to be compared by fold.
 template<class Visit>

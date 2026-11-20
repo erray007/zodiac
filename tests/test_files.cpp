@@ -5,11 +5,24 @@
 #include "script_fixture.hpp"
 #include <core/vfs/vfs.hpp>
 #include <platform/clock.hpp>
+#include <core/vfs/folder_source.hpp>
+#include <platform/file.hpp>
+#include <algorithm>
+#include <cerrno>
+#include <chrono>
 #include <cstdint>
+#include <cstring>
+#include <expected>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
+#include <map>
+#include <memory>
+#include <optional>
+#include <span>
 #include <string>
+#include <vector>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -125,6 +138,123 @@ const std::uint64_t allocated=static_cast<std::uint64_t>(info.st_blocks)*512;
 #endif
 // The hole takes no space: at most a few blocks hold the text.
 REQUIRE(allocated<(std::uint64_t{1}<<20));
+}
+// A source that is no host folder: its files live in memory, so copies and moves through it go through the sources (the buffered
+// path), and its write targets can be told to fail on write_at or on commit.
+class MemorySource final:public zodiac::vfs::Source{
+public:
+using FileError=zodiac::vfs::FileError;
+std::map<std::string,std::string,std::less<>> files;
+std::optional<FileError> fail_write;
+std::optional<FileError> fail_commit;
+std::expected<zodiac::vfs::EntryInfo,FileError> stat(std::string_view relative) override
+{
+zodiac::vfs::EntryInfo info;
+if(relative.empty()){
+info.kind=zodiac::vfs::EntryKind::directory;
+return info;
+}
+const auto found=files.find(relative);
+if(found==files.end())return std::unexpected(FileError::not_found);
+info.kind=zodiac::vfs::EntryKind::file;
+info.size=found->second.size();
+info.name=std::string(relative);
+return info;
+}
+std::expected<std::shared_ptr<zodiac::vfs::Reader>,FileError> open_read(std::string_view relative) override
+{
+const auto found=files.find(relative);
+if(found==files.end())return std::unexpected(FileError::not_found);
+return std::make_shared<Reader>(found->second);
+}
+std::expected<std::unique_ptr<zodiac::vfs::WriteTarget>,FileError> open_write(std::string_view relative,zodiac::vfs::WriteMode mode) override
+{
+const auto found=files.find(relative);
+if(mode==zodiac::vfs::WriteMode::update&&found==files.end())return std::unexpected(FileError::not_found);
+std::string bytes=mode!=zodiac::vfs::WriteMode::truncate&&found!=files.end()?found->second:std::string();
+return std::make_unique<Writer>(*this,std::string(relative),std::move(bytes));
+}
+std::expected<void,FileError> list(std::string_view relative,std::vector<zodiac::vfs::EntryInfo>& out) override
+{
+if(!relative.empty())return std::unexpected(FileError::not_found);
+for(const auto& [name,bytes]:files){
+zodiac::vfs::EntryInfo& info=out.emplace_back();
+info.kind=zodiac::vfs::EntryKind::file;
+info.name=name;
+}
+return {};
+}
+std::expected<void,FileError> remove(std::string_view relative) override
+{
+const auto found=files.find(relative);
+if(found==files.end())return std::unexpected(FileError::not_found);
+files.erase(found);
+return {};
+}
+std::expected<void,FileError> make_directory(std::string_view relative) override
+{
+if(relative.empty())return {};
+return std::unexpected(FileError::access_denied);
+}
+std::expected<void,FileError> remove_directory(std::string_view,bool) override
+{
+return std::unexpected(FileError::access_denied);
+}
+bool read_only() const noexcept override{return false;}
+private:
+class Reader final:public zodiac::vfs::Reader{
+public:
+explicit Reader(std::string bytes):bytes_(std::move(bytes)){}
+std::int64_t read_at(std::uint64_t offset,std::span<std::byte> buffer) override
+{
+if(offset>=bytes_.size())return 0;
+const std::size_t count=std::min<std::size_t>(buffer.size(),bytes_.size()-offset);
+std::memcpy(buffer.data(),bytes_.data()+offset,count);
+return static_cast<std::int64_t>(count);
+}
+std::uint64_t size() const override{return bytes_.size();}
+private:
+std::string bytes_;
+};
+class Writer final:public zodiac::vfs::WriteTarget{
+public:
+Writer(MemorySource& source,std::string name,std::string bytes):source_(source),name_(std::move(name)),bytes_(std::move(bytes)){}
+std::int64_t read_at(std::uint64_t offset,std::span<std::byte> buffer) override
+{
+if(offset>=bytes_.size())return 0;
+const std::size_t count=std::min<std::size_t>(buffer.size(),bytes_.size()-offset);
+std::memcpy(buffer.data(),bytes_.data()+offset,count);
+return static_cast<std::int64_t>(count);
+}
+std::expected<void,FileError> write_at(std::uint64_t offset,std::span<const std::byte> bytes) override
+{
+if(source_.fail_write)return std::unexpected(*source_.fail_write);
+if(bytes_.size()<offset+bytes.size())bytes_.resize(offset+bytes.size());
+std::memcpy(bytes_.data()+offset,bytes.data(),bytes.size());
+return {};
+}
+std::uint64_t size() const override{return bytes_.size();}
+std::expected<void,FileError> truncate(std::uint64_t size) override
+{
+bytes_.resize(size);
+return {};
+}
+std::expected<void,FileError> commit() override
+{
+if(source_.fail_commit)return std::unexpected(*source_.fail_commit);
+source_.files[name_]=bytes_;
+return {};
+}
+private:
+MemorySource& source_;
+std::string name_;
+std::string bytes_;
+};
+};
+std::string utf8(const fs::path& path)
+{
+const std::u8string text=path.generic_u8string();
+return std::string(reinterpret_cast<const char*>(text.data()),text.size());
 }
 // Removes a file at scope exit, also when a check fails.
 class RemoveAtExit{
@@ -264,25 +394,28 @@ ScriptFixture fixture;
 CHECK(int64_of(fixture,"return file_size(\"missing\");")==-1);
 CHECK(text_of(fixture,"bool written=write_file(\"con\", \"x\"); return written+\",\"+last_file_error();")=="false,\"con\" is not a valid file name");
 CHECK(text_of(fixture,"write_file(\"con\", \"x\"); bool written=write_file(\"ok.txt\", \"x\"); return written+\",[\"+last_file_error()+\"]\";")=="true,[]");
-CHECK(text_of(fixture,"bool deleted=delete_file(\"gone.txt\"); return deleted+\",\"+last_file_error();")=="false,cannot read \"gone.txt\": file not found");
+CHECK(text_of(fixture,"bool deleted=delete_file(\"gone.txt\"); return deleted+\",\"+last_file_error();")=="false,cannot delete \"gone.txt\": file not found");
 // Queries never touch it.
-CHECK(text_of(fixture,"delete_file(\"gone.txt\"); file_exists(\"ok.txt\"); directory_exists(\"x\"); file_size(\"ok.txt\"); return last_file_error();")=="cannot read \"gone.txt\": file not found");
+CHECK(text_of(fixture,"delete_file(\"gone.txt\"); file_exists(\"ok.txt\"); directory_exists(\"x\"); file_size(\"ok.txt\"); return last_file_error();")=="cannot delete \"gone.txt\": file not found");
 CHECK(text_of(fixture,"return file_exists(\"ok.txt\")+\",\"+file_exists(\"OK.TXT\")+\",\"+directory_exists(\"ok.txt\")+\",\"+file_exists(\"\")+\",\"+directory_exists(\"\")+\",\"+file_exists(\"con\");")=="true,true,false,false,true,false");
 CHECK(int64_of(fixture,"return file_size(\"ok.txt\");")==1);
 CHECK(int64_of(fixture,"create_directory(\"d\"); return file_size(\"d\");")==-1);
 CHECK(text_of(fixture,"bool a=append_file(\"ap.txt\", \"one\"); bool b=append_file(\"ap.txt\", \"two\"); return a+\",\"+b+\",\"+read_file(\"ap.txt\");")=="true,true,onetwo");
 CHECK(text_of(fixture,"write_file(\"ap.txt\", \"x\"); return read_file(\"ap.txt\");")=="x");
 CHECK(text_of(fixture,"bool deleted=delete_file(\"ap.txt\"); return deleted+\",\"+file_exists(\"ap.txt\")+\",[\"+last_file_error()+\"]\";")=="true,false,[]");
-CHECK(text_of(fixture,"bool written=write_file(\"no/such/folder.txt\", \"x\"); return written+\",\"+last_file_error();")=="false,cannot read \"no/such/folder.txt\": file not found");
+CHECK(text_of(fixture,"bool written=write_file(\"no/such/folder.txt\", \"x\"); return written+\",\"+last_file_error();")=="false,cannot write \"no/such/folder.txt\": file not found");
+CHECK(text_of(fixture,"bool written=append_file(\"no/such/folder.txt\", \"x\"); return written+\",\"+last_file_error();")=="false,cannot write \"no/such/folder.txt\": file not found");
+CHECK(text_of(fixture,"file f; f.open(\"no/such/folder.txt\", \"w\"); string a=f.error; f.open(\"no/such/folder.txt\", \"a\"); return a+\"|\"+f.error;")=="cannot write \"no/such/folder.txt\": file not found|cannot write \"no/such/folder.txt\": file not found");
+CHECK(text_of(fixture,"file f; f.open(\"d\", \"r+\"); return f.error;")=="cannot write \"d\": is a directory");
 }
 
 TEST_CASE("folders are made, listed and removed")
 {
 ScriptFixture fixture;
 CHECK(holds(fixture,"return create_directory(\"a/b/c\")&&directory_exists(\"A/B/c\")&&create_directory(\"a/b/c\");"));
-CHECK(text_of(fixture,"bool made=create_directory(\"x/y\", false); return made+\",\"+last_file_error();")=="false,cannot read \"x/y\": file not found");
+CHECK(text_of(fixture,"bool made=create_directory(\"x/y\", false); return made+\",\"+last_file_error();")=="false,cannot create \"x/y\": file not found");
 CHECK(holds(fixture,"return create_directory(\"x\", false)&&create_directory(\"x/y\", false);"));
-CHECK(text_of(fixture,"write_file(\"a/b/f.txt\", \"x\"); bool removed=delete_directory(\"a\"); return removed+\",\"+last_file_error();")=="false,cannot read \"a\": directory not empty");
+CHECK(text_of(fixture,"write_file(\"a/b/f.txt\", \"x\"); bool removed=delete_directory(\"a\"); return removed+\",\"+last_file_error();")=="false,cannot delete \"a\": directory not empty");
 CHECK(holds(fixture,"return delete_directory(\"a\", true)&&!directory_exists(\"a\")&&delete_directory(\"x/y\")&&last_file_error()==\"\";"));
 CHECK(text_of(fixture,"return join(list_directories(\"\"), \"|\");")=="x");
 }
@@ -330,11 +463,16 @@ CHECK(text_of(fixture,"bool copied=copy_file(\"none.txt\", \"x.txt\"); return co
 CHECK(text_of(fixture,"bool moved=move_file(\"none.txt\", \"x.txt\"); return moved+\",\"+last_file_error();")=="false,cannot read \"none.txt\": file not found");
 CHECK(text_of(fixture,"bool copied=copy_file(\"data:/again.txt\", \"aux.txt\"); return copied+\",\"+last_file_error();")=="false,\"aux.txt\" is not a valid file name");
 CHECK(text_of(fixture,"bool moved=move_file(\"dir\", \"x.txt\"); return moved+\",\"+last_file_error();")=="false,cannot read \"dir\": is a directory");
-CHECK(text_of(fixture,"bool moved=move_file(\"data:/again.txt\", \"dir\"); return moved+\",\"+last_file_error();")=="false,cannot read \"dir\": is a directory");
+CHECK(text_of(fixture,"bool moved=move_file(\"data:/again.txt\", \"dir\"); return moved+\",\"+last_file_error();")=="false,cannot write \"dir\": is a directory");
+CHECK(text_of(fixture,"bool copied=copy_file(\"data:/again.txt\", \"dir\"); return copied+\",\"+last_file_error();")=="false,cannot write \"dir\": is a directory");
+CHECK(text_of(fixture,"bool moved=move_file(\"data:/again.txt\", \"no/such/b.txt\"); return moved+\",\"+last_file_error();")=="false,cannot write \"no/such/b.txt\": file not found");
+CHECK(text_of(fixture,"write_file(\"a.txt\", \"a\"); bool moved=move_file(\"a.txt\", \"no/such/b.txt\"); return moved+\",\"+last_file_error()+\",\"+file_exists(\"a.txt\");")=="false,cannot write \"no/such/b.txt\": file not found,true");
+CHECK(text_of(fixture,"bool moved=move_file(\"a.txt\", \"dir\"); return moved+\",\"+last_file_error();")=="false,cannot write \"dir\": is a directory");
+CHECK(text_of(fixture,"bool moved=move_file(\"a.txt\", \"../b.txt\"); return moved+\",\"+last_file_error();")=="false,\"../b.txt\" leaves its mount");
 CHECK(holds(fixture,"return file_exists(\"data:/again.txt\");"));
 }
 
-TEST_CASE("Vfs::rename renames within one source only, and never out of a read-only mount")
+TEST_CASE("Vfs::rename renames within a source and between host folders, and never out of a read-only mount")
 {
 ScriptFixture fixture;
 put(fixture.root()/"a.txt","a");
@@ -345,13 +483,18 @@ REQUIRE(within.has_value());
 CHECK(*within);
 CHECK(contents(fixture.root()/"b.txt")=="a");
 CHECK_FALSE(fs::exists(fixture.root()/"a.txt"));
+// Two host folders: the system renames across them, and both forget what they cached.
+CHECK(holds(fixture,"return file_exists(\"b.txt\")&&!file_exists(\"data:/b.txt\")&&join(list_files(\"/\"), \"|\")==\"b.txt\";"));
 const auto across=fixture.vfs.rename("b.txt","data:/b.txt");
 REQUIRE(across.has_value());
-CHECK_FALSE(*across);
-CHECK(fs::exists(fixture.root()/"b.txt"));
+CHECK(*across);
+CHECK_FALSE(fs::exists(fixture.root()/"b.txt"));
+CHECK(contents(fixture.data()/"b.txt")=="a");
+CHECK(holds(fixture,"return !file_exists(\"b.txt\")&&file_exists(\"data:/b.txt\")&&join(list_files(\"/\"), \"|\")==\"\"&&join(list_files(\"data:/\"), \"|\")==\"b.txt\";"));
 const auto read_only=fixture.vfs.rename("ro/x.txt","y.txt");
 REQUIRE_FALSE(read_only.has_value());
-CHECK(read_only.error().code==zodiac::vfs::FileError::read_only_pack);
+CHECK(read_only.error().failure.code==zodiac::vfs::FileError::read_only_pack);
+CHECK_FALSE(read_only.error().to);
 CHECK(text_of(fixture,"bool moved=move_file(\"ro/x.txt\", \"y.txt\"); return moved+\",\"+file_exists(\"ro/x.txt\")+\",\"+file_exists(\"y.txt\")+\",\"+last_file_error();")=="false,true,false,\"ro/x.txt\" is in a read-only pack; save files in data:/ instead");
 CHECK(text_of(fixture,"bool copied=copy_file(\"ro/x.txt\", \"y.txt\"); return copied+\",\"+read_file(\"y.txt\");")=="true,x");
 }
@@ -409,4 +552,142 @@ make_sparse(file,offset,"END");
 CHECK(int64_of(fixture,"return file_size(\"big.bin\");")==5368709123);
 CHECK(text_of(fixture,"file f; f.open(\"big.bin\", \"rb\"); string s=f.size+\",\"; f.seek(5368709120); s+=f.read(3); return s+\",\"+f.position+\",\"+f.eof;")=="5368709123,END,5368709123,true");
 CHECK(text_of(fixture,"file f; f.open(\"big.bin\", \"rb\"); f.seek(5368709119); return f.read(10);")==std::string("\0END",4));
+}
+
+TEST_CASE("failure texts name what failed: read, write, delete or create")
+{
+using zodiac::vfs::Failure;
+using zodiac::vfs::FileAction;
+using zodiac::vfs::FileError;
+CHECK(zodiac::vfs::failure_text(FileAction::read,"a",Failure{FileError::not_found,{}})=="cannot read \"a\": file not found");
+CHECK(zodiac::vfs::failure_text(FileAction::write,"a",Failure{FileError::disk_full,{}})=="cannot write \"a\": disk full");
+CHECK(zodiac::vfs::failure_text(FileAction::remove,"a",Failure{FileError::access_denied,{}})=="cannot delete \"a\": access denied");
+CHECK(zodiac::vfs::failure_text(FileAction::create,"a\nb",Failure{FileError::not_found,{}})=="cannot create \"a\\nb\": file not found");
+CHECK(zodiac::vfs::write_failure_text("a",Failure{FileError::io,{}})=="cannot write \"a\": input/output error");
+// A text of its own is never wrapped.
+CHECK(zodiac::vfs::write_failure_text("con",Failure{FileError::bad_path,"\"con\" is not a valid file name"})=="\"con\" is not a valid file name");
+// A full disk is named on every platform.
+CHECK(zodiac::vfs::detail::file_error(std::error_code(ENOSPC,std::generic_category()))==FileError::disk_full);
+#ifdef _WIN32
+CHECK(zodiac::vfs::detail::file_error(std::error_code(ERROR_DISK_FULL,std::system_category()))==FileError::disk_full);
+CHECK(zodiac::vfs::detail::file_error(std::error_code(ERROR_HANDLE_DISK_FULL,std::system_category()))==FileError::disk_full);
+#endif
+CHECK(zodiac::vfs::read_error(-static_cast<std::int64_t>(FileError::disk_full))==FileError::disk_full);
+CHECK(zodiac::vfs::read_error(-1000)==FileError::io);
+}
+
+TEST_CASE("failed writes and commits are reported with their reason")
+{
+ScriptFixture fixture;
+auto memory=std::make_shared<MemorySource>();
+REQUIRE(fixture.vfs.mount("mem",memory,true,nullptr));
+memory->fail_write=zodiac::vfs::FileError::disk_full;
+CHECK(text_of(fixture,"file f; if(!f.open(\"mem/w.txt\", \"w\"))return f.error; bool written=f.write(\"x\"); return written+\",\"+f.error;")=="false,cannot write \"mem/w.txt\": disk full");
+CHECK(text_of(fixture,"bool written=write_file(\"mem/w.txt\", \"x\"); return written+\",\"+last_file_error();")=="false,cannot write \"mem/w.txt\": disk full");
+CHECK(text_of(fixture,"bool written=append_file(\"mem/w.txt\", \"x\"); return written+\",\"+last_file_error();")=="false,cannot write \"mem/w.txt\": disk full");
+CHECK(text_of(fixture,"write_file(\"x.txt\", \"bytes\"); bool copied=copy_file(\"x.txt\", \"mem/c.txt\"); return copied+\",\"+last_file_error();")=="false,cannot write \"mem/c.txt\": disk full");
+CHECK(text_of(fixture,"bool moved=move_file(\"x.txt\", \"mem/c.txt\"); return moved+\",\"+last_file_error()+\",\"+file_exists(\"x.txt\");")=="false,cannot write \"mem/c.txt\": disk full,true");
+// An empty write never reaches the target.
+CHECK(holds(fixture,"file f; f.open(\"mem/w.txt\", \"w\"); return f.write(\"\");"));
+memory->fail_write.reset();
+memory->fail_commit=zodiac::vfs::FileError::access_denied;
+CHECK(text_of(fixture,"file f; f.open(\"mem/c.txt\", \"w\"); bool written=f.write(\"x\"); string before=f.error; f.close(); return written+\",[\"+before+\"],\"+f.error+\",\"+f.is_open;")=="true,[],cannot write \"mem/c.txt\": access denied,false");
+CHECK(text_of(fixture,"bool written=write_file(\"mem/c.txt\", \"x\"); return written+\",\"+last_file_error();")=="false,cannot write \"mem/c.txt\": access denied");
+CHECK(text_of(fixture,"bool copied=copy_file(\"x.txt\", \"mem/c.txt\"); return copied+\",\"+last_file_error();")=="false,cannot write \"mem/c.txt\": access denied");
+CHECK_FALSE(memory->files.contains("c.txt"));
+memory->fail_commit.reset();
+CHECK(holds(fixture,"return write_file(\"mem/c.txt\", \"stored\")&&read_file(\"mem/c.txt\")==\"stored\";"));
+CHECK(memory->files.at("c.txt")=="stored");
+}
+
+TEST_CASE("copies and moves through a source without host files take the buffered path")
+{
+ScriptFixture fixture;
+auto memory=std::make_shared<MemorySource>();
+REQUIRE(fixture.vfs.mount("mem",memory,true,nullptr));
+// More than one 256 KiB piece.
+const std::string bytes=pattern(5*65536+7);
+put(fixture.root()/"big.bin",bytes);
+CHECK(holds(fixture,"return copy_file(\"big.bin\", \"mem/big.bin\");"));
+CHECK(memory->files.at("big.bin")==bytes);
+CHECK(holds(fixture,"return copy_file(\"mem/big.bin\", \"copy.bin\");"));
+CHECK(contents(fixture.root()/"copy.bin")==bytes);
+// Over a longer target: cut to length.
+memory->files["long.txt"]="a much longer text";
+CHECK(holds(fixture,"return write_file(\"short.txt\", \"short\")&&copy_file(\"short.txt\", \"mem/long.txt\");"));
+CHECK(memory->files.at("long.txt")=="short");
+// A move is a copy, then a delete.
+CHECK(holds(fixture,"return move_file(\"mem/big.bin\", \"moved.bin\")&&!file_exists(\"mem/big.bin\");"));
+CHECK_FALSE(memory->files.contains("big.bin"));
+CHECK(contents(fixture.root()/"moved.bin")==bytes);
+CHECK(holds(fixture,"return move_file(\"moved.bin\", \"mem/back.bin\")&&!file_exists(\"moved.bin\");"));
+CHECK(memory->files.at("back.bin")==bytes);
+CHECK_FALSE(fs::exists(fixture.root()/"moved.bin"));
+CHECK(text_of(fixture,"bool copied=copy_file(\"mem/none.bin\", \"x.bin\"); return copied+\",\"+last_file_error();")=="false,cannot read \"mem/none.bin\": file not found");
+}
+
+TEST_CASE("copies between host files use the system's copy and give the same bytes and a fresh time")
+{
+ScriptFixture fixture;
+const std::string bytes=pattern(3*65536+7);
+put(fixture.root()/"big.bin",bytes);
+// A day old: a copy is a new file, on every path.
+const fs::path old=fixture.root()/"big.bin";
+fs::last_write_time(old,fs::last_write_time(old)-std::chrono::hours(24));
+CHECK(int64_of(fixture,"return date_time::now()-file_modified(\"big.bin\");")>23*3600000);
+CHECK(holds(fixture,"return copy_file(\"big.bin\", \"data:/big.bin\")&&copy_file(\"big.bin\", \"sub/../copy.bin\");"));
+CHECK(contents(fixture.data()/"big.bin")==bytes);
+CHECK(contents(fixture.root()/"copy.bin")==bytes);
+CHECK(int64_of(fixture,"return date_time::now()-file_modified(\"data:/big.bin\");")<60000);
+CHECK(int64_of(fixture,"return date_time::now()-file_modified(\"copy.bin\");")<60000);
+// The copy is seen at once by listings, and is a file of its own.
+CHECK(text_of(fixture,"return join(list_files(\"data:/\"), \"|\");")=="big.bin");
+CHECK(holds(fixture,"return write_file(\"data:/big.bin\", \"changed\")&&read_file(\"big.bin\").byte_length()==196615;"));
+// Over a longer file, and an empty one.
+CHECK(holds(fixture,"write_file(\"e.txt\", \"\"); return copy_file(\"e.txt\", \"copy.bin\")&&read_file(\"copy.bin\")==\"\";"));
+// platform::copy_file itself, and which side it blames.
+bool from_failed=false;
+CHECK_FALSE(zodiac::platform::copy_file(old,fixture.root()/"direct.bin",from_failed));
+CHECK(contents(fixture.root()/"direct.bin")==bytes);
+CHECK(zodiac::platform::copy_file(fixture.root()/"none.bin",fixture.root()/"x.bin",from_failed));
+CHECK(from_failed);
+CHECK(zodiac::platform::copy_file(old,fixture.root()/"no"/"such"/"x.bin",from_failed));
+CHECK_FALSE(from_failed);
+}
+
+TEST_CASE("one file under two paths is never copied onto itself or moved away")
+{
+ScriptFixture fixture;
+fixture.vfs.set_host_paths(true);
+REQUIRE(holds(fixture,"return write_file(\"save.txt\", \"keep me\");"));
+const std::string host="host:"+utf8(fixture.root()/"save.txt");
+CAPTURE(host);
+// A host path and the mounted path of one file.
+CHECK(holds(fixture,"return move_file(\""+host+"\", \"save.txt\")&&move_file(\"save.txt\", \""+host+"\");"));
+CHECK(holds(fixture,"return copy_file(\""+host+"\", \"save.txt\")&&copy_file(\"save.txt\", \""+host+"\");"));
+CHECK(contents(fixture.root()/"save.txt")=="keep me");
+// Two mounts of one folder.
+REQUIRE(fixture.vfs.mount_folder("alias",fixture.root(),true));
+CHECK(holds(fixture,"return read_file(\"alias/save.txt\")==\"keep me\";"));
+CHECK(holds(fixture,"return move_file(\"alias/save.txt\", \"save.txt\")&&move_file(\"save.txt\", \"alias/SAVE.TXT\")&&copy_file(\"alias/save.txt\", \"save.txt\");"));
+CHECK(contents(fixture.root()/"save.txt")=="keep me");
+// One entry under two spellings.
+CHECK(holds(fixture,"return copy_file(\"save.txt\", \"SAVE.txt\")&&move_file(\"SAVE.TXT\", \"save.txt\")&&read_file(\"save.txt\")==\"keep me\";"));
+CHECK(contents(fixture.root()/"save.txt")=="keep me");
+// A real move between a host path and a mount.
+put(fixture.folder/"outside.txt","from outside");
+const std::string outside="host:"+utf8(fixture.folder/"outside.txt");
+CHECK(holds(fixture,"return move_file(\""+outside+"\", \"inside.txt\")&&read_file(\"inside.txt\")==\"from outside\"&&!file_exists(\""+outside+"\");"));
+CHECK_FALSE(fs::exists(fixture.folder/"outside.txt"));
+}
+
+TEST_CASE("a bad mode leaves the open file, read(0) leaves the BOM, and \"a\" reads")
+{
+ScriptFixture fixture;
+CHECK(text_of(fixture,"write_file(\"keep.txt\", \"kept\"); file f; f.open(\"keep.txt\", \"r\"); f.read(1); string text; try{f.open(\"other.txt\", \"q\");}catch{text=exception_info();} return text+\",\"+f.is_open+\",\"+f.position+\",\"+f.read();")=="\"q\" is not a file mode,true,1,ept");
+put(fixture.root()/"bom.txt","\xEF\xBB\xBFhi\r\n");
+CHECK(text_of(fixture,"file f; f.open(\"bom.txt\", \"r\"); string a=f.read(0); string p=\"\"+f.position; string b=f.read(1); return \"[\"+a+\"]\"+p+\",\"+b+\",\"+f.position;")=="[]0,h,4");
+CHECK(text_of(fixture,"file f; f.open(\"bom.txt\", \"r\"); string p=\"\"+f.position+f.eof; string line=f.read_line(); return p+\",\"+line+\",\"+f.position;")=="0false,hi,7");
+CHECK(text_of(fixture,"write_file(\"am.txt\", \"one\"); file f; f.open(\"am.txt\", \"a\"); string a=f.read(); f.write(\"two\"); string p=\"\"+f.position; f.seek(0); return a+\"|\"+p+\"|\"+f.read()+\"|\"+f.position;")=="one|6|onetwo|6");
+CHECK(text_of(fixture,"write_file(\"ab.txt\", \"x\\r\\ny\"); file f; f.open(\"ab.txt\", \"ab\"); return f.read(2)+\"|\"+f.read_line()+\"|\"+f.read();")=="x\r||y");
 }

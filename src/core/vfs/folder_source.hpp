@@ -69,7 +69,12 @@ std::expected<void,FileError> make_directory(std::string_view relative) override
 std::expected<void,FileError> remove_directory(std::string_view relative,bool recursive) override;
 // platform::replace_file, so readers of a replaced file keep reading it. to reuses an existing case-insensitive match as writes do;
 // from and to naming one entry is a success that changes nothing. false (copy instead) when the system cannot rename across them.
-std::expected<bool,FileError> rename(std::string_view from,std::string_view to) override;
+std::expected<bool,MoveError> rename(std::string_view from,std::string_view to) override;
+// The real host path (an existing case-insensitive match reused, its stored spelling kept, as writes do); for_write makes the
+// root when it is missing (create_root) and refuses a read-only source with access_denied.
+std::expected<std::optional<std::filesystem::path>,FileError> host_file(std::string_view relative,bool for_write) override;
+// Drops the cached names of relative's folder.
+void forget(std::string_view relative) override;
 bool read_only() const noexcept override{return read_only_;}
 bool real_spelling(std::string_view relative,std::string& real) override;
 std::optional<std::pair<std::string,std::string>> ambiguous_names(std::string_view relative) override;
@@ -107,6 +112,9 @@ const Name* name=nullptr;
 bool ambiguous=false;
 };
 std::filesystem::path host_path(std::string_view real) const;
+// The real path a write of relative (resolved as found) goes to: found.real, except on Windows, where an exact hit spells an
+// existing entry as asked and the stored spelling is looked up, so a rename or copy over it never changes its name.
+std::string write_name(std::string_view relative,const Resolved& found);
 // The real path and the node of relative. With leaf_may_miss, a missing last segment (below an existing folder) gives the folder's
 // real path joined with the segment as given and node kind none.
 std::expected<Resolved,FileError> resolve(std::string_view relative,bool leaf_may_miss);

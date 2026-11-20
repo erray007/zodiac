@@ -14,7 +14,7 @@ namespace {
 std::int64_t reader_failure(std::int64_t negated_errno) noexcept
 {
 const std::error_code error(static_cast<int>(-negated_errno),std::generic_category());
-return -static_cast<std::int64_t>(platform::error_kind(error)==platform::ErrorKind::access_denied?FileError::access_denied:FileError::io);
+return -static_cast<std::int64_t>(detail::file_error(error));
 }
 // A folder's file opened for reading. The size is the one at open, so eof checks cost no system call.
 class FileReader final:public Reader{
@@ -40,18 +40,19 @@ std::int64_t read_at(std::uint64_t offset,std::span<std::byte> buffer) override
 const std::int64_t got=file_.read_at(offset,buffer);
 return got<0?reader_failure(got):got;
 }
-bool write_at(std::uint64_t offset,std::span<const std::byte> bytes) override
+std::expected<void,FileError> write_at(std::uint64_t offset,std::span<const std::byte> bytes) override
 {
-if(offset>std::numeric_limits<std::uint64_t>::max()-bytes.size()||!file_.write_at(offset,bytes))return false;
+if(offset>std::numeric_limits<std::uint64_t>::max()-bytes.size())return std::unexpected(FileError::io);
+if(auto written=file_.write_at(offset,bytes);!written)return std::unexpected(detail::file_error(written.error()));
 size_=std::max(size_,offset+bytes.size());
-return true;
+return {};
 }
 std::uint64_t size() const override{return size_;}
-bool truncate(std::uint64_t size) override
+std::expected<void,FileError> truncate(std::uint64_t size) override
 {
-if(!file_.truncate(size))return false;
+if(auto cut=file_.truncate(size);!cut)return std::unexpected(detail::file_error(cut.error()));
 size_=size;
-return true;
+return {};
 }
 std::expected<void,FileError> commit() override{return {};}
 private:
@@ -73,6 +74,8 @@ case platform::ErrorKind::access_denied:
 return FileError::access_denied;
 case platform::ErrorKind::not_empty:
 return FileError::not_empty;
+case platform::ErrorKind::disk_full:
+return FileError::disk_full;
 default:
 return FileError::io;
 }
@@ -597,30 +600,58 @@ note_change(parent,leaf_of(found->real),platform::NodeKind::directory,false,befo
 return {};
 }
 
-std::expected<bool,FileError> FolderSource::rename(std::string_view from,std::string_view to)
+std::string FolderSource::write_name([[maybe_unused]] std::string_view relative,const Resolved& found)
 {
+#ifdef _WIN32
+// An exact hit spells an existing entry as asked, and a rename or a copy would give it that spelling: keep the stored name, as a
+// write over it does.
+if(found.node.kind!=platform::NodeKind::none){
+std::string stored;
+if(real_spelling(relative,stored))return stored;
+}
+#endif
+return found.real;
+}
+
+std::expected<std::optional<fs::path>,FileError> FolderSource::host_file(std::string_view relative,bool for_write)
+{
+if(relative.empty())return std::unexpected(FileError::is_directory);
+if(for_write){
 if(read_only_)return std::unexpected(FileError::access_denied);
-if(from.empty()||to.empty())return std::unexpected(FileError::is_directory);
+if(auto made=ensure_root();!made)return std::unexpected(made.error());
+}
+const auto found=resolve(relative,for_write);
+if(!found)return std::unexpected(found.error());
+if(found->node.kind==platform::NodeKind::directory)return std::unexpected(FileError::is_directory);
+if(found->node.kind==platform::NodeKind::none&&!for_write)return std::unexpected(FileError::not_found);
+if(found->node.kind==platform::NodeKind::other)return std::unexpected(for_write?FileError::access_denied:FileError::not_found);
+return host_path(write_name(relative,*found));
+}
+
+void FolderSource::forget(std::string_view relative)
+{
+invalidate(parent_of(relative));
+}
+
+std::expected<bool,MoveError> FolderSource::rename(std::string_view from,std::string_view to)
+{
+const auto on_from=[](FileError code){return std::unexpected(MoveError{code,false});};
+const auto on_to=[](FileError code){return std::unexpected(MoveError{code,true});};
+if(from.empty())return on_from(FileError::is_directory);
+if(to.empty())return on_to(FileError::is_directory);
+if(read_only_)return on_from(FileError::access_denied);
 const auto old_entry=resolve(from,false);
-if(!old_entry)return std::unexpected(old_entry.error());
-if(old_entry->node.kind==platform::NodeKind::directory)return std::unexpected(FileError::is_directory);
-if(old_entry->node.kind!=platform::NodeKind::file)return std::unexpected(FileError::not_found);
+if(!old_entry)return on_from(old_entry.error());
+if(old_entry->node.kind==platform::NodeKind::directory)return on_from(FileError::is_directory);
+if(old_entry->node.kind!=platform::NodeKind::file)return on_from(FileError::not_found);
 const auto new_entry=resolve(to,true);
-if(!new_entry)return std::unexpected(new_entry.error());
-if(new_entry->node.kind==platform::NodeKind::directory)return std::unexpected(FileError::is_directory);
+if(!new_entry)return on_to(new_entry.error());
+if(new_entry->node.kind==platform::NodeKind::directory)return on_to(FileError::is_directory);
 const std::string_view old_parent=parent_of(old_entry->real);
 const std::string_view new_parent=parent_of(new_entry->real);
 // One entry under two spellings (to reused from's name, or the file system ignores case): nothing to do.
 if(same_real_path(old_entry->real,new_entry->real))return true;
-std::string target=new_entry->real;
-#ifdef _WIN32
-// An exact hit spells an existing target as asked, and a rename would give the entry that spelling: keep the stored name, as a
-// write over it does.
-if(new_entry->node.kind!=platform::NodeKind::none){
-std::string stored;
-if(real_spelling(to,stored))target=std::move(stored);
-}
-#endif
+const std::string target=write_name(to,*new_entry);
 const bool same_folder=same_real_path(old_parent,new_parent);
 const std::optional<std::int64_t> old_before=folder_time(old_parent);
 std::optional<std::int64_t> new_before;
@@ -630,7 +661,8 @@ if(!platform::replace_file(host_path(old_entry->real),host_path(target),error)){
 invalidate(old_parent);
 if(!same_folder)invalidate(new_parent);
 if(platform::error_kind(error)==platform::ErrorKind::cross_device)return false;
-return std::unexpected(detail::file_error(error));
+// from was there a moment ago: unless it is gone now, the failure is about to.
+return std::unexpected(MoveError{detail::file_error(error),platform::stat_path(host_path(old_entry->real)).has_value()});
 }
 note_change(old_parent,leaf_of(old_entry->real),platform::NodeKind::file,false,old_before);
 // In one folder the first change already moved the cached names to the folder's time after the rename.

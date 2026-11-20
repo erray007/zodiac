@@ -2,8 +2,10 @@
 #include <core/text.hpp>
 #include <core/vfs/folder_source.hpp>
 #include <core/vfs/host_source.hpp>
+#include <platform/file.hpp>
 #include <algorithm>
 #include <exception>
+#include <memory>
 
 namespace zodiac::vfs {
 namespace {
@@ -51,6 +53,38 @@ vfs.report_internal_error(operation,path);
 return failed(FileError::io);
 }
 }
+std::unexpected<MoveFailure> move_failed(Failure failure,bool to)
+{
+return std::unexpected(MoveFailure{std::move(failure),to});
+}
+// guarded for the two-path operations.
+template<class Body>
+auto guarded_move(const Vfs& vfs,std::string_view operation,std::string_view path,Body&& body) noexcept->decltype(body())
+{
+try{
+return body();
+}
+catch(...){
+vfs.report_internal_error(operation,path);
+return std::unexpected(MoveFailure{Failure{FileError::io,{}},false});
+}
+}
+// One file under two host paths (two mounts of one folder, a host path and a mount, a link); false when either cannot be told.
+bool same_file(const std::filesystem::path& a,const std::filesystem::path& b)
+{
+const auto first=platform::file_identity(a);
+if(!first)return false;
+const auto second=platform::file_identity(b);
+return second&&*first==*second;
+}
+// What a copy through the sources moves per read and write, through one buffer per thread made by its first such copy.
+constexpr std::size_t copy_chunk=262144;
+std::byte* copy_buffer()
+{
+thread_local std::unique_ptr<std::byte[]> buffer;
+if(!buffer)buffer=std::make_unique_for_overwrite<std::byte[]>(copy_chunk);
+return buffer.get();
+}
 std::string read_only_text(std::string_view path)
 {
 return quote_path(path)+" is in a read-only pack; save files in data:/ instead";
@@ -94,18 +128,27 @@ case FileError::ambiguous:
 return "ambiguous name";
 case FileError::not_empty:
 return "directory not empty";
+case FileError::disk_full:
+return "disk full";
 default:
 return "input/output error";
 }
 }
 
-std::string read_failure_text(std::string_view path,const Failure& failure)
+FileError read_error(std::int64_t result) noexcept
+{
+const std::int64_t code=-result;
+return code>=1&&code<=static_cast<std::int64_t>(FileError::disk_full)?static_cast<FileError>(code):FileError::io;
+}
+
+std::string failure_text(FileAction action,std::string_view path,const Failure& failure)
 {
 if(!failure.message.empty())return failure.message;
+const std::string_view verb=action==FileAction::read?"cannot read ":action==FileAction::write?"cannot write ":action==FileAction::remove?"cannot delete ":"cannot create ";
 const std::string_view reason=reason_text(failure.code);
 std::string text;
-text.reserve(path.size()+reason.size()+16);
-text.append("cannot read ").append(quote_path(path)).append(": ").append(reason);
+text.reserve(verb.size()+path.size()+reason.size()+4);
+text.append(verb).append(quote_path(path)).append(": ").append(reason);
 return text;
 }
 
@@ -119,9 +162,18 @@ std::optional<std::pair<std::string,std::string>> Source::ambiguous_names(std::s
 return std::nullopt;
 }
 
-std::expected<bool,FileError> Source::rename(std::string_view,std::string_view)
+std::expected<bool,MoveError> Source::rename(std::string_view,std::string_view)
 {
 return false;
+}
+
+std::expected<std::optional<std::filesystem::path>,FileError> Source::host_file(std::string_view,bool)
+{
+return std::nullopt;
+}
+
+void Source::forget(std::string_view)
+{
 }
 
 Vfs::Vfs():table_(std::make_shared<const Table>()),host_(std::make_shared<HostSource>()),checked_(std::make_unique<std::atomic<std::uint64_t>[]>(checked_slots))
@@ -530,64 +582,177 @@ return result;
 });
 }
 
-std::expected<bool,Failure> Vfs::rename(std::string_view from,std::string_view to)
+std::expected<Vfs::End,Failure> Vfs::reading_end(const Table& table,std::string_view path,const VfsPath& p,bool removing) const
 {
-return guarded(*this,"rename",from,[&]()->std::expected<bool,Failure>{
-const auto old_path=parse_failure(from);
-if(!old_path)return std::unexpected(old_path.error());
-const auto new_path=parse_failure(to);
-if(!new_path)return std::unexpected(new_path.error());
-if(old_path->folder||new_path->folder)return failed(FileError::is_directory);
-const bool old_host=old_path->mount=="host:";
-const bool new_host=new_path->mount=="host:";
-if(old_host||new_host){
-if(!old_host||!new_host)return false;
-auto renamed=host_->rename(old_path->relative,new_path->relative);
-if(!renamed)return failed(renamed.error());
-return *renamed;
-}
-const std::shared_ptr<const Table> table=snapshot();
-// The mount serving from, found as remove finds it.
+if(p.mount=="host:")return End{host_.get(),nullptr,p.relative};
 std::optional<Failure> failure;
-Target source;
-const bool served=visit_covering(*table,*old_path,[&](const Target& target){
+End found;
+visit_covering(table,p,[&](const Target& target){
 const auto info=target.mount->source->stat(target.sub);
 if(!info){
 if(fall_through(info.error()))return false;
-failure=info.error()==FileError::ambiguous?ambiguous_failure(from,target):Failure{info.error(),{}};
+failure=info.error()==FileError::ambiguous?ambiguous_failure(path,target):Failure{info.error(),{}};
 return true;
 }
 if(info->kind==EntryKind::deleted)return false;
 if(info->kind==EntryKind::directory)failure=Failure{FileError::is_directory,{}};
-else if(!target.mount->writable)failure=Failure{FileError::read_only_pack,read_only_text(from)};
-else source=target;
+else if(removing&&!target.mount->writable)failure=Failure{FileError::read_only_pack,read_only_text(path)};
+else found=End{target.mount->source.get(),target.mount,target.sub};
 return true;
 });
 if(failure)return std::unexpected(std::move(*failure));
-if(!served)return failed(leads_to_mount(*table,*old_path)?FileError::is_directory:FileError::not_found);
-// The mount to holds, found as open_write finds it.
+if(!found.source)return failed(leads_to_mount(table,p)?FileError::is_directory:FileError::not_found);
+return found;
+}
+
+std::expected<Vfs::End,Failure> Vfs::writing_end(const Table& table,std::string_view path,const VfsPath& p) const
+{
+if(p.mount=="host:")return End{host_.get(),nullptr,p.relative};
 bool covered=false;
-Target destination;
-const bool writable=visit_covering(*table,*new_path,[&](const Target& target){
+End found;
+const bool writable=visit_covering(table,p,[&](const Target& target){
 covered=true;
 if(!target.mount->writable)return false;
-destination=target;
+found=End{target.mount->source.get(),target.mount,target.sub};
 return true;
 });
-if(!writable){
-if(leads_to_mount(*table,*new_path))return failed(FileError::is_directory);
-if(covered)return std::unexpected(Failure{FileError::read_only_pack,read_only_text(to)});
+if(writable)return found;
+if(leads_to_mount(table,p))return failed(FileError::is_directory);
+if(covered)return std::unexpected(Failure{FileError::read_only_pack,read_only_text(path)});
 return failed(FileError::not_found);
 }
-if(source.mount->source!=destination.mount->source)return false;
-check_spelling(from,*old_path,source);
-auto renamed=destination.mount->source->rename(source.sub,destination.sub);
-if(!renamed)return std::unexpected(renamed.error()==FileError::ambiguous?ambiguous_failure(to,destination):Failure{renamed.error(),{}});
-if(*renamed){
-check_release_pack(to,*new_path);
-check_spelling(to,*new_path,destination);
+
+Failure Vfs::end_failure(std::string_view path,const End& end,FileError code) const
+{
+if(code==FileError::ambiguous&&end.mount)return ambiguous_failure(path,Target{end.mount,end.sub});
+return Failure{code,{}};
 }
+
+void Vfs::written(std::string_view path,const VfsPath& p,const End& end) noexcept
+{
+check_release_pack(path,p);
+if(end.mount)check_spelling(path,p,Target{end.mount,end.sub});
+}
+
+std::expected<bool,MoveFailure> Vfs::rename(std::string_view from,std::string_view to)
+{
+return guarded_move(*this,"rename",from,[&]()->std::expected<bool,MoveFailure>{
+const auto old_path=parse_failure(from);
+if(!old_path)return move_failed(old_path.error(),false);
+const auto new_path=parse_failure(to);
+if(!new_path)return move_failed(new_path.error(),true);
+if(old_path->folder)return move_failed(Failure{FileError::is_directory,{}},false);
+if(new_path->folder)return move_failed(Failure{FileError::is_directory,{}},true);
+const std::shared_ptr<const Table> table=snapshot();
+const auto source=reading_end(*table,from,*old_path,true);
+if(!source)return move_failed(source.error(),false);
+const auto target=writing_end(*table,to,*new_path);
+if(!target)return move_failed(target.error(),true);
+if(source->mount)check_spelling(from,*old_path,Target{source->mount,source->sub});
+if(source->source==target->source){
+const auto renamed=source->source->rename(source->sub,target->sub);
+if(!renamed){
+const bool on_to=renamed.error().to;
+return move_failed(end_failure(on_to?to:from,on_to?*target:*source,renamed.error().code),on_to);
+}
+if(*renamed)written(to,*new_path,*target);
 return *renamed;
+}
+// Two sources: the system renames when both hand out host files.
+const auto old_file=source->source->host_file(source->sub,false);
+if(!old_file)return move_failed(end_failure(from,*source,old_file.error()),false);
+if(!*old_file)return false;
+const auto new_file=target->source->host_file(target->sub,true);
+if(!new_file)return move_failed(end_failure(to,*target,new_file.error()),true);
+if(!*new_file)return false;
+// One file under two mounts (or a host path and a mount): renaming it onto itself would be all, so nothing is done.
+if(same_file(**old_file,**new_file))return true;
+std::error_code error;
+if(!platform::replace_file(**old_file,**new_file,error)){
+if(platform::error_kind(error)==platform::ErrorKind::cross_device)return false;
+return move_failed(Failure{detail::file_error(error),{}},platform::stat_path(**old_file).has_value());
+}
+source->source->forget(source->sub);
+target->source->forget(target->sub);
+written(to,*new_path,*target);
+return true;
+});
+}
+
+std::expected<bool,MoveFailure> Vfs::copy_file(std::string_view from,std::string_view to)
+{
+const auto old_path=parse_failure(from);
+if(!old_path)return move_failed(old_path.error(),false);
+const auto new_path=parse_failure(to);
+if(!new_path)return move_failed(new_path.error(),true);
+if(old_path->folder)return move_failed(Failure{FileError::is_directory,{}},false);
+if(new_path->folder)return move_failed(Failure{FileError::is_directory,{}},true);
+{
+const std::shared_ptr<const Table> table=snapshot();
+const auto source=reading_end(*table,from,*old_path,false);
+if(!source)return move_failed(source.error(),false);
+const auto target=writing_end(*table,to,*new_path);
+if(!target)return move_failed(target.error(),true);
+const auto old_file=source->source->host_file(source->sub,false);
+if(!old_file)return move_failed(end_failure(from,*source,old_file.error()),false);
+if(*old_file){
+const auto new_file=target->source->host_file(target->sub,true);
+if(!new_file)return move_failed(end_failure(to,*target,new_file.error()),true);
+if(*new_file){
+if(same_file(**old_file,**new_file))return true;
+bool from_failed=false;
+const std::error_code error=platform::copy_file(**old_file,**new_file,from_failed);
+target->source->forget(target->sub);
+if(error)return move_failed(Failure{detail::file_error(error),{}},!from_failed);
+written(to,*new_path,*target);
+return false;
+}
+}
+}
+// Through the sources: written over in place, then cut to length.
+const auto reader=open_read(from);
+if(!reader)return move_failed(reader.error(),false);
+auto writer=open_write(to,WriteMode::append);
+if(!writer)return move_failed(writer.error(),true);
+Reader& in=**reader;
+WriteTarget& out=**writer;
+const std::uint64_t size=in.size();
+std::byte* const buffer=size?copy_buffer():nullptr;
+std::uint64_t done=0;
+while(done<size){
+const auto wanted=static_cast<std::size_t>(std::min<std::uint64_t>(copy_chunk,size-done));
+const std::int64_t got=in.read_at(done,{buffer,wanted});
+if(got<0)return move_failed(Failure{read_error(got),{}},false);
+if(got==0)break;
+if(auto put=out.write_at(done,{buffer,static_cast<std::size_t>(got)});!put)return move_failed(Failure{put.error(),{}},true);
+done+=static_cast<std::uint64_t>(got);
+}
+if(out.size()!=done)if(auto cut=out.truncate(done);!cut)return move_failed(Failure{cut.error(),{}},true);
+if(auto committed=out.commit();!committed)return move_failed(Failure{committed.error(),{}},true);
+return false;
+}
+
+std::expected<void,MoveFailure> Vfs::copy(std::string_view from,std::string_view to)
+{
+return guarded_move(*this,"copy",from,[&]()->std::expected<void,MoveFailure>{
+const auto copied=copy_file(from,to);
+if(!copied)return std::unexpected(copied.error());
+return {};
+});
+}
+
+std::expected<void,MoveFailure> Vfs::move(std::string_view from,std::string_view to)
+{
+return guarded_move(*this,"move",from,[&]()->std::expected<void,MoveFailure>{
+const auto renamed=rename(from,to);
+if(!renamed)return std::unexpected(renamed.error());
+if(*renamed)return {};
+const auto copied=copy_file(from,to);
+if(!copied)return std::unexpected(copied.error());
+// One file on both sides: removing from would remove it.
+if(*copied)return {};
+if(auto removed=remove(from);!removed)return move_failed(removed.error(),false);
+return {};
 });
 }
 

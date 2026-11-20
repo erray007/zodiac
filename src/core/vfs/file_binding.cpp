@@ -31,6 +31,7 @@ namespace zodiac {
 namespace {
 using vfs::EntryKind;
 using vfs::Failure;
+using vfs::FileAction;
 using vfs::FileError;
 using vfs::WriteMode;
 
@@ -40,16 +41,13 @@ constexpr char kOutOfMemory[]="out of memory";
 constexpr asPWORD files_slot=0x5A46494C;
 // The read buffer of a file object: a power of two, so refills start at aligned offsets (a pack's 64 KiB chunks, a disk's pages).
 constexpr std::size_t kBufferSize=65536;
-// What copy_file moves per read and write.
-constexpr std::size_t kCopyChunk=262144;
 constexpr std::uint64_t kMaxText=static_cast<std::uint64_t>(String::max_byte_length);
 
 thread_local std::string last_error;
 
 FileError error_of(std::int64_t result) noexcept
 {
-const std::int64_t code=-result;
-return code>=1&&code<=static_cast<std::int64_t>(FileError::not_empty)?static_cast<FileError>(code):FileError::io;
+return vfs::read_error(result);
 }
 std::span<std::byte> bytes_at(char* data,std::size_t size) noexcept
 {
@@ -83,20 +81,25 @@ catch(...){
 raise_current_exception();
 }
 }
-// The bool helpers' failure: last_file_error gets the text (or nothing when even that cannot be had).
-[[gnu::noinline,gnu::cold]] bool failed(std::string_view path,const Failure& failure) noexcept
+// The helpers' failure: last_file_error gets the text (or nothing when even that cannot be had).
+[[gnu::noinline,gnu::cold]] bool failed(FileAction action,std::string_view path,const Failure& failure) noexcept
 {
 try{
-last_error=vfs::read_failure_text(path,failure);
+last_error=vfs::failure_text(action,path,failure);
 }
 catch(...){
 last_error.clear();
 }
 return false;
 }
-bool failed(std::string_view path,FileError code) noexcept
+bool failed(FileAction action,std::string_view path,FileError code) noexcept
 {
-return failed(path,Failure{code,{}});
+return failed(action,path,Failure{code,{}});
+}
+// A copy's or move's failure: from is read, to is written.
+bool failed(std::string_view from,std::string_view to,const vfs::MoveFailure& failure) noexcept
+{
+return failure.to?failed(FileAction::write,to,failure.failure):failed(FileAction::read,from,failure.failure);
 }
 bool succeeded() noexcept
 {
@@ -176,8 +179,7 @@ bool append_=false;
 
 bool ScriptFile::open(std::string_view path,std::string_view mode)
 {
-close();
-// r, w or a, then "+" (r only) and "b" in either order.
+// r, w or a, then "+" (r only) and "b" in either order. A bad mode throws before anything changes, the open file included.
 const char kind=mode.empty()?'\0':mode[0];
 bool plus=false;
 bool binary=false;
@@ -191,6 +193,7 @@ if(!valid){
 raise_bad_mode(mode);
 return false;
 }
+close();
 path_.assign(path);
 if(kind=='r'&&!plus){
 auto reader=vfs_->open_read(path);
@@ -204,7 +207,9 @@ size_=reader_->size();
 else{
 auto writer=vfs_->open_write(path,kind=='w'?WriteMode::truncate:kind=='a'?WriteMode::append:WriteMode::update);
 if(!writer){
-error_=vfs::read_failure_text(path,writer.error());
+// "r+" reads a file that must exist: a missing one is a read failure, anything else a write failure.
+const bool missing=plus&&writer.error().code==FileError::not_found;
+error_=vfs::failure_text(missing?FileAction::read:FileAction::write,path,writer.error());
 return false;
 }
 writer_=std::move(*writer);
@@ -330,8 +335,10 @@ if(!is_open()){
 raise_script_exception(kNotOpen);
 return String();
 }
+// The BOM is stepped over only by a read that takes bytes, so read(0) never moves the position.
+if(count<=0)return String();
 if(text_&&position_==0&&size_>=3&&!skip_bom())return String();
-if(count<=0||position_>=size_)return String();
+if(position_>=size_)return String();
 return read_text(std::min(static_cast<std::uint64_t>(count),size_-position_));
 }
 
@@ -407,8 +414,8 @@ return false;
 }
 if(append_)position_=size_;
 if(!data.empty()){
-if(!writer_->write_at(position_,bytes_of(data))){
-error_=vfs::read_failure_text(path_,Failure{FileError::io,{}});
+if(auto written=writer_->write_at(position_,bytes_of(data));!written){
+error_=vfs::write_failure_text(path_,Failure{written.error(),{}});
 return false;
 }
 mirror(position_,data);
@@ -435,7 +442,7 @@ void ScriptFile::close() noexcept
 {
 if(writer_){
 try{
-if(auto committed=writer_->commit();!committed)error_=vfs::read_failure_text(path_,Failure{committed.error(),{}});
+if(auto committed=writer_->commit();!committed)error_=vfs::write_failure_text(path_,Failure{committed.error(),{}});
 }
 catch(...){
 }
@@ -510,14 +517,6 @@ String last_file_error()
 return String(last_error);
 }
 
-// The buffer copy_file reads into, one per thread, made by its first copy.
-std::byte* copy_buffer()
-{
-thread_local std::unique_ptr<std::byte[]> buffer;
-if(!buffer)buffer=std::make_unique_for_overwrite<std::byte[]>(kCopyChunk);
-return buffer.get();
-}
-
 class FileLibrary{
 public:
 FileLibrary(vfs::Vfs& vfs,asITypeInfo* string_array) noexcept:vfs_(vfs),string_array_(string_array){}
@@ -556,32 +555,17 @@ return store(path.bytes(),data.bytes(),WriteMode::append);
 bool delete_file(const String& path) noexcept
 {
 const auto removed=vfs_.remove(path.bytes());
-return removed?succeeded():failed(path.bytes(),removed.error());
+return removed?succeeded():failed(FileAction::remove,path.bytes(),removed.error());
 }
 bool copy_file(const String& from,const String& to) noexcept
 {
-try{
-return copy(from.bytes(),to.bytes())&&succeeded();
-}
-catch(...){
-raise_current_exception();
-}
-return false;
+const auto copied=vfs_.copy(from.bytes(),to.bytes());
+return copied?succeeded():failed(from.bytes(),to.bytes(),copied.error());
 }
 bool move_file(const String& from,const String& to) noexcept
 {
-try{
-const auto renamed=vfs_.rename(from.bytes(),to.bytes());
-if(!renamed)return failed(from.bytes(),renamed.error());
-if(*renamed)return succeeded();
-if(!copy(from.bytes(),to.bytes()))return false;
-const auto removed=vfs_.remove(from.bytes());
-return removed?succeeded():failed(from.bytes(),removed.error());
-}
-catch(...){
-raise_current_exception();
-}
-return false;
+const auto moved=vfs_.move(from.bytes(),to.bytes());
+return moved?succeeded():failed(from.bytes(),to.bytes(),moved.error());
 }
 std::int64_t file_size(const String& path) noexcept
 {
@@ -601,12 +585,12 @@ return DateTime{platform::utc_to_local_civil_ms(info->modified_utc_ms)};
 bool create_directory(const String& path,bool recursive) noexcept
 {
 const auto made=vfs_.create_directory(path.bytes(),recursive);
-return made?succeeded():failed(path.bytes(),made.error());
+return made?succeeded():failed(FileAction::create,path.bytes(),made.error());
 }
 bool delete_directory(const String& path,bool recursive) noexcept
 {
 const auto removed=vfs_.delete_directory(path.bytes(),recursive);
-return removed?succeeded():failed(path.bytes(),removed.error());
+return removed?succeeded():failed(FileAction::remove,path.bytes(),removed.error());
 }
 ScriptArray* list_files(const String& path,const String& pattern) noexcept
 {
@@ -655,43 +639,18 @@ return text;
 bool store(std::string_view path,std::string_view data,WriteMode mode) noexcept
 {
 auto target=vfs_.open_write(path,mode);
-if(!target)return failed(path,target.error());
+if(!target)return failed(FileAction::write,path,target.error());
 vfs::WriteTarget& out=**target;
 const std::uint64_t at=mode==WriteMode::append?out.size():0;
-if(!data.empty()&&!out.write_at(at,bytes_of(data)))return failed(path,FileError::io);
-if(const auto committed=out.commit();!committed)return failed(path,committed.error());
+if(!data.empty())if(auto written=out.write_at(at,bytes_of(data));!written)return failed(FileAction::write,path,written.error());
+if(const auto committed=out.commit();!committed)return failed(FileAction::write,path,committed.error());
 return succeeded();
-}
-// Copies from over to: written over in place, then cut to length, so a copy onto the same file (under any spelling, through any
-// mount) reads and writes the same bytes and keeps it whole. Sets last_file_error on failure; the caller clears it on success.
-bool copy(std::string_view from,std::string_view to)
-{
-const auto reader=vfs_.open_read(from);
-if(!reader)return failed(from,reader.error());
-auto target=vfs_.open_write(to,WriteMode::append);
-if(!target)return failed(to,target.error());
-vfs::Reader& source=**reader;
-vfs::WriteTarget& out=**target;
-const std::uint64_t size=source.size();
-std::byte* const buffer=size?copy_buffer():nullptr;
-std::uint64_t done=0;
-while(done<size){
-const auto wanted=static_cast<std::size_t>(std::min<std::uint64_t>(kCopyChunk,size-done));
-const std::int64_t got=source.read_at(done,{buffer,wanted});
-if(got<0)return failed(from,error_of(got));
-if(got==0)break;
-if(!out.write_at(done,{buffer,static_cast<std::size_t>(got)}))return failed(to,FileError::io);
-done+=static_cast<std::uint64_t>(got);
-}
-if(out.size()!=done&&!out.truncate(done))return failed(to,FileError::io);
-if(const auto committed=out.commit();!committed)return failed(to,committed.error());
-return true;
 }
 ScriptArray* list(std::string_view path,vfs::ListKind kind,std::string_view pattern) noexcept
 {
 try{
 const auto names=vfs_.list(path,kind,pattern);
-if(!names)failed(path,names.error());
+if(!names)failed(FileAction::read,path,names.error());
 else last_error.clear();
 const std::size_t count=names?names->size():0;
 if(count>static_cast<std::size_t>(std::numeric_limits<int>::max()))throw std::bad_alloc();

@@ -19,7 +19,9 @@ std::expected<void,FileError> remove(std::string_view relative) override;
 std::expected<void,FileError> make_directory(std::string_view relative) override;
 std::expected<void,FileError> remove_directory(std::string_view relative,bool recursive) override;
 // platform::replace_file; false (copy instead) between volumes.
-std::expected<bool,FileError> rename(std::string_view from,std::string_view to) override;
+std::expected<bool,MoveError> rename(std::string_view from,std::string_view to) override;
+// The path itself: an existing file, or (for_write) a file or nothing there.
+std::expected<std::optional<std::filesystem::path>,FileError> host_file(std::string_view relative,bool for_write) override;
 bool read_only() const noexcept override{return false;}
 // make_directory with every missing folder above it.
 std::expected<void,FileError> make_directories(std::string_view relative);

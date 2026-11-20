@@ -42,6 +42,7 @@
 //   read-modify-write operations are used only on 4-aligned 32-bit fields (Heap::hash_known, Rep::meta) and on the heap
 //   block's header (the index pointer), which the allocator aligns; those would fault or tear on a misaligned address.
 #pragma once
+#include <cassert>
 #include <climits>
 #include <compare>
 #include <concepts>
@@ -187,7 +188,8 @@ text.append(value);
 return text;
 }
 // A string written in place, for I/O that reads straight into a string's storage without a buffer and a copy: fill(data) writes
-// at most capacity bytes at data and returns how many it wrote. Text of up to inline_capacity bytes needs no allocation. A
+// at most capacity bytes at data and returns how many it wrote (more is a bug, asserted in debug builds). Text of up to
+// inline_capacity bytes needs no allocation. A
 // capacity above max_byte_length throws std::bad_alloc; when fill throws, the string is freed.
 template<class Fill>
 static String filled(std::size_t capacity,Fill&& fill)
@@ -195,6 +197,7 @@ static String filled(std::size_t capacity,Fill&& fill)
 String text;
 char* data=text.raw_reserve(capacity);
 const std::size_t size=fill(data);
+assert(size<=capacity&&"String::filled: fill wrote more than the capacity");
 text.raw_set_size(static_cast<std::uint32_t>(size),meta_unknown);
 return text;
 }
