@@ -7,7 +7,7 @@
 // Failure texts (vfs::failure_text): a path rule's, an ambiguity's or a read-only pack's own text, else `cannot <verb> "<path>":
 // <reason>`, the verb by what failed: read (reading, "r", "r+" on a missing file, the from side of copy_file and move_file), write
 // ("w" and "a", "r+" otherwise, write, the commit in close, write_file, append_file, the to side of copy_file and move_file), delete
-// (delete_file, delete_directory) or create (create_directory).
+// (delete_file, delete_directory, and removing from after move_file's copy) or create (create_directory).
 //
 // file, a reference type: file f; (or file@ f = file();)
 // - bool open(const string &in path, const string &in mode): modes "r" (read), "w" (create or empty), "a" (create or keep; every

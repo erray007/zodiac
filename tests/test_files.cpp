@@ -147,6 +147,7 @@ using FileError=zodiac::vfs::FileError;
 std::map<std::string,std::string,std::less<>> files;
 std::optional<FileError> fail_write;
 std::optional<FileError> fail_commit;
+std::optional<FileError> fail_remove;
 std::expected<zodiac::vfs::EntryInfo,FileError> stat(std::string_view relative) override
 {
 zodiac::vfs::EntryInfo info;
@@ -188,6 +189,7 @@ std::expected<void,FileError> remove(std::string_view relative) override
 {
 const auto found=files.find(relative);
 if(found==files.end())return std::unexpected(FileError::not_found);
+if(fail_remove)return std::unexpected(*fail_remove);
 files.erase(found);
 return {};
 }
@@ -624,6 +626,10 @@ CHECK(holds(fixture,"return move_file(\"moved.bin\", \"mem/back.bin\")&&!file_ex
 CHECK(memory->files.at("back.bin")==bytes);
 CHECK_FALSE(fs::exists(fixture.root()/"moved.bin"));
 CHECK(text_of(fixture,"bool copied=copy_file(\"mem/none.bin\", \"x.bin\"); return copied+\",\"+last_file_error();")=="false,cannot read \"mem/none.bin\": file not found");
+// The copy succeeds and removing the source fails: a delete failure, and both files are there.
+memory->fail_remove=zodiac::vfs::FileError::access_denied;
+CHECK(text_of(fixture,"bool moved=move_file(\"mem/back.bin\", \"stuck.bin\"); return moved+\",\"+last_file_error()+\",\"+file_exists(\"mem/back.bin\")+\",\"+file_exists(\"stuck.bin\");")=="false,cannot delete \"mem/back.bin\": access denied,true,true");
+CHECK(contents(fixture.root()/"stuck.bin")==bytes);
 }
 
 TEST_CASE("copies between host files use the system's copy and give the same bytes and a fresh time")

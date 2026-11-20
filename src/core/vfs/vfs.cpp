@@ -751,7 +751,7 @@ const auto copied=copy_file(from,to);
 if(!copied)return std::unexpected(copied.error());
 // One file on both sides: removing from would remove it.
 if(*copied)return {};
-if(auto removed=remove(from);!removed)return move_failed(removed.error(),false);
+if(auto removed=remove(from);!removed)return std::unexpected(MoveFailure{std::move(removed.error()),false,true});
 return {};
 });
 }

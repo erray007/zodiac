@@ -157,6 +157,8 @@ FileError read_error(std::int64_t result) noexcept;
 struct MoveFailure{
 Failure failure;
 bool to=false;
+// move only: the copy succeeded, and removing from failed (from is still there, and so is the copy).
+bool removing=false;
 };
 class HostSource;
 class Vfs{
@@ -190,7 +192,8 @@ std::expected<bool,MoveFailure> rename(std::string_view from,std::string_view to
 // (append mode, written over from offset 0 in 256 KiB pieces, then cut to length, then committed). from and to being one file
 // (by identity, when both are host files) is a success that changes nothing.
 std::expected<void,MoveFailure> copy(std::string_view from,std::string_view to);
-// rename, else copy then remove(from). A copy that finds one file on both sides removes nothing.
+// rename, else copy then remove(from). A copy that finds one file on both sides removes nothing. A failed remove after the copy
+// is MoveFailure::removing (both files are then there).
 std::expected<void,MoveFailure> move(std::string_view from,std::string_view to);
 // The names in folder path of the kind asked for that match pattern ('*' any run, '?' one character), name and pattern compared by
 // fold_name; sorted by fold, then by bytes, without duplicates.

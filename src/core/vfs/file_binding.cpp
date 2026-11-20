@@ -96,10 +96,11 @@ bool failed(FileAction action,std::string_view path,FileError code) noexcept
 {
 return failed(action,path,Failure{code,{}});
 }
-// A copy's or move's failure: from is read, to is written.
+// A copy's or move's failure: from is read (or, ending a move by copy and delete, deleted), to is written.
 bool failed(std::string_view from,std::string_view to,const vfs::MoveFailure& failure) noexcept
 {
-return failure.to?failed(FileAction::write,to,failure.failure):failed(FileAction::read,from,failure.failure);
+if(failure.to)return failed(FileAction::write,to,failure.failure);
+return failed(failure.removing?FileAction::remove:FileAction::read,from,failure.failure);
 }
 bool succeeded() noexcept
 {
