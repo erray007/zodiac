@@ -1,7 +1,10 @@
 // Files and folders on Windows (see platform/file.hpp): CreateFileW with every share flag, positional ReadFile/WriteFile through an
 // OVERLAPPED offset on a synchronous handle, FindFirstFileExW listings (basic information, large fetch), and Win32 error codes mapped to
-// errno numbers. Paths of 248 characters and more get the \\?\ (or \\?\UNC\) prefix, which lifts MAX_PATH; callers pass absolute,
+// errno numbers, FileIdInfo identities and CopyFileExW copies. Paths of 248 characters and more get the \\?\ (or \\?\UNC\) prefix, which lifts MAX_PATH; callers pass absolute,
 // lexically normal paths, which is what that prefix needs.
+// Windows 10 is Zodiac's minimum; the toolchain's headers default to Windows 7 and hide FILE_ID_INFO (Windows 8).
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <platform/file.hpp>
@@ -76,6 +79,25 @@ return std::error_code(value,std::generic_category());
 std::error_code last_error() noexcept
 {
 return errno_code(errno_of(GetLastError()));
+}
+// The identity of an open handle: FileIdInfo's volume serial number and 128-bit id, or, where the file system has none (FAT and
+// some network file systems refuse FileIdInfo), GetFileInformationByHandle's serial number and 64-bit index.
+std::expected<FileIdentity,std::error_code> identity_of(HANDLE handle) noexcept
+{
+FILE_ID_INFO id;
+if(GetFileInformationByHandleEx(handle,FileIdInfo,&id,sizeof id)){
+FileIdentity identity;
+identity.volume=id.VolumeSerialNumber;
+std::memcpy(&identity.high,id.FileId.Identifier+8,8);
+std::memcpy(&identity.low,id.FileId.Identifier,8);
+return identity;
+}
+BY_HANDLE_FILE_INFORMATION info;
+if(!GetFileInformationByHandle(handle,&info))return std::unexpected(last_error());
+FileIdentity identity;
+identity.volume=info.dwVolumeSerialNumber;
+identity.low=(static_cast<std::uint64_t>(info.nFileIndexHigh)<<32)|info.nFileIndexLow;
+return identity;
 }
 // The text Win32 receives for a path: the path itself when short (Win32 accepts '/' there), else a \\?\ copy with '\' separators.
 // It points into the path it was made from, which must outlive it.
@@ -194,7 +216,7 @@ done+=got;
 return static_cast<std::int64_t>(done);
 }
 
-bool File::write_at(std::uint64_t offset,std::span<const std::byte> bytes) noexcept
+std::expected<void,std::error_code> File::write_at(std::uint64_t offset,std::span<const std::byte> bytes) noexcept
 {
 std::size_t done=0;
 while(done<bytes.size()){
@@ -204,10 +226,11 @@ OVERLAPPED overlapped{};
 overlapped.Offset=static_cast<DWORD>(at);
 overlapped.OffsetHigh=static_cast<DWORD>(at>>32);
 DWORD put=0;
-if(!WriteFile(handle_of(handle_),bytes.data()+done,chunk,&put,&overlapped)||put==0)return false;
+if(!WriteFile(handle_of(handle_),bytes.data()+done,chunk,&put,&overlapped))return std::unexpected(last_error());
+if(put==0)return std::unexpected(errno_code(EIO));
 done+=put;
 }
-return true;
+return {};
 }
 
 std::uint64_t File::size() const noexcept
@@ -216,12 +239,18 @@ LARGE_INTEGER size;
 return GetFileSizeEx(handle_of(handle_),&size)?static_cast<std::uint64_t>(size.QuadPart):0;
 }
 
-bool File::truncate(std::uint64_t size) noexcept
+std::expected<void,std::error_code> File::truncate(std::uint64_t size) noexcept
 {
-if(size>static_cast<std::uint64_t>(INT64_MAX))return false;
+if(size>static_cast<std::uint64_t>(INT64_MAX))return std::unexpected(errno_code(EFBIG));
 FILE_END_OF_FILE_INFO info;
 info.EndOfFile.QuadPart=static_cast<LONGLONG>(size);
-return SetFileInformationByHandle(handle_of(handle_),FileEndOfFileInfo,&info,sizeof info)!=0;
+if(!SetFileInformationByHandle(handle_of(handle_),FileEndOfFileInfo,&info,sizeof info))return std::unexpected(last_error());
+return {};
+}
+
+std::expected<FileIdentity,std::error_code> File::identity() const noexcept
+{
+return identity_of(handle_of(handle_));
 }
 
 bool File::sync() noexcept
@@ -363,6 +392,8 @@ case ENOTEMPTY:
 return ErrorKind::not_empty;
 case EXDEV:
 return ErrorKind::cross_device;
+case ENOSPC:
+return ErrorKind::disk_full;
 default:
 return ErrorKind::other;
 }
@@ -392,6 +423,51 @@ if(renamed)return true;
 if(MoveFileExW(source.c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))return true;
 error=last_error();
 return false;
+}
+
+std::expected<FileIdentity,std::error_code> file_identity(const fs::path& path)
+{
+const NativePath name(path);
+// No access rights: reading the id needs none, and a folder opens with FILE_FLAG_BACKUP_SEMANTICS.
+const HANDLE handle=CreateFileW(name.c_str(),0,share_all,nullptr,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,nullptr);
+if(handle==INVALID_HANDLE_VALUE)return std::unexpected(last_error());
+const auto identity=identity_of(handle);
+CloseHandle(handle);
+return identity;
+}
+
+std::error_code copy_file(const fs::path& from,const fs::path& to,bool& from_failed)
+{
+from_failed=false;
+const NativePath source(from);
+const NativePath target(to);
+if(!CopyFileExW(source.c_str(),target.c_str(),nullptr,nullptr,nullptr,0)){
+const std::error_code error=last_error();
+// CopyFileExW does not say which side failed: from is to blame when it is gone or is no file.
+const DWORD attributes=GetFileAttributesW(source.c_str());
+from_failed=attributes==INVALID_FILE_ATTRIBUTES||(attributes&FILE_ATTRIBUTE_DIRECTORY);
+return error;
+}
+// CopyFileExW keeps from's modification time and attributes; a copy written byte by byte has neither.
+const HANDLE handle=CreateFileW(target.c_str(),FILE_READ_ATTRIBUTES|FILE_WRITE_ATTRIBUTES,share_all,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+if(handle==INVALID_HANDLE_VALUE)return last_error();
+FILE_BASIC_INFO info;
+std::error_code error;
+if(GetFileInformationByHandleEx(handle,FileBasicInfo,&info,sizeof info)){
+FILETIME now;
+GetSystemTimePreciseAsFileTime(&now);
+info.LastWriteTime.LowPart=now.dwLowDateTime;
+info.LastWriteTime.HighPart=static_cast<LONG>(now.dwHighDateTime);
+info.ChangeTime=info.LastWriteTime;
+info.CreationTime.QuadPart=0;
+info.LastAccessTime.QuadPart=0;
+info.FileAttributes&=~static_cast<DWORD>(FILE_ATTRIBUTE_READONLY|FILE_ATTRIBUTE_HIDDEN|FILE_ATTRIBUTE_SYSTEM);
+if(info.FileAttributes==0)info.FileAttributes=FILE_ATTRIBUTE_NORMAL;
+if(!SetFileInformationByHandle(handle,FileBasicInfo,&info,sizeof info))error=last_error();
+}
+else error=last_error();
+CloseHandle(handle);
+return error;
 }
 
 fs::path user_data_folder()

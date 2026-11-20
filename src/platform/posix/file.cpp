@@ -1,6 +1,7 @@
 // Files and folders on POSIX systems (see platform/file.hpp): open with O_CLOEXEC (and O_NONBLOCK, so a FIFO can never block an open;
 // it changes nothing for regular files), pread/pwrite retried on EINTR and short counts, readdir listings that trust d_type and stat
-// only links and unknown entries, and rename for replace_file.
+// only links and unknown entries, rename for replace_file, st_dev and st_ino for identities, and copy_file_range (then sendfile, then
+// read and write) for copy_file.
 #include <platform/file.hpp>
 #include <algorithm>
 #include <cerrno>
@@ -12,6 +13,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/sendfile.h>
+#endif
 
 namespace zodiac::platform {
 namespace {
@@ -32,6 +36,13 @@ const auto seconds=static_cast<std::int64_t>(time.tv_sec);
 if(seconds>=limit)return INT64_MAX;
 if(seconds<= -limit)return INT64_MIN;
 return seconds*1000000000+static_cast<std::int64_t>(time.tv_nsec);
+}
+FileIdentity identity_of(const struct stat& info) noexcept
+{
+FileIdentity identity;
+identity.volume=static_cast<std::uint64_t>(info.st_dev);
+identity.low=static_cast<std::uint64_t>(info.st_ino);
+return identity;
 }
 NodeKind kind_of(mode_t mode) noexcept
 {
@@ -94,17 +105,18 @@ done+=static_cast<std::size_t>(got);
 return static_cast<std::int64_t>(done);
 }
 
-bool File::write_at(std::uint64_t offset,std::span<const std::byte> bytes) noexcept
+std::expected<void,std::error_code> File::write_at(std::uint64_t offset,std::span<const std::byte> bytes) noexcept
 {
 std::size_t done=0;
 while(done<bytes.size()){
 const std::size_t chunk=std::min<std::size_t>(bytes.size()-done,0x40000000u);
 const ssize_t put=::pwrite(static_cast<int>(handle_),bytes.data()+done,chunk,static_cast<off_t>(offset+done));
 if(put<0&&errno==EINTR)continue;
-if(put<=0)return false;
+if(put<0)return std::unexpected(errno_code(errno));
+if(put==0)return std::unexpected(errno_code(EIO));
 done+=static_cast<std::size_t>(put);
 }
-return true;
+return {};
 }
 
 std::uint64_t File::size() const noexcept
@@ -113,14 +125,22 @@ struct stat info;
 return ::fstat(static_cast<int>(handle_),&info)==0?static_cast<std::uint64_t>(info.st_size):0;
 }
 
-bool File::truncate(std::uint64_t size) noexcept
+std::expected<void,std::error_code> File::truncate(std::uint64_t size) noexcept
 {
-if(size>static_cast<std::uint64_t>(INT64_MAX))return false;
+if(size>static_cast<std::uint64_t>(INT64_MAX))return std::unexpected(errno_code(EFBIG));
 int result;
 do{
 result=::ftruncate(static_cast<int>(handle_),static_cast<off_t>(size));
 }while(result!=0&&errno==EINTR);
-return result==0;
+if(result!=0)return std::unexpected(errno_code(errno));
+return {};
+}
+
+std::expected<FileIdentity,std::error_code> File::identity() const noexcept
+{
+struct stat info;
+if(::fstat(static_cast<int>(handle_),&info)!=0)return std::unexpected(errno_code(errno));
+return identity_of(info);
 }
 
 bool File::sync() noexcept
@@ -237,6 +257,8 @@ case ENOTEMPTY:
 return ErrorKind::not_empty;
 case EXDEV:
 return ErrorKind::cross_device;
+case ENOSPC:
+return ErrorKind::disk_full;
 default:
 return ErrorKind::other;
 }
@@ -248,6 +270,114 @@ error.clear();
 if(std::rename(from.c_str(),to.c_str())==0)return true;
 error=errno_code(errno);
 return false;
+}
+
+std::expected<FileIdentity,std::error_code> file_identity(const fs::path& path)
+{
+struct stat info;
+if(::stat(path.c_str(),&info)!=0)return std::unexpected(errno_code(errno));
+return identity_of(info);
+}
+
+namespace {
+// Closes a descriptor on every exit; close_checked reports a failed close of a written file.
+struct Descriptor{
+int fd=-1;
+~Descriptor(){if(fd>=0)::close(fd);}
+int close_checked() noexcept
+{
+const int result=::close(fd);
+fd=-1;
+return result==0||errno==EINTR?0:errno;
+}
+};
+int open_retry(const fs::path& path,int flags) noexcept
+{
+int fd;
+do{
+fd=::open(path.c_str(),flags,0666);
+}while(fd<0&&errno==EINTR);
+return fd;
+}
+// The kernel's copy declines (no such call, another file system, a file system without it): the next way down is tried.
+bool declined(int error) noexcept
+{
+#if ENOTSUP!=EOPNOTSUPP
+if(error==ENOTSUP)return true;
+#endif
+return error==ENOSYS||error==EXDEV||error==EINVAL||error==EOPNOTSUPP||error==EPERM;
+}
+// Copies size bytes from in to out, both at their file offsets (0): copy_file_range, then sendfile, then read and write.
+int copy_bytes(int in,int out,std::uint64_t size,bool& from_failed) noexcept
+{
+std::uint64_t done=0;
+#ifdef __linux__
+bool range=true;
+bool send=true;
+#endif
+char buffer[65536];
+while(done<size){
+const auto wanted=static_cast<std::size_t>(std::min<std::uint64_t>(size-done,0x40000000u));
+ssize_t moved;
+#ifdef __linux__
+if(range){
+moved=::copy_file_range(in,nullptr,out,nullptr,wanted,0);
+if(moved<0&&errno!=EINTR&&declined(errno)){
+range=false;
+continue;
+}
+}
+else if(send){
+moved=::sendfile(out,in,nullptr,wanted);
+if(moved<0&&errno!=EINTR&&declined(errno)){
+send=false;
+continue;
+}
+}
+else
+#endif
+{
+moved=::read(in,buffer,std::min(wanted,sizeof buffer));
+if(moved<0&&errno!=EINTR){
+from_failed=true;
+return errno;
+}
+if(moved>0){
+for(ssize_t written=0;written<moved;){
+const ssize_t put=::write(out,buffer+written,static_cast<std::size_t>(moved-written));
+if(put<0&&errno==EINTR)continue;
+if(put<0)return errno;
+if(put==0)return EIO;
+written+=put;
+}
+}
+}
+if(moved<0){
+if(errno==EINTR)continue;
+return errno;
+}
+// The file got shorter since it was measured.
+if(moved==0)break;
+done+=static_cast<std::uint64_t>(moved);
+}
+return 0;
+}
+}
+
+std::error_code copy_file(const fs::path& from,const fs::path& to,bool& from_failed)
+{
+from_failed=true;
+Descriptor in{open_retry(from,O_RDONLY|O_CLOEXEC|O_NONBLOCK)};
+if(in.fd<0)return errno_code(errno);
+struct stat info;
+if(::fstat(in.fd,&info)!=0)return errno_code(errno);
+if(!S_ISREG(info.st_mode))return errno_code(S_ISDIR(info.st_mode)?EISDIR:EINVAL);
+from_failed=false;
+Descriptor out{open_retry(to,O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC|O_NONBLOCK)};
+if(out.fd<0)return errno_code(errno);
+if(const int error=copy_bytes(in.fd,out.fd,static_cast<std::uint64_t>(info.st_size),from_failed))return errno_code(error);
+if(const int error=out.close_checked())return errno_code(error);
+return {};
 }
 
 fs::path user_data_folder()

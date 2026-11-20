@@ -30,6 +30,13 @@ namespace zodiac::platform {
 // read and read_write open an existing file; create_truncate creates it or empties it; create_or_open creates it or keeps its bytes.
 // Every mode but read opens the file for writing too. Opening a folder fails with EISDIR in every mode.
 enum class FileAccess{read,read_write,create_truncate,create_or_open};
+// Equal for two paths or handles of one file (links and other spellings included), different for different files.
+struct FileIdentity{
+std::uint64_t volume=0;
+std::uint64_t high=0;
+std::uint64_t low=0;
+friend bool operator==(const FileIdentity&,const FileIdentity&)=default;
+};
 class File{
 public:
 File() noexcept=default;
@@ -50,11 +57,15 @@ bool is_open() const noexcept{return handle_!=invalid_handle;}
 // Fills buffer from offset on as far as the file goes: the bytes read (fewer only at the end), 0 at or past the end, or a
 // negated errno number when nothing could be read.
 std::int64_t read_at(std::uint64_t offset,std::span<std::byte> buffer) const noexcept;
-// Writes every byte at offset (growing the file as needed); false when the system fails.
-bool write_at(std::uint64_t offset,std::span<const std::byte> bytes) noexcept;
+// Writes every byte at offset (growing the file as needed); the system's error when it fails (ENOSPC for a full disk, EIO when
+// the system reports no progress without an error).
+std::expected<void,std::error_code> write_at(std::uint64_t offset,std::span<const std::byte> bytes) noexcept;
 // The file's current size; 0 when the system cannot tell.
 std::uint64_t size() const noexcept;
-bool truncate(std::uint64_t size) noexcept;
+std::expected<void,std::error_code> truncate(std::uint64_t size) noexcept;
+// The file's identity: the volume and the file's number on it (st_dev and st_ino; the volume serial number and the 128-bit file
+// id of FileIdInfo, or the 64-bit file index where the file system has no 128-bit id).
+std::expected<FileIdentity,std::error_code> identity() const noexcept;
 // Flushes the file's data and metadata to the device.
 bool sync() noexcept;
 void close() noexcept;
@@ -89,9 +100,18 @@ std::error_code make_directory(const std::filesystem::path& path);
 std::error_code remove_file(const std::filesystem::path& path);
 // Removes an empty folder; ENOTEMPTY otherwise.
 std::error_code remove_directory(const std::filesystem::path& path);
-// cross_device: a rename between volumes (EXDEV, ERROR_NOT_SAME_DEVICE), which only a copy can do.
-enum class ErrorKind{not_found,not_a_directory,is_directory,access_denied,exists,not_empty,cross_device,other};
+// cross_device: a rename between volumes (EXDEV, ERROR_NOT_SAME_DEVICE), which only a copy can do. disk_full: ENOSPC
+// (ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL).
+enum class ErrorKind{not_found,not_a_directory,is_directory,access_denied,exists,not_empty,cross_device,disk_full,other};
 ErrorKind error_kind(const std::error_code& code) noexcept;
 bool replace_file(const std::filesystem::path& from,const std::filesystem::path& to,std::error_code& error);
+// The identity of the file at path (links followed); a folder has one too.
+std::expected<FileIdentity,std::error_code> file_identity(const std::filesystem::path& path);
+// Copies the bytes of the regular file from over to (created or emptied first) with the system's own copy: CopyFileExW on
+// Windows, copy_file_range elsewhere (sendfile, then read and write, where the kernel or file system lacks it). Only the bytes
+// are meant to carry over, as with a copy written byte by byte: to gets the current time as its modification time, and Windows'
+// copy of the time and of the read-only, hidden and system attributes is undone. Nothing is promised about to after a failure;
+// from_failed tells whether it was from that failed (it cannot be opened or read) rather than to.
+std::error_code copy_file(const std::filesystem::path& from,const std::filesystem::path& to,bool& from_failed);
 std::filesystem::path user_data_folder();
 }
