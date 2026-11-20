@@ -467,8 +467,8 @@ if(wanted(zodiac::string_detail::hash_bytes(key.data(),key.size())))keys.push_ba
 return keys;
 }
 // key as serialize() writes it (the contract's quoting): '"' and '\' escaped, \n, \r and \t, other bytes below 0x20 and 0x7F
-// as \xNN in lowercase hex, every other byte as is.
-std::string quoted(std::string_view key)
+// as \xNN in lowercase hex, every other byte as is. (Not named quoted: with <filesystem> in, ADL would find std::quoted.)
+std::string quoted_key(std::string_view key)
 {
 constexpr char hex[]="0123456789abcdef";
 std::string out="\"";
@@ -554,13 +554,13 @@ REQUIRE(value!=nullptr);
 std::int64_t read=-1;
 CHECK(dictionary->get(zodiac::String(keys[at]),&read,asTYPEID_INT64));
 CHECK(read==static_cast<std::int64_t>(at));
-expected+="int64 "+quoted(keys[at])+" "+std::to_string(at)+"\n";
+expected+="int64 "+quoted_key(keys[at])+" "+std::to_string(at)+"\n";
 }
 CHECK(dictionary->serialize().bytes()==expected);
 expected="zodiac-dictionary 1\n";
 for(std::size_t at=0;at<keys.size();++at){
 if(at%2==0)CHECK(dictionary->remove(zodiac::String(keys[at])));
-else expected+="int64 "+quoted(keys[at])+" "+std::to_string(at)+"\n";
+else expected+="int64 "+quoted_key(keys[at])+" "+std::to_string(at)+"\n";
 }
 spread=zodiac::DictionaryTestAccess::displacement(*dictionary);
 CHECK(spread.largest<=longest);
